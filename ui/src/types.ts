@@ -52,6 +52,7 @@ export interface AnalysisState {
   has_continuity_check: boolean;
   has_show_dont_tell: boolean;
   has_ai_isms: boolean;
+  existing_docs: string[];
 }
 
 export interface SeriesRow {

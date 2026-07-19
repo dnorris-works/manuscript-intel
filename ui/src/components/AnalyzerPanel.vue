@@ -36,7 +36,8 @@ const continuitySeriesId = ref<number | null>(null);
 const existsMap = computed(() => {
   const state = analysisCtx.analysisState.value;
   if (!state) return {} as Record<string, boolean>;
-  return {
+  const docs = new Set(state.existing_docs || []);
+  const map: Record<string, boolean> = {
     chapter_summaries: state.summary_count > 0,
     genre_analysis: state.has_genre_data,
     genre_ranking: state.has_genre_ranking,
@@ -48,14 +49,19 @@ const existsMap = computed(() => {
     analysis: state.has_full_report,
     keyword_search: state.has_keyword_search_results,
     competition_report: state.has_competition,
-    review_mining: false,
-    author_analysis: false,
-    activity_log: false,
+    review_mining: docs.has('review_mining'),
+    author_analysis: docs.has('author_analysis'),
+    activity_log: docs.has('activity_log'),
     zeigarnik_analysis: state.has_zeigarnik,
     continuity_check: state.has_continuity_check,
     show_dont_tell: state.has_show_dont_tell,
     ai_isms: state.has_ai_isms,
-  } as Record<string, boolean>;
+  };
+  // Generic: any report with a saved document counts as exists
+  for (const id of docs) {
+    if (!(id in map)) map[id] = true;
+  }
+  return map;
 });
 
 const visibleReports = computed(() => {
@@ -182,13 +188,20 @@ watch(() => reportTypes.value, () => fetchCostEstimates());
 function onGetReports(): void {
   const folder = storiesCtx.activeFolder.value;
   hasRun.value = true;
-  if (platformCtx.platform.value === 'craft') {
-    const scope: ContinuityScope = continuityScopeMode.value === 'series' && continuitySeriesId.value != null
+  const plat = platformCtx.platform.value;
+  if (plat === 'craft' || plat === 'publish') {
+    const needsSeries = selected.value.some(id =>
+      id === 'continuity_check'
+      || id === 'cross_book_setup_payoff'
+      || id === 'series_pacing_comparator'
+      || id === 'recurring_motif_theme_series'
+    );
+    const scope: ContinuityScope = needsSeries && continuityScopeMode.value === 'series' && continuitySeriesId.value != null
       ? { mode: 'series', seriesId: continuitySeriesId.value }
       : { mode: 'manuscript' };
     analysisCtx.runCraftAnalysis(folder, selected.value, scope);
   } else {
-    analysisCtx.runAnalyze(folder, forceResummarize.value, platformCtx.platform.value);
+    analysisCtx.runAnalyze(folder, forceResummarize.value, plat);
   }
 }
 
@@ -227,6 +240,11 @@ function onStop(): void {
         :class="{ active: platformCtx.platform.value === 'craft' }"
         @click="platformCtx.setPlatform('craft')"
       >Craft</button>
+      <button
+        class="platform-tab"
+        :class="{ active: platformCtx.platform.value === 'publish' }"
+        @click="platformCtx.setPlatform('publish')"
+      >Publish</button>
     </div>
 
     <!-- Actions (top) -->
@@ -255,14 +273,14 @@ function onStop(): void {
         @click="onStop"
       >Stop</button>
 
-      <label v-if="platformCtx.platform.value !== 'craft'" class="force-resummarize-label">
+      <label v-if="platformCtx.platform.value !== 'craft' && platformCtx.platform.value !== 'publish'" class="force-resummarize-label">
         <input v-model="forceResummarize" type="checkbox" />
         Force re-summarize
       </label>
     </div>
 
     <!-- Continuity Check scope (only relevant when that report is selected) -->
-    <div v-if="platformCtx.platform.value === 'craft' && selected.includes('continuity_check')" class="continuity-scope-row">
+    <div v-if="(platformCtx.platform.value === 'craft' || platformCtx.platform.value === 'publish') && selected.some(id => id === 'continuity_check' || id === 'cross_book_setup_payoff' || id === 'series_pacing_comparator' || id === 'recurring_motif_theme_series')" class="continuity-scope-row">
       <span class="continuity-scope-label">Continuity Check scope:</span>
       <label class="scope-radio">
         <input v-model="continuityScopeMode" type="radio" value="manuscript" />

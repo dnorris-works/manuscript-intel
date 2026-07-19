@@ -42,6 +42,8 @@ pub struct AnalysisState {
     pub has_continuity_check:       bool,
     pub has_show_dont_tell:         bool,
     pub has_ai_isms:                bool,
+    /// All doc_types with at least one saved document (for generic exists checks).
+    pub existing_docs:              Vec<String>,
 }
 
 // ── Folder picker ────────────────────────────────────────────────────────────
@@ -92,6 +94,7 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             has_continuity_check:       db::get_document(&conn, &folder, "continuity_check").is_some(),
             has_show_dont_tell:         db::get_document(&conn, &folder, "show_dont_tell").is_some(),
             has_ai_isms:                db::get_document(&conn, &folder, "ai_isms").is_some(),
+            existing_docs:              db::list_existing_doc_types(&conn, &folder),
         }
     }).await.unwrap()
 }
@@ -949,6 +952,8 @@ pub struct CraftPipelineRequest {
     pub model_sdt:        String,           // override for show don't tell
     #[serde(default)]
     pub model_ai_isms:    String,           // override for AI-isms check
+    #[serde(default)]
+    pub model_prose:      String,           // override for prose / creative copy (AI Beta Reader, Blurb Builder)
     /// "manuscript" or "series"
     #[serde(default)]
     pub continuity_scope: String,
@@ -983,7 +988,14 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
     crate::reset_cancel();
     let database = app.state::<db::Db>();
     let run_ts = chrono::Utc::now().to_rfc3339();
-    let needs_ai = request.selected.iter().any(|s| s == "chapter_summaries" || s == "continuity_check");
+    let needs_ai = request.selected.iter().any(|s| {
+        s == "chapter_summaries"
+            || s == "continuity_check"
+            || s == "show_dont_tell"
+            || s == "ai_isms"
+            || super::craft_audits::is_craft_audit(s)
+            || matches!(s.as_str(), "ai_beta_reader" | "cliffhanger_score" | "hook_strength" | "pacing_curve")
+    });
 
     if needs_ai && (request.api_key.is_empty() || request.model.is_empty()) {
         return err("An API key and model are required for the selected reports. Set them in Settings.");
@@ -1112,6 +1124,72 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
             return ai;
         }
         if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    // ── Generic craft audits (StoryAuditor catalog) ───────────────────────
+    let model_craft = model_continuity;
+    for audit_id in super::craft_audits::MANUSCRIPT_AUDITS {
+        if !request.selected.iter().any(|s| s == *audit_id) { continue; }
+        let r = super::craft_audits::run_manuscript_craft_audit(
+            &app, &database, &request.folder, audit_id,
+            &request.provider, &request.api_key, model_craft, &request.bible_path,
+        ).await;
+        if !r.success { return r; }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+    for audit_id in super::craft_audits::SERIES_AUDITS {
+        if !request.selected.iter().any(|s| s == *audit_id) { continue; }
+        let r = super::craft_audits::run_series_craft_audit(
+            &app, &database, request.series_id, audit_id,
+            &request.provider, &request.api_key, model_craft, &request.bible_path,
+        ).await;
+        if !r.success { return r; }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    // ── Publish platform reports ──────────────────────────────────────────
+    let model_publish = if request.model_summaries.is_empty() { &request.model } else { &request.model_summaries };
+    let model_prose = if request.model_ai_isms.is_empty() { &request.model } else { &request.model_ai_isms };
+
+    if request.selected.iter().any(|s| s == "ai_beta_reader") {
+        let r = super::publish_audits::run_ai_beta_reader(
+            &app, &database, &request.folder,
+            &request.provider, &request.api_key, model_prose, &request.bible_path,
+        ).await;
+        if !r.success { return r; }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+    if request.selected.iter().any(|s| s == "cliffhanger_score") {
+        let r = super::publish_audits::run_cliffhanger_score(
+            &app, &database, &request.folder,
+            &request.provider, &request.api_key, model_publish,
+        ).await;
+        if !r.success { return r; }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+    if request.selected.iter().any(|s| s == "hook_strength") {
+        let r = super::publish_audits::run_hook_strength(
+            &app, &database, &request.folder,
+            &request.provider, &request.api_key, model_publish, &request.bible_path,
+        ).await;
+        if !r.success { return r; }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+    if request.selected.iter().any(|s| s == "pacing_curve") {
+        let r = super::publish_audits::run_pacing_curve(
+            &app, &database, &request.folder,
+            &request.provider, &request.api_key, model_publish,
+        ).await;
+        if !r.success { return r; }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+    if request.selected.iter().any(|s| s == "line_polish") {
+        let r = super::publish_audits::run_line_polish(&app, &database, &request.folder);
+        if !r.success { return r; }
+    }
+    if request.selected.iter().any(|s| s == "vellum_prep") {
+        let r = super::publish_audits::run_vellum_prep(&app, &database, &request.folder);
+        if !r.success { return r; }
     }
 
     emit(&app, "✓ Done.");

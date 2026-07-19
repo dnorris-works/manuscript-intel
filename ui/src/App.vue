@@ -17,6 +17,7 @@ import Sidebar from './components/Sidebar.vue';
 import AnalyzerPanel from './components/AnalyzerPanel.vue';
 import ReportsViewer from './components/ReportsViewer.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
+import HelpPanel from './components/HelpPanel.vue';
 import StoryForm from './components/StoryForm.vue';
 import SeriesForm from './components/SeriesForm.vue';
 import NewDocumentForm from './components/NewDocumentForm.vue';
@@ -49,7 +50,7 @@ provide('setAppMode', (mode: AppMode) => { appMode.value = mode; });
 
 // ── Panel state (within Analyzer mode) ────────────────────────────────────────
 
-type Panel = 'analyzer' | 'reports' | 'settings' | 'story-form' | 'series' | 'manuscript' | 'new-document';
+type Panel = 'analyzer' | 'reports' | 'settings' | 'help' | 'story-form' | 'series' | 'manuscript' | 'new-document';
 const activePanel = ref<Panel>('analyzer');
 const prevPanel = ref<Panel>('analyzer');
 /** Panel to restore after cancelling New Document (works across writing/analyzer). */
@@ -57,11 +58,11 @@ const panelBeforeNewDoc = ref<Panel>('analyzer');
 const modeBeforeNewDoc = ref<AppMode>('analyzer');
 
 function showPanel(name: Panel): void {
-  if (name === 'settings' && activePanel.value === 'settings') {
+  if ((name === 'settings' || name === 'help') && activePanel.value === name) {
     activePanel.value = prevPanel.value;
     return;
   }
-  if (name === 'settings' && activePanel.value !== 'settings') {
+  if ((name === 'settings' || name === 'help') && activePanel.value !== name) {
     prevPanel.value = activePanel.value;
   }
   activePanel.value = name;
@@ -233,6 +234,9 @@ onMounted(() => {
         @cancel="onDocumentFormCancel"
       />
 
+      <HelpPanel v-else-if="activePanel === 'help'" />
+      <SettingsPanel v-else-if="activePanel === 'settings'" />
+
       <!-- Writing mode -->
       <WritingPanel
         v-else-if="appMode === 'writing'"
@@ -245,7 +249,6 @@ onMounted(() => {
       <template v-else-if="appMode === 'analyzer'">
         <AnalyzerPanel v-if="activePanel === 'analyzer'" />
         <ReportsViewer v-if="activePanel === 'reports'" />
-        <SettingsPanel v-if="activePanel === 'settings'" />
         <StoryForm v-if="activePanel === 'story-form'" :story="editingStory" />
         <SeriesForm v-if="activePanel === 'series'" :series="editingSeries" />
         <ManuscriptViewer

@@ -542,7 +542,7 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
     // (id, label, description, platforms, depends_on,
     //  cost_truncation, cost_output_max, cost_per_chapter, cost_fixed_calls, model_slot, min_tier)
     let rows: &[(&str, &str, &str, &str, &str, i64, i64, i64, i64, &str, &str)] = &[
-        ("chapter_summaries", "Chapter Summaries", "Extract genre signals from each chapter of the manuscript.", "kdp,wide,craft", "", 8000, 600, 1, 0, "summaries", "basic"),
+        ("chapter_summaries", "Chapter Summaries", "Extract genre signals from each chapter of the manuscript.", "kdp,wide", "", 8000, 600, 1, 0, "summaries", "basic"),
         ("genre_analysis", "Genre Analysis", "Industry genre classification, KDP paths, comps, and reader demographic.", "kdp,wide", "chapter_summaries", 0, 1200, 0, 1, "genre", "capable"),
         ("genre_ranking", "Genre Ranking", "Score the manuscript against all known genres independently.", "kdp,wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "genre", "capable"),
         ("kdp_categories", "KDP Categories", "Find the best-fit Amazon categories with discoverability stats.", "kdp", "chapter_summaries,genre_analysis,genre_ranking", 0, 1200, 0, 2, "keywords", "basic"),
@@ -559,6 +559,31 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
         ("continuity_check", "Continuity Check", "AI-assisted scan for contradicted facts — within a manuscript or across a whole series.", "craft", "", 6000, 4000, 1, 3, "continuity", "capable"),
         ("show_dont_tell", "Show Don't Tell", "AI-assisted check for telling instead of showing — flags violations with surrounding manuscript text.", "craft", "", 4000, 4000, 1, 0, "showDontTell", "capable"),
         ("ai_isms", "AI-isms", "AI-assisted check for prose habits that often read as machine-generated — flags passages with surrounding manuscript text.", "craft", "", 4000, 4000, 1, 0, "aiIsms", "capable"),
+        // StoryAuditor craft audits
+        ("chekhovs_gun", "Chekhov's Gun", "Finds early significant elements and checks they pay off later.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("red_herring_vs_abandoned", "Red Herring vs Abandoned", "Separates intentional misdirection from dropped plot threads.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("foreshadowing_twist_fairness", "Foreshadowing & Twist Fairness", "Checks foreshadowing distribution and twist fairness.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("macguffin_clarity", "MacGuffin Clarity", "Checks the driving object or goal is clear and motivating.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("want_vs_need", "Want vs Need", "External want vs internal need and character growth.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("thematic_throughline", "Thematic Throughline", "Theme consistency across scenes, subplots, and arcs.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("mirror_foil_character", "Mirror/Foil Characters", "Reflect/contrast pairings and thematic payoff.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("pov_discipline", "POV Discipline", "POV shifts, head-hopping, and information leaks.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("story_beat_placement", "Story Beat Placement", "Beat timing vs story frameworks — early, late, or missing.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("scene_sequel_balance", "Scene/Sequel Balance", "Action scene vs reflective sequel ratio.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("timeline_flashback", "Timeline / Flashback", "Timeline and flashback clarity and purpose.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("dramatic_irony", "Dramatic Irony", "Reader-knows-more moments — tension, humor, or dread.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("stakes_escalation", "Stakes Escalation", "Rising stakes across the arc; plateaus and reversals.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("cross_book_setup_payoff", "Cross-Book Setup/Payoff", "Series setups planted earlier that must pay off later.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("series_pacing_comparator", "Series Pacing Comparator", "Pacing curves compared across books in a series.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        ("recurring_motif_theme_series", "Recurring Motif/Theme (Series)", "Motifs and themes tracked across the series.", "craft", "", 0, 4000, 0, 1, "continuity", "capable"),
+        // Publish platform (StoryAuditor marketing features)
+        ("ai_beta_reader", "AI Beta Reader", "Chapter-by-chapter reader reactions and put-it-down risk.", "publish", "", 4000, 1200, 1, 0, "prose", "strong"),
+        ("cliffhanger_score", "Cliffhanger Score", "How hard each chapter ending pulls into the next.", "publish", "", 4000, 500, 1, 0, "summaries", "basic"),
+        ("hook_strength", "Hook Strength", "Would a browsing reader keep going past page one?", "publish", "", 0, 1200, 0, 1, "summaries", "basic"),
+        ("pacing_curve", "Pacing Curve", "Where the story drags — per-chapter pace scores.", "publish", "", 4000, 600, 1, 0, "summaries", "basic"),
+        ("blurb_builder", "Blurb Builder", "Back-cover / Amazon description variants plus short-form and BookBub one-liners.", "publish", "", 0, 3000, 0, 1, "prose", "strong"),
+        ("line_polish", "Line-level Polish", "Filter words, echoes, adverbs, and passive voice (heuristic).", "publish", "", 0, 0, 0, 0, "default", "basic"),
+        ("vellum_prep", "Vellum & Atticus Prep", "Clean manuscript export for formatter import.", "publish", "", 0, 0, 0, 0, "default", "basic"),
     ];
 
     for (id, label, description, platforms, depends_on, trunc, out_max, per_ch, fixed, slot, tier) in rows {
@@ -1628,6 +1653,20 @@ pub fn get_document(conn: &Connection, story_folder: &str, doc_type: &str) -> Op
         "SELECT content FROM story_documents WHERE story_folder = ?1 AND doc_type = ?2 ORDER BY generated_at DESC LIMIT 1",
         params![story_folder, doc_type], |r| r.get(0)
     ).ok()
+}
+
+/// Distinct doc_types that have at least one saved document for this story.
+pub fn list_existing_doc_types(conn: &Connection, story_folder: &str) -> Vec<String> {
+    let mut stmt = match conn.prepare(
+        "SELECT DISTINCT doc_type FROM story_documents WHERE story_folder = ?1"
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map(params![story_folder], |r| r.get::<_, String>(0))
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
