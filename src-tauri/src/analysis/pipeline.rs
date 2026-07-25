@@ -1149,7 +1149,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
 
     // ── Publish platform reports ──────────────────────────────────────────
     let model_publish = if request.model_summaries.is_empty() { &request.model } else { &request.model_summaries };
-    let model_prose = if request.model_ai_isms.is_empty() { &request.model } else { &request.model_ai_isms };
+    let model_prose = if request.model_prose.is_empty() { &request.model } else { &request.model_prose };
 
     if request.selected.iter().any(|s| s == "ai_beta_reader") {
         let r = super::publish_audits::run_ai_beta_reader(
