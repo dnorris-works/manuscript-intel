@@ -3,7 +3,7 @@
 
 <template>
   <header id="titlebar" data-tauri-drag-region>
-    <span class="titlebar-label" data-tauri-drag-region>Manuscript Intel</span>
+    <span class="titlebar-label" data-tauri-drag-region>Loremetry Desktop</span>
   </header>
 </template>
 

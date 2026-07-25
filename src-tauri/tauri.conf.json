@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Manuscript Intel",
+  "productName": "Loremetry Desktop",
   "version": "0.1.0",
-  "identifier": "com.davidallennorris.manuscript-intel",
+  "identifier": "com.davidallennorris.loremetry-desktop",
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://127.0.0.1:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Manuscript Intel",
+        "title": "Loremetry Desktop",
         "width": 1100,
         "height": 750,
         "minWidth": 800,

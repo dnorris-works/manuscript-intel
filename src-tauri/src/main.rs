@@ -1,3 +1,3 @@
 fn main() {
-    manuscript_intel_lib::run();
+    loremetry_desktop_lib::run();
 }
