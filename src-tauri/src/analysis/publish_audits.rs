@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::AppHandle;
 
-use super::chapters::{build_combined_context, collect_chapters, extract_title};
+use super::chapters::{collect_chapters, extract_title};
 use super::craft_audits::build_opening_excerpt;
 use super::{emit, err, extract_json_object, GenreResult};
 use crate::db;
