@@ -1,18 +1,6 @@
 {
-  "name": "loremetry",
+  "name": "loremetry-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Loremetry - Desktop app & Web API for manuscript analysis",
-  "workspaces": [
-    "ui",
-    "web-api"
-  ],
-  "scripts": {
-    "install-all": "npm install && npm install --workspace=ui && npm install --workspace=web-api",
-    "dev": "concurrently \"npm run dev --workspace=web-api\" \"npm run dev --workspace=ui\" \"cargo tauri dev\"",
-    "build": "npm run build --workspace=web-api && npm run build --workspace=ui && cargo tauri build"
-  },
-  "devDependencies": {
-    "concurrently": "^8.2.2"
-  }
+  "description": "Loremetry Desktop - manuscript analysis app"
 }
