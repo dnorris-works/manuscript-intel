@@ -284,68 +284,97 @@ async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
         Err(e) => return ModelsResult { success: false, models: Vec::new(), error: format!("Client error: {}", e) },
     };
 
-    // Primary source: TokenMix's own models endpoint.
-    // These IDs are guaranteed to be accepted by the chat completions endpoint.
-    let tokenmix_models = fetch_tokenmix_models_legacy(&client, api_key).await;
-    if tokenmix_models.success && !tokenmix_models.models.is_empty() {
-        return tokenmix_models;
-    }
-
-    // Fallback: AIHubMix endpoint with pricing metadata.
+    // Try AIHubMix for richer pricing metadata.
     let resp = match client
         .get("https://aihubmix.com/api/v1/models?type=llm")
         .header("Authorization", format!("Bearer {}", api_key))
         .send()
         .await
     {
-        Ok(r) => r,
-        Err(_) => return tokenmix_models,
+        Ok(r) => Some(r),
+        Err(_) => None,
     };
 
-    let json: Value = match resp.json().await {
-        Ok(v) => v,
-        Err(_) => return tokenmix_models,
+    let aihub_models: Vec<ModelInfo> = match resp {
+        Some(resp) => {
+            let json: Value = match resp.json().await {
+                Ok(v) => v,
+                Err(_) => Value::Null,
+            };
+
+            if let Some(err) = json.get("error") {
+                let _msg = err["message"].as_str().unwrap_or("unknown");
+                Vec::new()
+            } else {
+                json["data"]
+                    .as_array()
+                    .unwrap_or(&Vec::new())
+                    .iter()
+                    .filter_map(|m| {
+                        let id = m["model_id"].as_str()
+                            .or_else(|| m["id"].as_str())
+                            .unwrap_or("");
+                        if id.is_empty() { return None; }
+
+                        Some(ModelInfo {
+                            id: id.to_string(),
+                            owned_by: m["owned_by"].as_str()
+                                .or_else(|| m["desc"].as_str().map(|d| &d[..d.len().min(40)]))
+                                .unwrap_or("")
+                                .to_string(),
+                            input_price: m["pricing"]["input"].as_f64(),
+                            output_price: m["pricing"]["output"].as_f64(),
+                        })
+                    })
+                    .collect()
+            }
+        }
+        None => Vec::new(),
     };
 
-    if let Some(err) = json.get("error") {
-        let msg = err["message"].as_str().unwrap_or("unknown");
-        return ModelsResult {
-            success: false, models: Vec::new(),
-            error: format!("API error: {}", msg),
-        };
-    }
+    // Primary source for IDs: TokenMix's own endpoint (accepted by chat completions).
+    let tokenmix_models = fetch_tokenmix_models_legacy(&client, api_key).await;
 
-    let models: Vec<ModelInfo> = json["data"]
-        .as_array()
-        .unwrap_or(&Vec::new())
-        .iter()
-        .filter_map(|m| {
-            let id = m["model_id"].as_str()
-                .or_else(|| m["id"].as_str())
-                .unwrap_or("");
-            if id.is_empty() { return None; }
+    if tokenmix_models.success && !tokenmix_models.models.is_empty() {
+        let mut price_map: std::collections::HashMap<String, (Option<f64>, Option<f64>, String)> = std::collections::HashMap::new();
+        for m in &aihub_models {
+            for key in tokenmix_model_candidates(&m.id) {
+                price_map.insert(key.to_ascii_lowercase(), (m.input_price, m.output_price, m.owned_by.clone()));
+            }
+        }
 
-            // Pricing: pass through raw values from API
-            let input_price = m["pricing"]["input"].as_f64();
-            let output_price = m["pricing"]["output"].as_f64();
-
-            Some(ModelInfo {
-                id: id.to_string(),
-                owned_by: m["owned_by"].as_str()
-                    .or_else(|| m["desc"].as_str().map(|d| &d[..d.len().min(40)]))
-                    .unwrap_or("")
-                    .to_string(),
-                input_price,
-                output_price,
+        let merged = tokenmix_models
+            .models
+            .into_iter()
+            .map(|mut m| {
+                if m.input_price.is_some() && m.output_price.is_some() {
+                    return m;
+                }
+                for key in tokenmix_model_candidates(&m.id) {
+                    if let Some((in_p, out_p, owner)) = price_map.get(&key.to_ascii_lowercase()) {
+                        if m.input_price.is_none() { m.input_price = *in_p; }
+                        if m.output_price.is_none() { m.output_price = *out_p; }
+                        if m.owned_by.trim().is_empty() && !owner.trim().is_empty() {
+                            m.owned_by = owner.clone();
+                        }
+                        if m.input_price.is_some() || m.output_price.is_some() {
+                            break;
+                        }
+                    }
+                }
+                m
             })
-        })
-        .collect();
+            .collect::<Vec<_>>();
 
-    if models.is_empty() {
-        return tokenmix_models;
+        return ModelsResult { success: true, models: merged, error: String::new() };
     }
 
-    ModelsResult { success: true, models, error: String::new() }
+    // If TokenMix endpoint returns nothing, fall back to AIHubMix list.
+    if !aihub_models.is_empty() {
+        return ModelsResult { success: true, models: aihub_models, error: String::new() };
+    }
+
+    tokenmix_models
 }
 
 /// Legacy /v1/models endpoint fallback (no pricing, no type filter)
