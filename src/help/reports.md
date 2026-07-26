@@ -1,4 +1,4 @@
-# Manuscript Intel — Report Reference
+# Loremetry Desktop — Report Reference
 
 This guide explains every report you can run from the Analyzer. Reports are grouped by platform tab. Some reports appear on more than one tab (for example Chapter Summaries on both KDP and Wide). Running a report once stores it for that story; the same result is visible wherever that report type is listed.
 

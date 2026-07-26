@@ -145,48 +145,101 @@ async fn call_tokenmix(
     max_tokens: u32,
     json_mode: bool,
 ) -> Result<String, String> {
-    let mut body = json!({
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user}
-        ]
-    });
-
-    if json_mode {
-        body["response_format"] = json!({"type": "json_object"});
-    }
-
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
-    let resp = client
-        .post("https://api.tokenmix.ai/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("TokenMix request failed: {}", e))?;
+    let mut last_err = String::new();
+    let candidates = tokenmix_model_candidates(model);
 
-    let json: Value = resp.json()
-        .await
-        .map_err(|e| format!("TokenMix response parse failed: {}", e))?;
+    for candidate in candidates {
+        let mut body = json!({
+            "model": candidate,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ]
+        });
 
-    if let Some(err) = json.get("error") {
-        let msg = err["message"].as_str().unwrap_or(
-            err.as_str().unwrap_or("unknown error")
-        );
-        return Err(format!("TokenMix error: {}", msg));
+        if json_mode {
+            body["response_format"] = json!({"type": "json_object"});
+        }
+
+        let resp = client
+            .post("https://api.tokenmix.ai/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("TokenMix request failed: {}", e))?;
+
+        let json: Value = resp.json()
+            .await
+            .map_err(|e| format!("TokenMix response parse failed: {}", e))?;
+
+        if let Some(err) = json.get("error") {
+            let msg = err["message"].as_str().unwrap_or(
+                err.as_str().unwrap_or("unknown error")
+            );
+            let msg_lc = msg.to_ascii_lowercase();
+            last_err = format!("TokenMix error: {}", msg);
+
+            // TokenMix model IDs can differ by provider prefix; retry with normalized variants.
+            if msg_lc.contains("model was not found") || msg_lc.contains("requested model was not found") {
+                continue;
+            }
+            return Err(last_err);
+        }
+
+        if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
+            return Ok(content.to_string());
+        }
+        return Err("TokenMix: empty response".to_string());
     }
 
-    json["choices"][0]["message"]["content"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| "TokenMix: empty response".to_string())
+    if last_err.is_empty() {
+        Err("TokenMix error: model not found for this API key.".to_string())
+    } else {
+        Err(last_err)
+    }
+}
+
+fn tokenmix_model_candidates(model: &str) -> Vec<String> {
+    let raw = model.trim();
+    if raw.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidates: Vec<String> = Vec::new();
+    let mut push_unique = |v: &str| {
+        let t = v.trim();
+        if t.is_empty() {
+            return;
+        }
+        if !candidates.iter().any(|c| c == t) {
+            candidates.push(t.to_string());
+        }
+    };
+
+    push_unique(raw);
+
+    if let Some((_, tail)) = raw.split_once(':') {
+        push_unique(tail);
+    }
+    if let Some((_, tail)) = raw.split_once('/') {
+        push_unique(tail);
+    }
+    if let Some(tail) = raw.rsplit(':').next() {
+        push_unique(tail);
+    }
+    if let Some(tail) = raw.rsplit('/').next() {
+        push_unique(tail);
+    }
+
+    candidates
 }
 
 // ── List models (async) ───────────────────────────────────────────────────────
@@ -231,7 +284,14 @@ async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
         Err(e) => return ModelsResult { success: false, models: Vec::new(), error: format!("Client error: {}", e) },
     };
 
-    // Use the new API endpoint with type=llm filter to get only chat models with pricing
+    // Primary source: TokenMix's own models endpoint.
+    // These IDs are guaranteed to be accepted by the chat completions endpoint.
+    let tokenmix_models = fetch_tokenmix_models_legacy(&client, api_key).await;
+    if tokenmix_models.success && !tokenmix_models.models.is_empty() {
+        return tokenmix_models;
+    }
+
+    // Fallback: AIHubMix endpoint with pricing metadata.
     let resp = match client
         .get("https://aihubmix.com/api/v1/models?type=llm")
         .header("Authorization", format!("Bearer {}", api_key))
@@ -239,15 +299,12 @@ async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
         .await
     {
         Ok(r) => r,
-        Err(_) => {
-            // Fallback to legacy endpoint if new API fails
-            return fetch_tokenmix_models_legacy(&client, api_key).await;
-        }
+        Err(_) => return tokenmix_models,
     };
 
     let json: Value = match resp.json().await {
         Ok(v) => v,
-        Err(_) => return fetch_tokenmix_models_legacy(&client, api_key).await,
+        Err(_) => return tokenmix_models,
     };
 
     if let Some(err) = json.get("error") {
@@ -285,7 +342,7 @@ async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
         .collect();
 
     if models.is_empty() {
-        return fetch_tokenmix_models_legacy(&client, api_key).await;
+        return tokenmix_models;
     }
 
     ModelsResult { success: true, models, error: String::new() }

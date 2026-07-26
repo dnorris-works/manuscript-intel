@@ -122,6 +122,8 @@ provide('openInWritingMode', openInWritingMode);
 function closeWritingDocument(): void {
   writingFilePath.value = '';
   writingChapterTitle.value = '';
+  appMode.value = 'analyzer';
+  activePanel.value = 'analyzer';
 }
 
 provide('closeWritingDocument', closeWritingDocument);

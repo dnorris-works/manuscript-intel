@@ -1915,7 +1915,7 @@ pub async fn get_sidebar_reports(db: tauri::State<'_, Db>, folder: String, platf
         });
     }
 
-    // Build result: only types that belong to the requested platform
+    // Build result: only saved report types for the requested platform.
     let groups: Vec<SidebarReportGroup> = all_types.into_iter()
         .filter(|(id, _, _)| {
             plat_map.get(id).map(|p| p.contains(&platform)).unwrap_or(false)
@@ -1925,6 +1925,7 @@ pub async fn get_sidebar_reports(db: tauri::State<'_, Db>, folder: String, platf
             let count = versions.len();
             SidebarReportGroup { doc_type: id, label, description, count, versions }
         })
+        .filter(|g| g.count > 0)
         .collect();
 
     Ok(groups)

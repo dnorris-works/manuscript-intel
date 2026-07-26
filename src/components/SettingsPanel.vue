@@ -62,9 +62,34 @@ function modelFitLabel(m: ModelInfo, fnKey: string): string {
   return ' ⚠';
 }
 
+function formatUsd(value: number): string {
+  if (value === 0) return '0';
+  if (value < 0.001) return value.toFixed(4);
+  if (value < 0.01) return value.toFixed(3);
+  return value.toFixed(2);
+}
+
+function modelPriceLabel(m: ModelInfo): string {
+  const inPrice = m.input_price;
+  const outPrice = m.output_price;
+
+  if (inPrice == null || outPrice == null) {
+    return 'pricing unavailable';
+  }
+
+  if (inPrice === 0 && outPrice === 0) {
+    return 'FREE (0/1K tokens)';
+  }
+
+  const total = inPrice + outPrice;
+  return `$${formatUsd(inPrice)} in + $${formatUsd(outPrice)} out = ~$${formatUsd(total)} /1K`;
+}
+
 function fnOptionLabel(m: ModelInfo, fnKey: string): string {
-  return m.id + modelFitLabel(m, fnKey);
-}const winningcatStatus = ref('');
+  return `${m.id} (${modelPriceLabel(m)})${modelFitLabel(m, fnKey)}`;
+}
+
+const winningcatStatus = ref('');
 const staleStatus = ref('');
 const showStaleRow = ref(false);
 const importDisabled = ref(false);
@@ -73,9 +98,7 @@ let lastImportedAt = '';
 function modelLabel(m: ModelInfo): string {
   let label = m.id;
   if (m.owned_by) label += ` (${m.owned_by})`;
-  if (m.input_price != null && m.output_price != null) {
-    label += ` — $${m.input_price}/$${m.output_price} per 1K tokens`;
-  }
+  label += ` — ${modelPriceLabel(m)}`;
   return label;
 }
 

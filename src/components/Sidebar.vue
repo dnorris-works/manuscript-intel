@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { inject, ref, watch, type Ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { storiesKey, reportsKey, platformKey, showPanelKey, openManuscriptEditorKey, seriesKey } from '../injectionKeys';
+import { storiesKey, reportsKey, platformKey, showPanelKey, seriesKey } from '../injectionKeys';
 import type { Story, Series } from '../types';
 import FileTreeNodes, { type FileTreeEntry } from './FileTreeNodes.vue';
 
@@ -11,7 +11,6 @@ const storiesCtx = inject(storiesKey)!;
 const reportsCtx = inject(reportsKey)!;
 const platformCtx = inject(platformKey)!;
 const showPanel = inject(showPanelKey)!;
-const openManuscriptEditor = inject(openManuscriptEditorKey)!;
 const seriesCtx = inject(seriesKey)!;
 
 const appMode = inject<Ref<'analyzer' | 'writing'>>('appMode')!;
@@ -32,10 +31,23 @@ const emit = defineEmits<{
 type SidebarMode = 'files' | 'reports';
 const sidebarMode = ref<SidebarMode>('files');
 
+type SidebarSection = 'stories' | 'workspace' | 'series' | 'tools';
+const sectionOpen = ref<Record<SidebarSection, boolean>>({
+  stories: true,
+  workspace: true,
+  series: true,
+  tools: true,
+});
+
+function toggleSection(section: SidebarSection): void {
+  sectionOpen.value[section] = !sectionOpen.value[section];
+}
+
 // ── File tree state ───────────────────────────────────────────────────────────
 
 const fileTree = ref<FileTreeEntry[]>([]);
 const expandedDirs = ref<Set<string>>(new Set());
+const fileTreeError = ref('');
 
 function relativeLocation(absolutePath: string): string {
   const root = storiesCtx.activeFolder.value.replace(/[/\\]+$/, '');
@@ -48,7 +60,12 @@ function relativeLocation(absolutePath: string): string {
 
 async function loadFileTree(): Promise<void> {
   const folder = storiesCtx.activeFolder.value;
-  if (!folder) { fileTree.value = []; return; }
+  if (!folder) {
+    fileTree.value = [];
+    fileTreeError.value = '';
+    return;
+  }
+  fileTreeError.value = '';
   try {
     fileTree.value = await invoke<FileTreeEntry[]>('list_manuscript_files', { folder });
     const expand = new Set<string>();
@@ -62,6 +79,15 @@ async function loadFileTree(): Promise<void> {
   } catch (e) {
     console.error('list_manuscript_files:', e);
     fileTree.value = [];
+    fileTreeError.value = 'Could not load files for this story folder.';
+  }
+}
+
+function switchSidebarMode(mode: SidebarMode): void {
+  sidebarMode.value = mode;
+  sectionOpen.value.workspace = true;
+  if (mode === 'files' && storiesCtx.activeFolder.value) {
+    void loadFileTree();
   }
 }
 
@@ -76,19 +102,7 @@ function onFileClick(entry: FileTreeEntry): void {
     toggleDir(entry.path);
     return;
   }
-  if (appMode.value === 'writing') {
-    openInWritingMode(entry.path, entry.name.replace(/\.md$/, ''));
-  } else {
-    openManuscriptEditor([{
-      filePath: entry.path,
-      chapterTitle: entry.name.replace(/\.md$/, ''),
-      tellingText: '',
-      context: '',
-      why: '',
-      severity: '',
-      reportType: 'show_dont_tell',
-    }], 0);
-  }
+  openInWritingMode(entry.path, entry.name.replace(/\.md$/, ''));
 }
 
 function onAddInFolder(entry: FileTreeEntry): void {
@@ -110,6 +124,12 @@ watch(fileTreeTick, () => {
 
 watch(sidebarMode, (mode) => {
   if (mode === 'files' && storiesCtx.activeFolder.value) loadFileTree();
+});
+
+watch(() => sectionOpen.value.workspace, (open) => {
+  if (open && sidebarMode.value === 'files' && storiesCtx.activeFolder.value) {
+    void loadFileTree();
+  }
 });
 
 watch(appMode, (mode) => {
@@ -138,7 +158,7 @@ function toggleExpand(docType: string): void {
 
 function onStoryClick(story: Story): void {
   storiesCtx.setActiveStory(story.id);
-  sidebarMode.value = 'files';
+  switchSidebarMode('files');
   showPanel('analyzer');
 }
 
@@ -189,140 +209,171 @@ function formatTimestamp(ts: string): string {
       <button class="mode-tab" :class="{ active: appMode === 'writing' }" @click="setAppMode('writing'); sidebarMode = 'files'">Writing</button>
     </div>
 
-    <div class="stories-section">
-      <div class="nav-label-row">
-        <span class="nav-label">Stories</span>
-        <button class="btn-new-story" title="New story" @click="onNewStory">+</button>
-      </div>
-      <div class="stories-list">
-        <div
-          v-if="storiesCtx.stories.value.length === 0"
-          class="sidebar-hint"
-        >
-          No stories yet. Click + to add one.
+    <section class="sidebar-block">
+      <button class="section-header" @click="toggleSection('stories')">
+        <span class="section-title">Stories</span>
+        <span class="section-chevron" :class="{ open: sectionOpen.stories }">&#8250;</span>
+      </button>
+      <div v-show="sectionOpen.stories" class="section-content stories-section">
+        <div class="nav-label-row">
+          <span class="nav-label">Library</span>
+          <button class="btn-new-story" title="New story" @click.stop="onNewStory">+</button>
         </div>
-        <div
-          v-for="story in storiesCtx.stories.value"
-          :key="story.id"
-          class="story-item"
-          :class="{ active: story.id === storiesCtx.activeStoryId.value }"
-          :title="story.folder"
-          @click="onStoryClick(story)"
-        >
-          <span class="story-item-name">{{ story.name }}</span>
+        <div class="stories-list">
+          <div
+            v-if="storiesCtx.stories.value.length === 0"
+            class="sidebar-hint"
+          >
+            No stories yet. Click + to add one.
+          </div>
+          <div
+            v-for="story in storiesCtx.stories.value"
+            :key="story.id"
+            class="story-item"
+            :class="{ active: story.id === storiesCtx.activeStoryId.value }"
+            :title="story.folder"
+            @click="onStoryClick(story)"
+          >
+            <span class="story-item-name">{{ story.name }}</span>
+            <button
+              class="story-item-edit"
+              :title="'Edit story'"
+              @click.stop="onEditStory(story)"
+            >&#x270E;</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sidebar-block" :class="{ disabled: !storiesCtx.activeFolder.value }">
+      <button class="section-header" @click="toggleSection('workspace')">
+        <span class="section-title">Workspace</span>
+        <span class="section-chevron" :class="{ open: sectionOpen.workspace }">&#8250;</span>
+      </button>
+
+      <div v-show="sectionOpen.workspace" class="section-content workspace-section">
+        <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint files-hint">
+          Select a story to browse files.
+        </div>
+
+        <div v-if="appMode === 'analyzer'" class="mode-toggle-row">
+          <div class="mode-toggle">
+            <button
+              class="mode-btn"
+              :class="{ active: sidebarMode === 'files' }"
+              @click="switchSidebarMode('files')"
+            >Files</button>
+            <button
+              class="mode-btn"
+              :class="{ active: sidebarMode === 'reports' }"
+              @click="switchSidebarMode('reports')"
+            >Reports</button>
+          </div>
           <button
-            class="story-item-edit"
-            :title="'Edit story'"
-            @click.stop="onEditStory(story)"
-          >&#x270E;</button>
+            v-if="sidebarMode === 'files' && storiesCtx.activeFolder.value"
+            class="btn-new-story"
+            title="New document"
+            @click="onAddDocument"
+          >+</button>
         </div>
-      </div>
-    </div>
 
-    <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint files-hint">
-      Select a story to browse files.
-    </div>
-
-    <div v-if="storiesCtx.activeFolder.value && appMode === 'analyzer'" class="mode-toggle-row">
-      <div class="mode-toggle">
-        <button
-          class="mode-btn"
-          :class="{ active: sidebarMode === 'files' }"
-          @click="sidebarMode = 'files'"
-        >Files</button>
-        <button
-          class="mode-btn"
-          :class="{ active: sidebarMode === 'reports' }"
-          @click="sidebarMode = 'reports'"
-        >Reports</button>
-      </div>
-      <button
-        v-if="sidebarMode === 'files'"
-        class="btn-new-story"
-        title="New document"
-        @click="onAddDocument"
-      >+</button>
-    </div>
-
-    <div v-if="(sidebarMode === 'files' || appMode === 'writing') && storiesCtx.activeFolder.value" class="files-section">
-      <div v-if="appMode === 'writing'" class="nav-label-row files-header">
-        <span class="nav-label">Files</span>
-        <button class="btn-new-story" title="New document" @click="onAddDocument">+</button>
-      </div>
-      <div v-if="fileTree.length === 0" class="sidebar-hint">No documents yet. Click + to create one.</div>
-      <FileTreeNodes
-        v-else
-        :entries="fileTree"
-        :expanded="expandedDirs"
-        @toggle="toggleDir"
-        @open="onFileClick"
-        @add="onAddInFolder"
-      />
-    </div>
-
-    <div v-if="sidebarMode === 'reports' && appMode === 'analyzer'" class="reports-section">
-      <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint">
-        Select a story to see reports.
-      </div>
-      <template v-else>
-        <div
-          v-for="type in reportsCtx.sidebarGroups.value"
-          :key="type.doc_type"
-          class="report-type"
-        >
-          <div
-            class="report-type-header"
-            :title="type.description"
-            @click="toggleExpand(type.doc_type)"
-          >
-            <span class="report-type-label">{{ type.label }}</span>
-            <span class="report-count">{{ type.count }}</span>
+        <div v-if="(sidebarMode === 'files' || appMode === 'writing') && storiesCtx.activeFolder.value" class="files-section">
+          <div v-if="appMode === 'writing'" class="nav-label-row files-header">
+            <span class="nav-label">Files</span>
+            <button class="btn-new-story" title="New document" @click="onAddDocument">+</button>
           </div>
+          <div v-if="fileTreeError" class="sidebar-hint">{{ fileTreeError }}</div>
+          <div v-else-if="fileTree.length === 0" class="sidebar-hint">No documents yet. Click + to create one.</div>
+          <FileTreeNodes
+            v-else
+            :entries="fileTree"
+            :expanded="expandedDirs"
+            @toggle="toggleDir"
+            @open="onFileClick"
+            @add="onAddInFolder"
+          />
+        </div>
 
-          <div
-            v-if="expanded === type.doc_type && type.versions.length > 0"
-            class="report-versions"
-          >
+        <div v-if="sidebarMode === 'reports' && appMode === 'analyzer'" class="reports-section">
+          <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint">
+            Select a story to see reports.
+          </div>
+          <div v-else-if="reportsCtx.sidebarGroups.value.length === 0" class="sidebar-hint">
+            No saved reports yet.
+          </div>
+          <template v-else>
             <div
-              v-for="version in type.versions"
-              :key="version.id"
-              class="report-version-item"
-              @click="onVersionClick(version.id)"
+              v-for="type in reportsCtx.sidebarGroups.value"
+              :key="type.doc_type"
+              class="report-type"
             >
-              <span class="version-label">{{ formatTimestamp(version.generated_at) }}</span>
-              <button class="version-delete" @click="onDeleteVersion(version.id, $event)" title="Delete this report">&times;</button>
+              <div
+                class="report-type-header"
+                :title="type.description"
+                @click="toggleExpand(type.doc_type)"
+              >
+                <span class="report-type-label">{{ type.label }}</span>
+                <span class="report-count">{{ type.count }}</span>
+              </div>
+
+              <div
+                v-if="expanded === type.doc_type && type.versions.length > 0"
+                class="report-versions"
+              >
+                <div
+                  v-for="version in type.versions"
+                  :key="version.id"
+                  class="report-version-item"
+                  @click="onVersionClick(version.id)"
+                >
+                  <span class="version-label">{{ formatTimestamp(version.generated_at) }}</span>
+                  <button class="version-delete" @click="onDeleteVersion(version.id, $event)" title="Delete this report">&times;</button>
+                </div>
+              </div>
             </div>
+          </template>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="appMode === 'analyzer'" class="sidebar-block">
+      <button class="section-header" @click="toggleSection('series')">
+        <span class="section-title">Series</span>
+        <span class="section-chevron" :class="{ open: sectionOpen.series }">&#8250;</span>
+      </button>
+      <div v-show="sectionOpen.series" class="section-content series-section">
+        <div class="nav-label-row">
+          <span class="nav-label">Collections</span>
+          <button class="btn-new-story" title="New series" @click.stop="onNewSeries">+</button>
+        </div>
+        <div class="series-list">
+          <div
+            v-for="s in seriesCtx.series.value"
+            :key="s.id"
+            class="story-item"
+            @click="onEditSeries(s)"
+          >
+            <span class="story-item-name">{{ s.name }}</span>
+            <span class="series-book-count">{{ s.books.length }}</span>
           </div>
         </div>
-      </template>
-    </div>
-
-    <div v-if="appMode === 'analyzer'" class="series-section">
-      <div class="nav-label-row">
-        <span class="nav-label">Series</span>
-        <button class="btn-new-story" title="New series" @click="onNewSeries">+</button>
       </div>
-      <div class="series-list">
-        <div
-          v-for="s in seriesCtx.series.value"
-          :key="s.id"
-          class="story-item"
-          @click="onEditSeries(s)"
-        >
-          <span class="story-item-name">{{ s.name }}</span>
-          <span class="series-book-count">{{ s.books.length }}</span>
-        </div>
-      </div>
-    </div>
+    </section>
 
-    <div class="nav-section settings-section">
-      <button class="nav-item" @click="showPanel('help')">
-        Help
+    <section class="sidebar-block settings-section">
+      <button class="section-header" @click="toggleSection('tools')">
+        <span class="section-title">Utilities</span>
+        <span class="section-chevron" :class="{ open: sectionOpen.tools }">&#8250;</span>
       </button>
-      <button class="nav-item" @click="showPanel('settings')">
-        Settings
-      </button>
-    </div>
+      <div v-show="sectionOpen.tools" class="section-content nav-section">
+        <button class="nav-item" @click="showPanel('help')">
+          Help
+        </button>
+        <button class="nav-item" @click="showPanel('settings')">
+          Settings
+        </button>
+      </div>
+    </section>
   </aside>
 </template>
 
@@ -339,6 +390,115 @@ function formatTimestamp(ts: string): string {
 
 .nav-section {
   padding: 0 12px 8px;
+}
+
+.sidebar-block {
+  margin: 0 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 85%, black 15%);
+  overflow: hidden;
+}
+
+.sidebar-block.disabled {
+  opacity: 0.88;
+}
+
+.section-header {
+  width: 100%;
+  border: 0;
+  background: color-mix(in srgb, var(--surface2) 65%, transparent 35%);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.section-header:hover {
+  background: color-mix(in srgb, var(--surface2) 80%, transparent 20%);
+}
+
+.section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.section-chevron {
+  font-size: 16px;
+  color: var(--text-muted);
+  transform: rotate(90deg);
+  transition: transform 0.16s ease;
+}
+
+.section-chevron.open {
+  transform: rotate(270deg);
+}
+
+.section-content {
+  padding-bottom: 6px;
+  padding-right: 0;
+  overflow-y: auto;
+  max-height: 28vh;
+}
+
+.section-content,
+.stories-section,
+.files-section,
+.reports-section,
+.series-section {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 55%, transparent 45%) transparent;
+}
+
+.section-content::-webkit-scrollbar,
+.stories-section::-webkit-scrollbar,
+.files-section::-webkit-scrollbar,
+.reports-section::-webkit-scrollbar,
+.series-section::-webkit-scrollbar {
+  width: 6px;
+}
+
+.section-content::-webkit-scrollbar-track,
+.stories-section::-webkit-scrollbar-track,
+.files-section::-webkit-scrollbar-track,
+.reports-section::-webkit-scrollbar-track,
+.series-section::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 4px 0;
+}
+
+.section-content::-webkit-scrollbar-thumb,
+.stories-section::-webkit-scrollbar-thumb,
+.files-section::-webkit-scrollbar-thumb,
+.reports-section::-webkit-scrollbar-thumb,
+.series-section::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 55%, transparent 45%);
+  border-radius: 999px;
+}
+
+.section-content::-webkit-scrollbar-thumb:hover,
+.stories-section::-webkit-scrollbar-thumb:hover,
+.files-section::-webkit-scrollbar-thumb:hover,
+.reports-section::-webkit-scrollbar-thumb:hover,
+.series-section::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 72%, transparent 28%);
+}
+
+.workspace-section {
+  max-height: 44vh;
+}
+
+.series-section {
+  max-height: 20vh;
+}
+
+.settings-section .section-content {
+  max-height: 16vh;
 }
 
 .mode-tabs {
@@ -371,9 +531,7 @@ function formatTimestamp(ts: string): string {
 }
 
 .settings-section {
-  margin-top: auto;
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
+  margin-top: 0;
 }
 
 .nav-label {
@@ -433,10 +591,8 @@ function formatTimestamp(ts: string): string {
 }
 
 .stories-section {
-  padding: 0;
+  padding: 0 0 4px;
   flex: 0 0 auto;
-  max-height: 28vh;
-  overflow-y: auto;
   min-height: 0;
 }
 
@@ -447,7 +603,13 @@ function formatTimestamp(ts: string): string {
 .files-section {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 0 6px;
+  padding: 0 0 0 8px;
+  min-height: 120px;
+}
+
+.workspace-section {
+  display: flex;
+  flex-direction: column;
   min-height: 120px;
 }
 
@@ -456,7 +618,7 @@ function formatTimestamp(ts: string): string {
 }
 
 .series-section {
-  padding: 0;
+  padding: 0 0 4px;
   flex: 0 0 auto;
 }
 
@@ -515,7 +677,7 @@ function formatTimestamp(ts: string): string {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 4px 10px 8px;
+  margin: 6px 10px 8px;
 }
 
 .mode-toggle {
@@ -557,6 +719,7 @@ function formatTimestamp(ts: string): string {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+  padding: 0 0 6px 8px;
 }
 
 .report-type {

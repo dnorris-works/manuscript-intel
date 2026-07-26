@@ -81,6 +81,8 @@ pub fn run() {
             db::get_sidebar_reports,
             settings::load_ui_settings,
             settings::save_ui_settings,
+            settings::load_app_state,
+            settings::save_app_state,
             db::list_series_cmd,
             db::create_series_cmd,
             db::delete_series_cmd,

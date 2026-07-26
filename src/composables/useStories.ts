@@ -18,6 +18,19 @@ const activeFolder = computed<string>(() => {
   return activeStory.value?.folder || '';
 });
 
+async function saveActiveStoryToAppState(id: string | null): Promise<void> {
+  try {
+    const state = await invoke<AppStateRow>('load_app_state');
+    await invoke<AppStateRow>('save_app_state', {
+      state: { platform: state.platform || 'kdp', active_story_id: id || '' },
+    });
+  } catch {
+    await invoke<AppStateRow>('save_app_state', {
+      state: { platform: 'kdp', active_story_id: id || '' },
+    });
+  }
+}
+
 async function loadStories(): Promise<void> {
   const result = await invoke<StoriesResult>('list_stories');
   stories.value = result.success ? result.stories : [];
@@ -29,26 +42,27 @@ async function loadStories(): Promise<void> {
     // keep current selection
   }
 
-  // If the stored active story no longer exists, clear it
-  if (activeStoryId.value && !stories.value.find(s => s.id === activeStoryId.value)) {
-    setActiveStory(null);
+  // Resolve startup selection:
+  // 1) keep stored selection if it exists
+  // 2) otherwise pick the first story (if any) and persist it
+  // 3) if no stories exist, clear persisted selection
+  const hasValidStored = !!activeStoryId.value && stories.value.some(s => s.id === activeStoryId.value);
+  if (hasValidStored) {
+    return;
+  }
+
+  const fallbackId = stories.value[0]?.id ?? null;
+  activeStoryId.value = fallbackId;
+  await saveActiveStoryToAppState(fallbackId);
+
+  if (!fallbackId) {
+    activeStoryId.value = null;
   }
 }
 
 function setActiveStory(id: string | null): void {
   activeStoryId.value = id;
-  void (async () => {
-    try {
-      const state = await invoke<AppStateRow>('load_app_state');
-      await invoke<AppStateRow>('save_app_state', {
-        state: { platform: state.platform || 'kdp', active_story_id: id || '' },
-      });
-    } catch {
-      await invoke<AppStateRow>('save_app_state', {
-        state: { platform: 'kdp', active_story_id: id || '' },
-      });
-    }
-  })();
+  void saveActiveStoryToAppState(id);
 }
 
 async function addStory(name: string, folder: string): Promise<StoriesResult> {

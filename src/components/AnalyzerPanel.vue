@@ -289,7 +289,6 @@ function onStop(): void {
 
 <template>
   <div class="panel analyzer-panel">
-    <h2 class="panel-title">Analyzer</h2>
     <p class="panel-desc">
       {{ storiesCtx.activeStory.value ? `Story: ${storiesCtx.activeStory.value.name}` : 'Select or create a story to begin.' }}
     </p>
