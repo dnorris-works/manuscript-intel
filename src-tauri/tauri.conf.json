@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.davidallennorris.loremetry-desktop",
   "build": {
-    "frontendDist": "../ui/dist",
+    "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
   },
   "app": {
     "windows": [
