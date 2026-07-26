@@ -3,7 +3,6 @@
 # Starts it in a new session so VS Code task teardown cannot kill it.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-UI="$ROOT/ui"
 LOG=/tmp/manuscript-intel-vite.log
 PIDFILE=/tmp/manuscript-intel-vite.pid
 
@@ -26,13 +25,13 @@ fi
 
 echo "Starting Vite…"
 # New session + detached: survives the VS Code task shell exiting
-python3 - "$UI" "$LOG" "$PIDFILE" <<'PY'
+python3 - "$ROOT" "$LOG" "$PIDFILE" <<'PY'
 import os, subprocess, sys
-ui, log, pidfile = sys.argv[1], sys.argv[2], sys.argv[3]
-os.chdir(ui)
+root, log, pidfile = sys.argv[1], sys.argv[2], sys.argv[3]
+os.chdir(root)
 with open(log, "ab", buffering=0) as out:
     proc = subprocess.Popen(
-        ["npm", "run", "dev"],
+        ["pnpm", "dev"],
         stdin=subprocess.DEVNULL,
         stdout=out,
         stderr=subprocess.STDOUT,

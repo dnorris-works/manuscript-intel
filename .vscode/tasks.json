@@ -37,7 +37,7 @@
       "command": "bash",
       "args": ["${workspaceFolder}/.vscode/ensure-ui-dev.sh"],
       "options": {
-        "cwd": "${workspaceFolder}/ui"
+        "cwd": "${workspaceFolder}"
       },
       "presentation": {
         "reveal": "always",
@@ -50,10 +50,10 @@
     {
       "label": "ui:dev",
       "type": "shell",
-      "command": "npm",
-      "args": ["run", "dev"],
+      "command": "pnpm",
+      "args": ["dev"],
       "options": {
-        "cwd": "${workspaceFolder}/ui"
+        "cwd": "${workspaceFolder}"
       },
       "isBackground": true,
       "presentation": {
@@ -81,10 +81,10 @@
     {
       "label": "ui:build",
       "type": "shell",
-      "command": "npm",
-      "args": ["run", "build"],
+      "command": "pnpm",
+      "args": ["build"],
       "options": {
-        "cwd": "${workspaceFolder}/ui"
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
     },
@@ -145,7 +145,7 @@
       "command": "bash",
       "args": [
         "-lc",
-        "PIDFILE=/tmp/manuscript-intel-vite.pid; if [[ -f \"$PIDFILE\" ]]; then kill \"$(cat \"$PIDFILE\")\" 2>/dev/null || true; rm -f \"$PIDFILE\"; fi; pkill -f '/Manuscript Intel/ui/node_modules/.bin/vite' 2>/dev/null || true; lsof -tiTCP:5173 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true; echo 'Stopped Vite / :5173 listeners.'"
+        "PIDFILE=/tmp/manuscript-intel-vite.pid; if [[ -f \"$PIDFILE\" ]]; then kill \"$(cat \"$PIDFILE\")\" 2>/dev/null || true; rm -f \"$PIDFILE\"; fi; pkill -f '/Manuscript Intel/node_modules/.bin/vite' 2>/dev/null || true; lsof -tiTCP:5173 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true; echo 'Stopped Vite / :5173 listeners.'"
       ],
       "problemMatcher": [],
       "presentation": {
