@@ -19,6 +19,8 @@ const dataforseoTestStatus = ref('');
 
 type ModelSort = 'price' | 'provider';
 const modelSort = ref<ModelSort>('price');
+const pricedOnly = ref(false);
+const freeOnly = ref(false);
 
 const sortedModels = computed(() => {
   return [...settingsCtx.models.value].sort((a, b) => {
@@ -30,6 +32,21 @@ const sortedModels = computed(() => {
     const priceA = a.input_price ?? Infinity;
     const priceB = b.input_price ?? Infinity;
     return priceA - priceB;
+  });
+});
+
+const filteredModels = computed(() => {
+  return sortedModels.value.filter((m) => {
+    const hasBothPrices = m.input_price != null && m.output_price != null;
+    const isFree = isModelFreeLike(m);
+
+    if (freeOnly.value) {
+      return isFree;
+    }
+    if (pricedOnly.value) {
+      return hasBothPrices;
+    }
+    return true;
   });
 });
 
@@ -69,20 +86,35 @@ function formatUsd(value: number): string {
   return value.toFixed(2);
 }
 
+function isModelFreeLike(m: ModelInfo): boolean {
+  const hasBothPrices = m.input_price != null && m.output_price != null;
+  const byPrice = hasBothPrices && m.input_price === 0 && m.output_price === 0;
+  const byName = /(^|[\\/:_-])free([\\/:_-]|$)/i.test(m.id) || /free/i.test(m.owned_by || '');
+  return byPrice || byName;
+}
+
 function modelPriceLabel(m: ModelInfo): string {
   const inPrice = m.input_price;
   const outPrice = m.output_price;
 
-  if (inPrice == null || outPrice == null) {
+  if (inPrice == null && outPrice == null) {
+    if (isModelFreeLike(m)) return 'FREE (provider-labeled; price not published)';
     return 'pricing unavailable';
   }
 
-  if (inPrice === 0 && outPrice === 0) {
+  const inText = inPrice == null ? 'in unknown' : `$${formatUsd(inPrice)} in`;
+  const outText = outPrice == null ? 'out unknown' : `$${formatUsd(outPrice)} out`;
+
+  if (isModelFreeLike(m) && inPrice === 0 && outPrice === 0) {
     return 'FREE (0/1K tokens)';
   }
 
-  const total = inPrice + outPrice;
-  return `$${formatUsd(inPrice)} in + $${formatUsd(outPrice)} out = ~$${formatUsd(total)} /1K`;
+  if (inPrice != null && outPrice != null) {
+    const total = inPrice + outPrice;
+    return `${inText} + ${outText} = ~$${formatUsd(total)} /1K`;
+  }
+
+  return `${inText} + ${outText} /1K`;
 }
 
 function fnOptionLabel(m: ModelInfo, fnKey: string): string {
@@ -234,11 +266,14 @@ async function onRemoveStale(): Promise<void> {
       </label>
       <div class="model-row">
         <select v-model="settingsCtx.modelAssignments.value.default">
-          <option v-if="sortedModels.length === 0" value="" disabled>
+          <option v-if="settingsCtx.models.value.length === 0" value="" disabled>
             No models loaded
           </option>
+          <option v-else-if="filteredModels.length === 0" value="" disabled>
+            No models match current filters
+          </option>
           <option
-            v-for="m in sortedModels"
+            v-for="m in filteredModels"
             :key="m.id"
             :value="m.id"
           >{{ modelLabel(m) }}</option>
@@ -254,9 +289,26 @@ async function onRemoveStale(): Promise<void> {
         <button class="model-sort-btn" :class="{ active: modelSort === 'provider' }" @click="modelSort = 'provider'">Provider</button>
       </div>
 
+      <!-- Price filters -->
+      <div v-if="sortedModels.length > 0" class="model-filter-row">
+        <label class="model-filter-opt">
+          <input type="checkbox" v-model="pricedOnly" :disabled="freeOnly" />
+          Priced only
+        </label>
+        <label class="model-filter-opt">
+          <input type="checkbox" v-model="freeOnly" />
+          Free only
+        </label>
+        <span class="model-filter-count">{{ filteredModels.length }} shown</span>
+      </div>
+
       <!-- Per-function model assignments -->
       <div v-if="sortedModels.length > 0" class="model-assignments">
         <div class="model-assign-header">Model per function</div>
+
+        <div v-if="filteredModels.length === 0" class="model-filter-empty">
+          No models match the current filters. Disable filters to see all models.
+        </div>
 
         <div class="model-assign-row">
           <div class="model-assign-label">
@@ -265,7 +317,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.summaries">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'summaries') }}</option>
+            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'summaries') }}</option>
           </select>
         </div>
 
@@ -276,7 +328,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.genre">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'genre') }}</option>
+            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'genre') }}</option>
           </select>
         </div>
 
@@ -287,7 +339,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.keywords">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'keywords') }}</option>
+            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'keywords') }}</option>
           </select>
         </div>
 
@@ -298,7 +350,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.continuity">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'continuity') }}</option>
+            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'continuity') }}</option>
           </select>
         </div>
 
@@ -309,7 +361,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.showDontTell">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'showDontTell') }}</option>
+            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'showDontTell') }}</option>
           </select>
         </div>
 
@@ -320,7 +372,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.aiIsms">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'aiIsms') }}</option>
+            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'aiIsms') }}</option>
           </select>
         </div>
 
@@ -331,7 +383,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.prose">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'prose') }}</option>
+            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'prose') }}</option>
           </select>
         </div>
       </div>
@@ -560,6 +612,33 @@ async function onRemoveStale(): Promise<void> {
   gap: 6px;
 }
 
+.model-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.model-filter-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.model-filter-opt input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+.model-filter-count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .model-sort-label {
   font-size: 11px;
   color: var(--text-muted);
@@ -598,6 +677,12 @@ async function onRemoveStale(): Promise<void> {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.model-filter-empty {
+  font-size: 12px;
   color: var(--text-muted);
   margin-bottom: 10px;
 }

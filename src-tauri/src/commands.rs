@@ -266,7 +266,7 @@ pub async fn list_models(
     api_key: String,
 ) -> Result<ModelsResult, String> {
     Ok(match provider.as_str() {
-        "tokenmix" => fetch_tokenmix_models(&api_key).await,
+        "tokenmix" => fetch_tokenmix_models(&db, &api_key).await,
         "claude" => fetch_claude_models(&db),
         _ => ModelsResult {
             success: false, models: Vec::new(),
@@ -275,7 +275,7 @@ pub async fn list_models(
     })
 }
 
-async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
+async fn fetch_tokenmix_models(db: &crate::db::Db, api_key: &str) -> ModelsResult {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
@@ -336,10 +336,40 @@ async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
     let tokenmix_models = fetch_tokenmix_models_legacy(&client, api_key).await;
 
     if tokenmix_models.success && !tokenmix_models.models.is_empty() {
+        let claude_catalog = {
+            let conn = match db.0.lock() {
+                Ok(c) => c,
+                Err(_) => {
+                    return ModelsResult {
+                        success: true,
+                        models: tokenmix_models.models,
+                        error: String::new(),
+                    };
+                }
+            };
+            crate::db::list_provider_models(&conn, "claude")
+        };
+
         let mut price_map: std::collections::HashMap<String, (Option<f64>, Option<f64>, String)> = std::collections::HashMap::new();
         for m in &aihub_models {
             for key in tokenmix_model_candidates(&m.id) {
                 price_map.insert(key.to_ascii_lowercase(), (m.input_price, m.output_price, m.owned_by.clone()));
+            }
+        }
+        for m in &claude_catalog {
+            for key in tokenmix_model_candidates(&m.id) {
+                price_map.insert(
+                    key.to_ascii_lowercase(),
+                    (m.input_price, m.output_price, m.owned_by.clone()),
+                );
+            }
+
+            // Alias support for TokenMix anthropic naming like "claude-opus-4.6".
+            if let Some(alias) = claude_price_alias(&m.id) {
+                price_map.insert(
+                    alias.to_ascii_lowercase(),
+                    (m.input_price, m.output_price, m.owned_by.clone()),
+                );
             }
         }
 
@@ -375,6 +405,18 @@ async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
     }
 
     tokenmix_models
+}
+
+fn claude_price_alias(seed_id: &str) -> Option<String> {
+    // Map seeded ids to common TokenMix aliases.
+    match seed_id {
+        "claude-opus-4-20250514" => Some("claude-opus-4.6".to_string()),
+        "claude-sonnet-4-20250514" => Some("claude-sonnet-4".to_string()),
+        "claude-haiku-4-5-20251001" => Some("claude-haiku-4.5".to_string()),
+        "claude-3-5-sonnet-20241022" => Some("claude-3.5-sonnet".to_string()),
+        "claude-3-5-haiku-20241022" => Some("claude-3.5-haiku".to_string()),
+        _ => None,
+    }
 }
 
 /// Legacy /v1/models endpoint fallback (no pricing, no type filter)
