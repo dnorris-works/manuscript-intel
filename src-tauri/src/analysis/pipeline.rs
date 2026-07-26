@@ -27,6 +27,11 @@ use super::keywords::{
 pub struct AnalysisState {
     pub has_folder:                 bool,
     pub summary_count:              usize,
+    pub summary_chapter_count:      usize,
+    pub summary_missing_count:      usize,
+    pub summary_stale_count:        usize,
+    pub summary_missing_files:      Vec<String>,
+    pub summary_stale_files:        Vec<String>,
     pub has_genre_data:             bool,
     pub has_full_report:            bool,
     pub has_keywords:               bool,
@@ -75,10 +80,52 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
         let folder_path = PathBuf::from(&folder);
         let database    = app.state::<db::Db>();
         let conn        = database.0.lock().unwrap();
+        let chapters    = collect_chapters(&folder_path);
+        let summary_updates = db::load_chapter_summary_updates(&conn, &folder);
+
+        let mut summary_missing_count = 0usize;
+        let mut summary_stale_count = 0usize;
+        let mut summary_missing_files: Vec<String> = Vec::new();
+        let mut summary_stale_files: Vec<String> = Vec::new();
+
+        for chapter in &chapters {
+            let Some(file) = chapter.file_name().map(|f| f.to_string_lossy().to_string()) else {
+                continue;
+            };
+
+            let Some(updated_at) = summary_updates.get(&file) else {
+                summary_missing_count += 1;
+                summary_missing_files.push(file);
+                continue;
+            };
+
+            let summary_time = chrono::DateTime::parse_from_rfc3339(updated_at)
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc));
+            let file_time = std::fs::metadata(chapter)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(chrono::DateTime::<chrono::Utc>::from);
+
+            if let (Some(ft), Some(st)) = (file_time, summary_time) {
+                if ft > st {
+                    summary_stale_count += 1;
+                    summary_stale_files.push(file);
+                }
+            } else {
+                summary_stale_count += 1;
+                summary_stale_files.push(file);
+            }
+        }
 
         AnalysisState {
             has_folder:                 folder_path.exists(),
             summary_count:              db::chapter_summary_count(&conn, &folder) as usize,
+            summary_chapter_count:      chapters.len(),
+            summary_missing_count,
+            summary_stale_count,
+            summary_missing_files,
+            summary_stale_files,
             has_genre_data:             db::load_genre_data(&conn, &folder).is_some(),
             has_full_report:            db::get_document(&conn, &folder, "full_report").is_some(),
             has_keywords:               db::load_kdp_keywords(&conn, &folder).is_some(),

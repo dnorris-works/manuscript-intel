@@ -42,6 +42,7 @@ export interface AnalysisContext {
   runAnalyze: (folder: string, forceResummarize: boolean, platform: string) => Promise<void>;
   runCraftAnalysis: (folder: string, selected: string[], continuityScope: ContinuityScope) => Promise<void>;
   runMarketIntel: (folder: string) => Promise<void>;
+  runSummaries: (folder: string) => Promise<void>;
   cancelOperation: () => Promise<void>;
   clearLog: () => void;
   appendLog: (msg: string) => void;

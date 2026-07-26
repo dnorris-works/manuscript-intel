@@ -38,7 +38,6 @@ const existsMap = computed(() => {
   if (!state) return {} as Record<string, boolean>;
   const docs = new Set(state.existing_docs || []);
   const map: Record<string, boolean> = {
-    chapter_summaries: state.summary_count > 0,
     genre_analysis: state.has_genre_data,
     genre_ranking: state.has_genre_ranking,
     kdp_categories: state.has_categories,
@@ -67,11 +66,45 @@ const existsMap = computed(() => {
 const visibleReports = computed(() => {
   const plat = platformCtx.platform.value;
   return reportTypes.value
-    .filter(r => r.platforms.includes(plat))
+    .filter(r => r.platforms.includes(plat) && r.id !== 'chapter_summaries')
     .map(r => ({
       ...r,
       exists: existsMap.value[r.id] ?? false,
     }));
+});
+
+const summaryStatus = computed(() => {
+  const s = analysisCtx.analysisState.value;
+  if (!s || !storiesCtx.activeFolder.value) {
+    return { needsRefresh: false, text: 'Select a story to manage chapter summaries.' };
+  }
+  if (s.summary_chapter_count === 0) {
+    return { needsRefresh: false, text: 'No manuscript chapters found yet.' };
+  }
+  if (s.summary_missing_count > 0 || s.summary_stale_count > 0) {
+    const parts: string[] = [];
+    if (s.summary_missing_count > 0) parts.push(`${s.summary_missing_count} new/un-summarized`);
+    if (s.summary_stale_count > 0) parts.push(`${s.summary_stale_count} changed since summary`);
+    return {
+      needsRefresh: true,
+      text: `Chapter summaries need refresh: ${parts.join(', ')}.`
+    };
+  }
+  return {
+    needsRefresh: false,
+    text: `Chapter summaries are up to date (${s.summary_count}/${s.summary_chapter_count}).`
+  };
+});
+
+const summaryIssueFiles = computed(() => {
+  const s = analysisCtx.analysisState.value;
+  if (!s) {
+    return { missing: [] as string[], stale: [] as string[] };
+  }
+  return {
+    missing: s.summary_missing_files || [],
+    stale: s.summary_stale_files || [],
+  };
 });
 
 const getReportsDisabled = computed(() => {
@@ -258,6 +291,10 @@ watch(() => reportTypes.value, () => fetchCostEstimates());
 
 function onGetReports(): void {
   const folder = storiesCtx.activeFolder.value;
+  if (summaryStatus.value.needsRefresh) {
+    alert('Chapter summaries are out of date. Refresh summaries first, then run reports.');
+    return;
+  }
   hasRun.value = true;
   const plat = platformCtx.platform.value;
   if (plat === 'craft' || plat === 'publish') {
@@ -274,6 +311,11 @@ function onGetReports(): void {
   } else {
     analysisCtx.runAnalyze(folder, forceResummarize.value, plat);
   }
+}
+
+function onRefreshSummaries(): void {
+  const folder = storiesCtx.activeFolder.value;
+  analysisCtx.runSummaries(folder);
 }
 
 function onMarketIntel(): void {
@@ -347,6 +389,30 @@ function onStop(): void {
         <input v-model="forceResummarize" type="checkbox" />
         Force re-summarize
       </label>
+    </div>
+
+    <div class="summary-status" :class="{ stale: summaryStatus.needsRefresh }">
+      <span>{{ summaryStatus.text }}</span>
+      <button
+        class="btn btn-secondary btn-sm"
+        :disabled="analysisCtx.isWorking.value || !storiesCtx.activeFolder.value"
+        @click="onRefreshSummaries"
+      >Refresh Summaries</button>
+    </div>
+
+    <div v-if="summaryStatus.needsRefresh" class="summary-issues">
+      <div v-if="summaryIssueFiles.missing.length > 0" class="summary-issue-block">
+        <div class="summary-issue-title">Missing summaries:</div>
+        <ul class="summary-file-list">
+          <li v-for="f in summaryIssueFiles.missing" :key="`missing-${f}`">{{ f }}</li>
+        </ul>
+      </div>
+      <div v-if="summaryIssueFiles.stale.length > 0" class="summary-issue-block">
+        <div class="summary-issue-title">Changed since summarized:</div>
+        <ul class="summary-file-list">
+          <li v-for="f in summaryIssueFiles.stale" :key="`stale-${f}`">{{ f }}</li>
+        </ul>
+      </div>
     </div>
 
     <!-- Continuity Check scope (only relevant when that report is selected) -->
@@ -602,6 +668,58 @@ function onStop(): void {
 .btn-secondary:hover:not(:disabled) {
   color: var(--text);
   border-color: var(--accent);
+}
+
+.btn-sm {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.summary-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.summary-status.stale {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.summary-issues {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.summary-issue-block + .summary-issue-block {
+  margin-top: 8px;
+}
+
+.summary-issue-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.summary-file-list {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 140px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .btn-stop {

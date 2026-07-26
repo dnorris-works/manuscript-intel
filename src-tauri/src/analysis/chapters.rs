@@ -49,15 +49,15 @@ pub(crate) async fn phase1_summaries(
 ) -> (usize, usize) {
     let mut done = 0usize;
     let mut skipped = 0usize;
+    let summary_updates = {
+        let conn = database.0.lock().unwrap();
+        db::load_chapter_summary_updates(&conn, story_folder)
+    };
 
     for (i, chapter_path) in chapters.iter().enumerate() {
         let fname = chapter_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-        let already_done = {
-            let conn = database.0.lock().unwrap();
-            db::chapter_summary_exists(&conn, story_folder, &fname)
-        };
-        if already_done {
+        if is_summary_fresh(chapter_path, summary_updates.get(&fname)) {
             emit(app, &format!("  [{}/{}] SKIP: {}", i + 1, chapters.len(), fname));
             skipped += 1;
             continue;
@@ -90,6 +90,21 @@ pub(crate) async fn phase1_summaries(
 
     emit(app, &format!("Phase 1 complete \u{2014} {} new, {} skipped.", done, skipped));
     (done, skipped)
+}
+
+fn is_summary_fresh(chapter_path: &Path, updated_at: Option<&String>) -> bool {
+    let Some(updated_at) = updated_at else {
+        return false;
+    };
+    let summary_time = chrono::DateTime::parse_from_rfc3339(updated_at)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+    let file_time = std::fs::metadata(chapter_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(chrono::DateTime::<chrono::Utc>::from);
+
+    matches!((file_time, summary_time), (Some(ft), Some(st)) if ft <= st)
 }
 
 // ── AI call ──────────────────────────────────────────────────────────────────

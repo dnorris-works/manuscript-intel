@@ -164,6 +164,39 @@ async function runMarketIntel(folder: string): Promise<void> {
   }
 }
 
+async function runSummaries(folder: string): Promise<void> {
+  if (!folder) { appendLog('✗ No story selected.'); return; }
+  const s = useSettings();
+  const { provider, apiKey } = getSettings();
+  const model = s.modelFor('summaries');
+
+  clearLog();
+  isWorking.value = true;
+  const runTime = new Date().toISOString();
+
+  try {
+    const result = await invoke<GenreResult>('generate_summaries', {
+      request: {
+        folder,
+        provider,
+        api_key: apiKey,
+        model,
+      },
+    });
+    if (!result.success) {
+      appendLog('✗ ' + result.error);
+    } else {
+      appendLog(result.report || '✓ Chapter summaries refreshed.');
+    }
+  } catch (e) {
+    appendLog('✗ ' + String(e));
+  } finally {
+    isWorking.value = false;
+    await refreshState(folder);
+    saveLog(folder, runTime);
+  }
+}
+
 async function cancelOperation(): Promise<void> {
   appendLog('Stopping after current step...');
   await invoke('cancel_operation');
@@ -196,6 +229,7 @@ export function useAnalysis() {
     runAnalyze,
     runCraftAnalysis,
     runMarketIntel,
+    runSummaries,
     cancelOperation,
     clearLog,
     appendLog,

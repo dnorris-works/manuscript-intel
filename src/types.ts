@@ -37,6 +37,11 @@ export interface ModelsResult {
 export interface AnalysisState {
   has_folder: boolean;
   summary_count: number;
+  summary_chapter_count: number;
+  summary_missing_count: number;
+  summary_stale_count: number;
+  summary_missing_files: string[];
+  summary_stale_files: string[];
   has_genre_data: boolean;
   has_full_report: boolean;
   has_keywords: boolean;

@@ -1407,6 +1407,19 @@ pub fn chapter_summary_count(conn: &Connection, story_folder: &str) -> i64 {
     ).unwrap_or(0)
 }
 
+pub fn load_chapter_summary_updates(conn: &Connection, story_folder: &str) -> std::collections::HashMap<String, String> {
+    let mut stmt = match conn.prepare(
+        "SELECT file, updated_at FROM chapter_summaries WHERE story_folder = ?1"
+    ) { Ok(s) => s, Err(_) => return std::collections::HashMap::new() };
+
+    stmt.query_map(params![story_folder], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })
+    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+    .map(|rows| rows.into_iter().collect::<std::collections::HashMap<_, _>>())
+    .unwrap_or_default()
+}
+
 /// Wipe all chapter summaries for a story so the next Analyze run
 /// regenerates every chapter from scratch, instead of skipping ones that
 /// already have a summary. Used by the "force re-summarize" checkbox.
