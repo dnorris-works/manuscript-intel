@@ -191,7 +191,7 @@ function formatCost(cost: number): string {
 function reportCardDescription(report: { id: string; description: string }): string {
   const estimate = costEstimates.value[report.id];
   const costText = estimate == null
-    ? ''
+    ? ' Estimated run cost: N/A.'
     : ` Estimated run cost: ${formatCost(estimate)}/run.`;
   return `${report.description}${costText}`;
 }
