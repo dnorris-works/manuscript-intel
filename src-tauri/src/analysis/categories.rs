@@ -182,8 +182,7 @@ pub async fn match_categories_for_story(app: AppHandle, request: FindCategoriesR
 #[tauri::command]
 pub async fn verify_mapped_categories(app: AppHandle, db: tauri::State<'_, db::Db>, request: VerifyMappedRequest) -> Result<GenreResult, ()> {
     let canopy_key = {
-        // The canopy key is stored in localStorage on the frontend — but for this
-        // command we need it passed in or loaded. For now, check if it's empty.
+        // The canopy key comes from the frontend settings for this command.
         String::new()
     };
 

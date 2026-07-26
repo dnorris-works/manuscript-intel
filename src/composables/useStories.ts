@@ -2,8 +2,13 @@ import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { Story, StoriesResult } from '../types';
 
+interface AppStateRow {
+  platform: string;
+  active_story_id: string;
+}
+
 const stories = ref<Story[]>([]);
-const activeStoryId = ref<string | null>(localStorage.getItem('activeStoryId') || null);
+const activeStoryId = ref<string | null>(null);
 
 const activeStory = computed<Story | null>(() => {
   return stories.value.find(s => s.id === activeStoryId.value) || null;
@@ -17,6 +22,13 @@ async function loadStories(): Promise<void> {
   const result = await invoke<StoriesResult>('list_stories');
   stories.value = result.success ? result.stories : [];
 
+  try {
+    const state = await invoke<AppStateRow>('load_app_state');
+    activeStoryId.value = state.active_story_id || null;
+  } catch {
+    // keep current selection
+  }
+
   // If the stored active story no longer exists, clear it
   if (activeStoryId.value && !stories.value.find(s => s.id === activeStoryId.value)) {
     setActiveStory(null);
@@ -25,7 +37,18 @@ async function loadStories(): Promise<void> {
 
 function setActiveStory(id: string | null): void {
   activeStoryId.value = id;
-  localStorage.setItem('activeStoryId', id || '');
+  void (async () => {
+    try {
+      const state = await invoke<AppStateRow>('load_app_state');
+      await invoke<AppStateRow>('save_app_state', {
+        state: { platform: state.platform || 'kdp', active_story_id: id || '' },
+      });
+    } catch {
+      await invoke<AppStateRow>('save_app_state', {
+        state: { platform: 'kdp', active_story_id: id || '' },
+      });
+    }
+  })();
 }
 
 async function addStory(name: string, folder: string): Promise<StoriesResult> {

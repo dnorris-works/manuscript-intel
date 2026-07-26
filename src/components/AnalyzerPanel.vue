@@ -112,6 +112,68 @@ watch(() => platformCtx.platform.value, () => {
 
 const costEstimates = ref<Record<string, number>>({});
 
+const STATIC_CLAUDE_PRICES: Record<string, { input_price: number; output_price: number }> = {
+  'claude-opus-4-20250514': { input_price: 15, output_price: 75 },
+  'claude-sonnet-4-20250514': { input_price: 3, output_price: 15 },
+  'claude-haiku-4-5-20251001': { input_price: 1, output_price: 5 },
+  'claude-3-5-sonnet-20241022': { input_price: 3, output_price: 15 },
+  'claude-3-5-haiku-20241022': { input_price: 0.8, output_price: 4 },
+};
+
+const RECOMMENDED_MODEL_BY_REPORT: Record<string, string> = {
+  chapter_summaries: 'claude-haiku-4.5',
+  genre_analysis: 'claude-sonnet-4',
+  genre_ranking: 'claude-sonnet-4',
+  kdp_categories: 'claude-haiku-4.5',
+  kdp_keywords: 'claude-haiku-4.5',
+  bisac_classification: 'claude-haiku-4.5',
+  mi_search_terms: 'claude-haiku-4.5',
+  discovery_keywords: 'claude-haiku-4.5',
+  analysis: 'claude-sonnet-4',
+  keyword_search: 'claude-haiku-4.5',
+  competition_report: 'claude-sonnet-4',
+  review_mining: 'claude-sonnet-4',
+  author_analysis: 'claude-sonnet-4',
+  continuity_check: 'claude-sonnet-4',
+  show_dont_tell: 'claude-sonnet-4',
+  ai_isms: 'claude-sonnet-4',
+  chekhovs_gun: 'claude-sonnet-4',
+  red_herring_vs_abandoned: 'claude-sonnet-4',
+  foreshadowing_twist_fairness: 'claude-sonnet-4',
+  macguffin_clarity: 'claude-sonnet-4',
+  want_vs_need: 'claude-sonnet-4',
+  thematic_throughline: 'claude-sonnet-4',
+  mirror_foil_character: 'claude-sonnet-4',
+  pov_discipline: 'claude-sonnet-4',
+  story_beat_placement: 'claude-sonnet-4',
+  scene_sequel_balance: 'claude-sonnet-4',
+  timeline_flashback: 'claude-sonnet-4',
+  dramatic_irony: 'claude-sonnet-4',
+  stakes_escalation: 'claude-sonnet-4',
+  cross_book_setup_payoff: 'claude-sonnet-4',
+  series_pacing_comparator: 'claude-sonnet-4',
+  recurring_motif_theme_series: 'claude-sonnet-4',
+  ai_beta_reader: 'claude-sonnet-4',
+  cliffhanger_score: 'claude-haiku-4.5',
+  hook_strength: 'claude-haiku-4.5',
+  pacing_curve: 'claude-haiku-4.5',
+  blurb_builder: 'claude-sonnet-4',
+};
+
+function normalizeModelId(id: string): string {
+  return id.toLowerCase().replace(/\s+/g, '-');
+}
+
+function fallbackModelPrice(modelId: string): { input_price: number; output_price: number } | null {
+  const normalized = normalizeModelId(modelId);
+  if (STATIC_CLAUDE_PRICES[normalized]) return STATIC_CLAUDE_PRICES[normalized];
+  return null;
+}
+
+function estimateReportModel(reportId: string): string {
+  return RECOMMENDED_MODEL_BY_REPORT[reportId] || 'claude-sonnet-4';
+}
+
 const totalEstimatedCost = computed(() => {
   let total = 0;
   for (const id of selected.value) {
@@ -126,9 +188,17 @@ function formatCost(cost: number): string {
   return `~$${cost.toFixed(2)}`;
 }
 
+function reportCardDescription(report: { id: string; description: string }): string {
+  const estimate = costEstimates.value[report.id];
+  const costText = estimate == null
+    ? ''
+    : ` Estimated run cost: ${formatCost(estimate)}/run.`;
+  return `${report.description}${costText}`;
+}
+
 async function fetchCostEstimates(): Promise<void> {
   const folder = storiesCtx.activeFolder.value;
-  if (!folder || visibleReports.value.length === 0 || settings.models.value.length === 0) {
+  if (!folder || visibleReports.value.length === 0) {
     costEstimates.value = {};
     return;
   }
@@ -138,10 +208,11 @@ async function fetchCostEstimates(): Promise<void> {
     const fnKey = reportToModelFn(r.id);
     const modelId = settings.modelFor(fnKey);
     const modelInfo = settings.models.value.find(m => m.id === modelId);
+    const fallback = fallbackModelPrice(modelId) || fallbackModelPrice(estimateReportModel(r.id));
     return {
       report_id: r.id,
-      input_price: modelInfo?.input_price ?? 0,
-      output_price: modelInfo?.output_price ?? 0,
+      input_price: modelInfo?.input_price ?? fallback?.input_price ?? 0,
+      output_price: modelInfo?.output_price ?? fallback?.output_price ?? 0,
     };
   });
 
@@ -317,10 +388,9 @@ function onStop(): void {
         </div>
         <div class="report-card-content">
           <div class="report-card-label">{{ report.label }}</div>
-          <div class="report-card-desc">{{ report.description }}</div>
+          <div class="report-card-desc">{{ reportCardDescription(report) }}</div>
           <div class="report-card-meta">
             <span v-if="report.exists" class="report-card-exists">✓ exists</span>
-            <span v-if="costEstimates[report.id] != null" class="report-card-cost">{{ formatCost(costEstimates[report.id]) }}</span>
           </div>
         </div>
       </div>

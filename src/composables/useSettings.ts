@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelInfo, ModelsResult } from '../types';
 
@@ -29,6 +29,16 @@ export interface FolderStructure {
   acts: string[];
   /** Extra scaffold-only folders (app does not use these) */
   extra: string[];
+}
+
+interface UiSettingsRow {
+  theme: string;
+  provider: string;
+  api_key: string;
+  model_assignments: string;
+  canopy_api_key: string;
+  dataforseo_login: string;
+  dataforseo_password: string;
 }
 
 const DEFAULT_FOLDER_STRUCTURE: FolderStructure = {
@@ -73,22 +83,14 @@ function cloneStructure(s: FolderStructure): FolderStructure {
   };
 }
 
-function loadAssignments(): ModelAssignments {
-  const stored = localStorage.getItem('modelAssignments');
-  const defaults: ModelAssignments = {
+function defaultModelAssignments(): ModelAssignments {
+  return {
     default: '', summaries: '', genre: '', keywords: '', continuity: '', showDontTell: '', aiIsms: '', prose: ''
   };
-  if (stored) {
-    try { return { ...defaults, ...JSON.parse(stored) }; } catch { /* use defaults */ }
-  }
-  // Migrate from old settings
-  const oldModel = localStorage.getItem('model') || '';
-  const oldProse = localStorage.getItem('proseModel') || '';
-  if (oldModel || oldProse) {
-    defaults.default = oldModel;
-    defaults.prose = oldProse;
-  }
-  return defaults;
+}
+
+function loadAssignments(): ModelAssignments {
+  return defaultModelAssignments();
 }
 
 export type ThemeMode = 'dark' | 'light';
@@ -97,33 +99,30 @@ function applyTheme(mode: ThemeMode): void {
   document.documentElement.setAttribute('data-theme', mode);
 }
 
-const theme = ref<ThemeMode>(
-  (localStorage.getItem('theme') as ThemeMode) === 'light' ? 'light' : 'dark'
-);
+const theme = ref<ThemeMode>('dark');
 applyTheme(theme.value);
 
 function setTheme(mode: ThemeMode): void {
   theme.value = mode;
-  localStorage.setItem('theme', mode);
   applyTheme(mode);
 }
 
-const provider = ref(localStorage.getItem('provider') || 'tokenmix');
-const apiKey = ref(localStorage.getItem('apiKey') || '');
+const provider = ref('tokenmix');
+const apiKey = ref('');
 const modelAssignments = ref<ModelAssignments>(loadAssignments());
-const canopyApiKey = ref(localStorage.getItem('canopyApiKey') || '');
-const dataforseoLogin = ref(localStorage.getItem('dataforseoLogin') || '');
-const dataforseoPassword = ref(localStorage.getItem('dataforseoPassword') || '');
-const models = ref<ModelInfo[]>(loadModelsFromStorage());
+const canopyApiKey = ref('');
+const dataforseoLogin = ref('');
+const dataforseoPassword = ref('');
+const models = ref<ModelInfo[]>([]);
 const folderStructure = ref<FolderStructure>(cloneStructure(DEFAULT_FOLDER_STRUCTURE));
+let modelsAutoLoadStarted = false;
+let settingsHydrated = false;
 
-function loadModelsFromStorage(): ModelInfo[] {
-  const stored = localStorage.getItem('cachedModels');
-  if (stored) {
-    try { return JSON.parse(stored); } catch { /* ignore */ }
+watch([provider, apiKey], () => {
+  if (provider.value === 'claude' || (provider.value === 'tokenmix' && apiKey.value.trim())) {
+    void autoLoadModelsIfConfigured();
   }
-  return [];
-}
+});
 
 // ── Convenience getters ───────────────────────────────────────────────────────
 
@@ -139,8 +138,8 @@ const proseModel = computed(() => modelAssignments.value.prose || modelAssignmen
 // ── Actions ──────────────────────────────────────────────────────────────────
 
 async function fetchModels(): Promise<{ success: boolean; error: string }> {
-  if (!apiKey.value) {
-    return { success: false, error: 'Enter an API key first.' };
+  if (provider.value === 'tokenmix' && !apiKey.value.trim()) {
+    return { success: false, error: 'Enter a TokenMix API key first.' };
   }
   try {
     const result = await invoke<ModelsResult>('list_models', {
@@ -149,12 +148,22 @@ async function fetchModels(): Promise<{ success: boolean; error: string }> {
     });
     if (result.success && result.models.length > 0) {
       models.value = result.models;
-      localStorage.setItem('cachedModels', JSON.stringify(result.models));
       return { success: true, error: '' };
     }
     return { success: false, error: result.error || 'No models returned.' };
   } catch (e) {
     return { success: false, error: 'Error: ' + String(e) };
+  }
+}
+
+async function autoLoadModelsIfConfigured(): Promise<void> {
+  if (modelsAutoLoadStarted) return;
+  if (provider.value === 'tokenmix' && !apiKey.value.trim()) return;
+  modelsAutoLoadStarted = true;
+  try {
+    await fetchModels();
+  } finally {
+    modelsAutoLoadStarted = false;
   }
 }
 
@@ -176,22 +185,65 @@ function removeFolderEntry(index: number): void {
 }
 
 async function saveSettings(): Promise<void> {
-  localStorage.setItem('theme', theme.value);
-  localStorage.setItem('provider', provider.value);
-  localStorage.setItem('apiKey', apiKey.value.trim());
-  localStorage.setItem('modelAssignments', JSON.stringify(modelAssignments.value));
-  // Keep legacy keys for backward compat
-  localStorage.setItem('model', modelAssignments.value.default);
-  localStorage.setItem('proseModel', modelAssignments.value.prose);
-  localStorage.setItem('canopyApiKey', canopyApiKey.value.trim());
-  localStorage.setItem('dataforseoLogin', dataforseoLogin.value.trim());
-  localStorage.setItem('dataforseoPassword', dataforseoPassword.value.trim());
-
   const saved = await invoke<FolderStructure>('save_folder_structure', {
     structure: folderStructure.value,
   });
   folderStructure.value = cloneStructure(saved);
+
+  await invoke<UiSettingsRow>('save_ui_settings', {
+    settings: {
+      theme: theme.value,
+      provider: provider.value,
+      api_key: apiKey.value.trim(),
+      model_assignments: JSON.stringify(modelAssignments.value),
+      canopy_api_key: canopyApiKey.value.trim(),
+      dataforseo_login: dataforseoLogin.value.trim(),
+      dataforseo_password: dataforseoPassword.value.trim(),
+    },
+  });
+
+  await autoLoadModelsIfConfigured();
 }
+
+async function hydrateSettings(): Promise<void> {
+  try {
+    const loaded = await invoke<UiSettingsRow>('load_ui_settings');
+    theme.value = (loaded.theme as ThemeMode) === 'light' ? 'light' : 'dark';
+    applyTheme(theme.value);
+    provider.value = loaded.provider || 'tokenmix';
+    apiKey.value = loaded.api_key || '';
+    canopyApiKey.value = loaded.canopy_api_key || '';
+    dataforseoLogin.value = loaded.dataforseo_login || '';
+    dataforseoPassword.value = loaded.dataforseo_password || '';
+    if (loaded.model_assignments) {
+      try {
+        modelAssignments.value = { ...defaultModelAssignments(), ...JSON.parse(loaded.model_assignments) };
+      } catch {
+        modelAssignments.value = defaultModelAssignments();
+      }
+    }
+  } finally {
+    settingsHydrated = true;
+    void autoLoadModelsIfConfigured();
+  }
+}
+
+void hydrateSettings();
+
+watch([provider, apiKey], () => {
+  if (!settingsHydrated) return;
+  void invoke<UiSettingsRow>('save_ui_settings', {
+    settings: {
+      theme: theme.value,
+      provider: provider.value,
+      api_key: apiKey.value.trim(),
+      model_assignments: JSON.stringify(modelAssignments.value),
+      canopy_api_key: canopyApiKey.value.trim(),
+      dataforseo_login: dataforseoLogin.value.trim(),
+      dataforseo_password: dataforseoPassword.value.trim(),
+    },
+  });
+});
 
 async function testCanopy(): Promise<{ success: boolean; error: string }> {
   const key = canopyApiKey.value.trim();

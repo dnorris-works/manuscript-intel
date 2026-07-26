@@ -79,6 +79,8 @@ pub fn run() {
             db::get_report_cmd,
             db::delete_report_cmd,
             db::get_sidebar_reports,
+            settings::load_ui_settings,
+            settings::save_ui_settings,
             db::list_series_cmd,
             db::create_series_cmd,
             db::delete_series_cmd,

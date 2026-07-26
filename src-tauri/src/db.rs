@@ -188,6 +188,11 @@ CREATE TABLE IF NOT EXISTS saved_reports (
 
 CREATE INDEX IF NOT EXISTS idx_saved_reports_folder ON saved_reports(story_folder, doc_type);
 
+CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS report_types (
     id                TEXT PRIMARY KEY,
     label             TEXT NOT NULL,

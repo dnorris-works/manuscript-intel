@@ -1,0 +1,17 @@
+﻿Service,Category,Billing unit,Known price,Usage cost (input + output),Source/How the app gets it,Notes
+Claude Opus 4 20250514,LLM,input tokens,$15.00 per 1M tokens,$90.00 per 1M tokens,src-tauri/data/provider-models.json,Used when Claude is selected and this model is chosen
+Claude Opus 4 20250514,LLM,output tokens,$75.00 per 1M tokens,$90.00 per 1M tokens,src-tauri/data/provider-models.json,Used when Claude is selected and this model is chosen
+Claude Sonnet 4 20250514,LLM,input tokens,$3.00 per 1M tokens,$18.00 per 1M tokens,src-tauri/data/provider-models.json,Used when Claude is selected and this model is chosen
+Claude Sonnet 4 20250514,LLM,output tokens,$15.00 per 1M tokens,$18.00 per 1M tokens,src-tauri/data/provider-models.json,Used when Claude is selected and this model is chosen
+Claude Haiku 4.5 20251001,LLM,input tokens,$1.00 per 1M tokens,$6.00 per 1M tokens,src-tauri/data/provider-models.json,Used when Claude is selected and this model is chosen
+Claude Haiku 4.5 20251001,LLM,output tokens,$5.00 per 1M tokens,$6.00 per 1M tokens,src-tauri/data/provider-models.json,Used when Claude is selected and this model is chosen
+Claude 3.5 Sonnet 20241022,LLM,input tokens,$3.00 per 1M tokens,$18.00 per 1M tokens,src-tauri/data/provider-models.json,Legacy Claude model still available in the app
+Claude 3.5 Sonnet 20241022,LLM,output tokens,$15.00 per 1M tokens,$18.00 per 1M tokens,src-tauri/data/provider-models.json,Legacy Claude model still available in the app
+Claude 3.5 Haiku 20241022,LLM,input tokens,$0.80 per 1M tokens,$4.80 per 1M tokens,src-tauri/data/provider-models.json,Legacy Claude model still available in the app
+Claude 3.5 Haiku 20241022,LLM,output tokens,$4.00 per 1M tokens,$4.80 per 1M tokens,src-tauri/data/provider-models.json,Legacy Claude model still available in the app
+TokenMix,LLM,input/output tokens,Dynamic; fetched live from TokenMix/AIHubMix API,Dynamic; depends on selected model,src-tauri/src/commands.rs,App fetches models and pricing at runtime from api.tokenmix.ai or aihubmix.com
+Canopy API,Research/API,per request,Unknown from repo; usage-based external API,Unknown from repo,src-tauri/src/canopy.rs,Used for Amazon product lookup, sales estimates, search, autocomplete, and bestsellers
+DataForSEO,Research/API,per request,Unknown from repo; usage-based external API,Unknown from repo,src-tauri/src/dataforseo.rs,Used for Google keyword volume and Amazon related keywords
+Clerk,Auth/API,per user / auth request,Unknown from repo; external auth service,Not an AI usage cost,app discussion only,Used only if you keep the web auth/licensing layer
+Loremetry web API,Backend/API,per auth / usage event,Not counted as AI cost,Not an AI usage cost,src-tauri/src/api_client.rs,Auth/license/usage service; exclude if you only want external AI/data spend
+Local estimate helper,Local app logic,token estimate,Free,Free,info/token-usage.md and src-tauri/src/commands.rs,Not a billable API; just a calculator based on model prices
