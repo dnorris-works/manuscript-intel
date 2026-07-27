@@ -541,7 +541,7 @@ async function onRemoveStale(): Promise<void> {
 
 .settings-form input,
 .settings-form select {
-  background: var(--surface2);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface2) 96%, white 4%), var(--surface2));
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
@@ -553,6 +553,30 @@ async function onRemoveStale(): Promise<void> {
 
 .settings-form select option {
   background: var(--surface2);
+}
+
+.settings-form select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 30px;
+}
+
+.settings-form select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent 80%);
+}
+
+.settings-form select:disabled {
+  opacity: 0.75;
 }
 
 .provider-options {
