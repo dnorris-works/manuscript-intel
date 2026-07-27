@@ -1,7 +1,7 @@
 // analysis/keywords.rs — KDP keyword optimization, search term generation,
 // discovery keywords, and Canopy-based keyword search.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -405,6 +405,98 @@ pub(crate) fn render_search_terms(keywords: &[String]) -> String {
     json.to_string()
 }
 
+fn normalize_keyword(input: &str) -> String {
+    input.trim().to_lowercase()
+}
+
+fn classify_competition(search_volume: u64) -> &'static str {
+    if search_volume > 50_000 {
+        "High"
+    } else if search_volume > 5_000 {
+        "Medium"
+    } else {
+        "Low"
+    }
+}
+
+fn extract_asin_from_url(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    for marker in ["/dp/", "/gp/product/"] {
+        if let Some(idx) = trimmed.find(marker) {
+            let rest = &trimmed[idx + marker.len()..];
+            let asin: String = rest.chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if asin.len() >= 8 {
+                return Some(asin);
+            }
+        }
+    }
+    None
+}
+
+fn load_competitor_asins(app: &AppHandle, folder: &str) -> Vec<String> {
+    let database = app.state::<crate::db::Db>();
+    let conn = database.0.lock().unwrap();
+    let Some(raw) = crate::db::get_document(&conn, folder, "competition_data") else {
+        return Vec::new();
+    };
+
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    if let Some(books) = json["books"].as_array() {
+        for book in books {
+            if let Some(asin) = book["asin"].as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if seen.insert(asin.to_string()) {
+                    out.push(asin.to_string());
+                }
+                continue;
+            }
+            if let Some(url) = book["amazon_url"].as_str() {
+                if let Some(asin) = extract_asin_from_url(url) {
+                    if seen.insert(asin.clone()) {
+                        out.push(asin);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn upsert_volume(
+    map: &mut HashMap<String, (String, u64, HashSet<String>)>,
+    keyword: &str,
+    search_volume: u64,
+    source: &str,
+) {
+    let trimmed = keyword.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let key = normalize_keyword(trimmed);
+    let entry = map
+        .entry(key)
+        .or_insert_with(|| (trimmed.to_string(), search_volume, HashSet::new()));
+    if search_volume > entry.1 {
+        entry.1 = search_volume;
+    }
+    if entry.0.len() > trimmed.len() {
+        entry.0 = trimmed.to_string();
+    }
+    entry.2.insert(source.to_string());
+}
+
 /// DataForSEO-based keyword search — uses Amazon Related Keywords API.
 /// Sends all seeds in one batch API call for efficiency.
 pub(crate) async fn run_keyword_searches_dataforseo(
@@ -422,32 +514,150 @@ pub(crate) async fn run_keyword_searches_dataforseo(
         }
     };
 
-    let _ = app.emit("cdp:log", &format!("DataForSEO: Searching Amazon keywords for {} seed(s) in one batch...", seeds.len()));
+    let mut candidates: HashMap<String, (String, u64, HashSet<String>)> = HashMap::new();
+    for seed in seeds {
+        upsert_volume(&mut candidates, seed, 0, "seed");
+    }
+
+    let _ = app.emit("cdp:log", &format!("DataForSEO: Searching Amazon keywords for {} seed(s)...", seeds.len()));
     for seed in seeds {
         let _ = app.emit("cdp:log", &format!("  Seed: \"{}\"", seed));
     }
 
-    let all_results: Vec<KeywordResult> = match client.amazon_related_keywords_batch(seeds, 20).await {
-        Ok(keywords) => {
-            let _ = app.emit("cdp:log", &format!("  ✓ {} keywords returned.", keywords.len()));
-            keywords.into_iter().map(|kw| {
-                let competition = if kw.search_volume > 50000 { "High" }
-                    else if kw.search_volume > 5000 { "Medium" }
-                    else { "Low" };
+    // 1) Google autocomplete expansion for long-tail seed discovery.
+    if let Ok(suggestions) = client.google_autocomplete_suggestions(seeds, 12).await {
+        let _ = app.emit("cdp:log", &format!("  ✓ {} autocomplete suggestions from DataForSEO SERP.", suggestions.len()));
+        for s in suggestions {
+            upsert_volume(&mut candidates, &s, 0, "autocomplete");
+        }
+    }
 
-                KeywordResult {
-                    keyword: kw.keyword,
-                    searches: format!("{}", kw.search_volume),
-                    competition: competition.to_string(),
-                    estimated_earnings: String::new(),
-                }
-            }).collect()
+    // 2) Amazon related keywords from seed set.
+    match client.amazon_related_keywords_batch(seeds, 30).await {
+        Ok(keywords) => {
+            let _ = app.emit("cdp:log", &format!("  ✓ {} related keywords from Amazon endpoint.", keywords.len()));
+            for kw in keywords {
+                upsert_volume(&mut candidates, &kw.keyword, kw.search_volume, "related");
+            }
         }
         Err(e) => {
-            let _ = app.emit("cdp:log", &format!("  ⚠ DataForSEO error: {}", e));
-            Vec::new()
+            let _ = app.emit("cdp:log", &format!("  ⚠ Related-keywords call failed: {}", e));
         }
-    };
+    }
+
+    // 3) ASIN-driven keyword intelligence (ranked keywords + competitor overlap).
+    let mut asins = load_competitor_asins(app, folder);
+    if !asins.is_empty() {
+        let _ = app.emit("cdp:log", &format!("  Found {} competitor ASINs from competition data.", asins.len()));
+    }
+
+    // Expand ASIN set using product-competitor endpoint.
+    let base_asins: Vec<String> = asins.iter().take(3).cloned().collect();
+    for asin in &base_asins {
+        if let Ok(competitors) = client.amazon_product_competitors(asin, 10).await {
+            for comp in competitors {
+                if !asins.iter().any(|a| a.eq_ignore_ascii_case(&comp)) {
+                    asins.push(comp);
+                }
+            }
+        }
+    }
+
+    // Pull ranked keywords for a few strongest ASIN signals.
+    for asin in asins.iter().take(6) {
+        match client.amazon_ranked_keywords(asin, 30).await {
+            Ok(keywords) => {
+                for kw in keywords {
+                    upsert_volume(&mut candidates, &kw.keyword, kw.search_volume, "ranked");
+                }
+            }
+            Err(e) => {
+                let _ = app.emit("cdp:log", &format!("  ⚠ Ranked keywords failed for {}: {}", asin, e));
+            }
+        }
+    }
+
+    // Use intersections for higher-intent overlap terms.
+    let intersection_asins: Vec<String> = asins.iter().take(3).cloned().collect();
+    if intersection_asins.len() >= 2 {
+        match client.amazon_product_keyword_intersections(&intersection_asins, 40).await {
+            Ok(keywords) => {
+                let _ = app.emit("cdp:log", &format!("  ✓ {} keyword intersections found.", keywords.len()));
+                for kw in keywords {
+                    upsert_volume(&mut candidates, &kw.keyword, kw.search_volume, "intersection");
+                }
+            }
+            Err(e) => {
+                let _ = app.emit("cdp:log", &format!("  ⚠ Keyword intersections failed: {}", e));
+            }
+        }
+    }
+
+    // 4) Bulk Amazon volume normalization for the unified keyword list.
+    let unified_keywords: Vec<String> = candidates.values().map(|v| v.0.clone()).collect();
+    match client.amazon_bulk_search_volume(&unified_keywords).await {
+        Ok(volumes) => {
+            let _ = app.emit("cdp:log", &format!("  ✓ Bulk volume normalized for {} keywords.", volumes.len()));
+            for volume in volumes {
+                upsert_volume(&mut candidates, &volume.keyword, volume.search_volume, "bulk_volume");
+            }
+        }
+        Err(e) => {
+            let _ = app.emit("cdp:log", &format!("  ⚠ Bulk search volume failed: {}", e));
+        }
+    }
+
+    // 5) Trends signal enrichment for top candidates.
+    let mut ranked_for_trends: Vec<(String, u64)> = candidates
+        .values()
+        .map(|(k, v, _)| (k.clone(), *v))
+        .collect();
+    ranked_for_trends.sort_by(|a, b| b.1.cmp(&a.1));
+    let trend_targets: Vec<String> = ranked_for_trends.iter().take(60).map(|(k, _)| k.clone()).collect();
+
+    let mut trend_map: HashMap<String, f64> = HashMap::new();
+    if !trend_targets.is_empty() {
+        if let Ok(trends) = client.dataforseo_trends_delta(&trend_targets).await {
+            let _ = app.emit("cdp:log", &format!("  ✓ Trend deltas fetched for {} keywords.", trends.len()));
+            for t in trends {
+                trend_map.insert(normalize_keyword(&t.keyword), t.trend_delta);
+            }
+        }
+    }
+
+    let mut all_results: Vec<KeywordResult> = candidates
+        .into_iter()
+        .map(|(key, (keyword, volume, sources))| {
+            let mut source_tags: Vec<String> = sources.into_iter().collect();
+            source_tags.sort();
+            let trend_suffix = trend_map
+                .get(&key)
+                .map(|d| format!("trend {:+.0}%", d))
+                .unwrap_or_else(String::new);
+            let provenance = if trend_suffix.is_empty() {
+                format!("{}", source_tags.join(","))
+            } else {
+                format!("{} | {}", trend_suffix, source_tags.join(","))
+            };
+
+            KeywordResult {
+                keyword,
+                searches: volume.to_string(),
+                competition: classify_competition(volume).to_string(),
+                estimated_earnings: provenance,
+            }
+        })
+        .collect();
+
+    all_results.sort_by(|a, b| {
+        let av = a.searches.parse::<u64>().unwrap_or(0);
+        let bv = b.searches.parse::<u64>().unwrap_or(0);
+        bv.cmp(&av).then_with(|| a.keyword.cmp(&b.keyword))
+    });
+
+    if all_results.len() > 250 {
+        all_results.truncate(250);
+    }
 
     // Persist results to DB
     if !all_results.is_empty() {
@@ -456,12 +666,11 @@ pub(crate) async fn run_keyword_searches_dataforseo(
         let rows: Vec<(String, String, String, String)> = all_results.iter()
             .map(|r| (r.keyword.clone(), r.searches.clone(), r.competition.clone(), r.estimated_earnings.clone()))
             .collect();
-        // Save all under the first seed as the batch key
         if let Some(first_seed) = seeds.first() {
             let _ = crate::db::replace_keyword_search_results(&conn, folder, first_seed, &rows);
         }
     }
 
-    let _ = app.emit("cdp:log", &format!("✓ DataForSEO: {} total Amazon keywords.", all_results.len()));
+    let _ = app.emit("cdp:log", &format!("✓ DataForSEO: {} total enriched keywords.", all_results.len()));
     all_results
 }
