@@ -11,7 +11,7 @@ use super::{emit, err, GenreResult, FolderRequest, AnalyzeStoryRequest};
 use crate::db;
 use crate::models::KeywordResult;
 
-use super::chapters::{collect_chapters, phase1_summaries};
+use super::chapters::{collect_chapters, phase1_summaries, clean_for_ai, chapter_source_hash};
 use super::genres::{RankedGenre, ai_rank_genres, phase2_analyze, render_full_report};
 use super::categories::{match_categories_by_store, rank_by_discoverability};
 use super::bisac::ai_pick_bisac;
@@ -81,7 +81,7 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
         let database    = app.state::<db::Db>();
         let conn        = database.0.lock().unwrap();
         let chapters    = collect_chapters(&folder_path);
-        let summary_updates = db::load_chapter_summary_updates(&conn, &folder);
+        let summary_hashes = db::load_chapter_summary_hashes(&conn, &folder);
 
         let mut summary_missing_count = 0usize;
         let mut summary_stale_count = 0usize;
@@ -93,26 +93,16 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
                 continue;
             };
 
-            let Some(updated_at) = summary_updates.get(&file) else {
+            let Some(stored_hash) = summary_hashes.get(&file) else {
                 summary_missing_count += 1;
                 summary_missing_files.push(file);
                 continue;
             };
 
-            let summary_time = chrono::DateTime::parse_from_rfc3339(updated_at)
-                .ok()
-                .map(|dt| dt.with_timezone(&chrono::Utc));
-            let file_time = std::fs::metadata(chapter)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .map(chrono::DateTime::<chrono::Utc>::from);
-
-            if let (Some(ft), Some(st)) = (file_time, summary_time) {
-                if ft > st {
-                    summary_stale_count += 1;
-                    summary_stale_files.push(file);
-                }
-            } else {
+            let source = std::fs::read_to_string(chapter).unwrap_or_default();
+            let cleaned = clean_for_ai(&source);
+            let current_hash = chapter_source_hash(&cleaned);
+            if cleaned.is_empty() || current_hash != *stored_hash {
                 summary_stale_count += 1;
                 summary_stale_files.push(file);
             }

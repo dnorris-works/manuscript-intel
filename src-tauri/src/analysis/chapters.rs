@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult, FolderRequest};
@@ -49,19 +50,13 @@ pub(crate) async fn phase1_summaries(
 ) -> (usize, usize) {
     let mut done = 0usize;
     let mut skipped = 0usize;
-    let summary_updates = {
+    let summary_hashes = {
         let conn = database.0.lock().unwrap();
-        db::load_chapter_summary_updates(&conn, story_folder)
+        db::load_chapter_summary_hashes(&conn, story_folder)
     };
 
     for (i, chapter_path) in chapters.iter().enumerate() {
         let fname = chapter_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-
-        if is_summary_fresh(chapter_path, summary_updates.get(&fname)) {
-            emit(app, &format!("  [{}/{}] SKIP: {}", i + 1, chapters.len(), fname));
-            skipped += 1;
-            continue;
-        }
 
         emit(app, &format!("  [{}/{}] Summarizing: {}", i + 1, chapters.len(), fname));
 
@@ -71,15 +66,29 @@ pub(crate) async fn phase1_summaries(
             Err(e) => { emit(app, &format!("    \u{26a0} Read error: {}", e)); continue; }
         };
 
-        let word_count = content.split_whitespace().count();
+        let cleaned_source = clean_for_ai(&content);
+        if cleaned_source.is_empty() {
+            emit(app, "    \u{26a0} Empty after cleanup \u{2014} skipping.");
+            continue;
+        }
+
+        let source_hash = chapter_source_hash(&cleaned_source);
+        if summary_hashes.get(&fname).map(|h| h == &source_hash).unwrap_or(false) {
+            emit(app, &format!("  [{}/{}] SKIP: {}", i + 1, chapters.len(), fname));
+            skipped += 1;
+            continue;
+        }
+
+        let word_count = cleaned_source.split_whitespace().count();
         emit(app, &format!("    {} words", word_count));
 
-        match summarize_chapter(database, provider, api_key, model, story_folder, &fname, &truncate_words(&content, 8000)).await {
+        match summarize_chapter(database, provider, api_key, model, story_folder, &fname, &truncate_words(&cleaned_source, 8000)).await {
             Ok(signals) => {
                 let title = extract_title(&content).unwrap_or_else(|| fname.clone());
+                let compact_signals = clean_for_ai(&signals);
                 let conn = database.0.lock().unwrap();
-                let _ = db::save_chapter_summary(&conn, story_folder, &fname, &title, &signals, word_count as i64);
-                emit(app, &format!("    \u{2713} Done ({} signal chars)", signals.len()));
+                let _ = db::save_chapter_summary(&conn, story_folder, &fname, &title, &compact_signals, &source_hash, word_count as i64);
+                emit(app, &format!("    \u{2713} Done ({} signal chars)", compact_signals.len()));
                 done += 1;
             }
             Err(e) => emit(app, &format!("    \u{26a0} AI error: {}", e)),
@@ -92,19 +101,47 @@ pub(crate) async fn phase1_summaries(
     (done, skipped)
 }
 
-fn is_summary_fresh(chapter_path: &Path, updated_at: Option<&String>) -> bool {
-    let Some(updated_at) = updated_at else {
-        return false;
-    };
-    let summary_time = chrono::DateTime::parse_from_rfc3339(updated_at)
-        .ok()
-        .map(|dt| dt.with_timezone(&chrono::Utc));
-    let file_time = std::fs::metadata(chapter_path)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .map(chrono::DateTime::<chrono::Utc>::from);
+pub(crate) fn clean_for_ai(text: &str) -> String {
+    fn is_non_visible(c: char) -> bool {
+        matches!(
+            c,
+            '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}' | '\u{1160}'
+            | '\u{17B4}' | '\u{17B5}' | '\u{180E}' | '\u{200B}' | '\u{200C}'
+            | '\u{200D}' | '\u{200E}' | '\u{200F}' | '\u{202A}' | '\u{202B}'
+            | '\u{202C}' | '\u{202D}' | '\u{202E}' | '\u{2060}' | '\u{2066}'
+            | '\u{2067}' | '\u{2068}' | '\u{2069}' | '\u{FEFF}'
+        )
+    }
 
-    matches!((file_time, summary_time), (Some(ft), Some(st)) if ft <= st)
+    let mut cleaned = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_non_visible(c) {
+            continue;
+        }
+        if c.is_control() && !matches!(c, '\n' | '\r' | '\t') {
+            continue;
+        }
+        cleaned.push(c);
+    }
+
+    cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
+}
+
+pub(crate) fn chapter_source_hash(cleaned_text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(cleaned_text.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
 }
 
 // ── AI call ──────────────────────────────────────────────────────────────────

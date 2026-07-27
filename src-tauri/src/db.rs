@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS chapter_summaries (
     file         TEXT NOT NULL,
     title        TEXT,
     signals      TEXT,
+    source_hash  TEXT NOT NULL DEFAULT '',
     word_count   INTEGER,
     updated_at   TEXT NOT NULL,
     UNIQUE(story_folder, file)
@@ -382,6 +383,10 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     // new file (retired/renamed by Amazon) instead of leaving stale rows
     // sitting in the catalog forever with no signal they're outdated.
     let _ = conn.execute("ALTER TABLE kdp_categories ADD COLUMN last_seen_at TEXT", []);
+
+    // Migration: chapter_summaries gained source_hash so summaries can be
+    // regenerated only when normalized chapter content actually changes.
+    let _ = conn.execute("ALTER TABLE chapter_summaries ADD COLUMN source_hash TEXT NOT NULL DEFAULT ''", []);
 
     // Migration: saved_reports table for versioned report storage.
     let _ = conn.execute_batch(
@@ -1372,16 +1377,17 @@ pub fn chapter_summary_exists(conn: &Connection, story_folder: &str, file: &str)
 }
 
 pub fn save_chapter_summary(
-    conn: &Connection, story_folder: &str, file: &str, title: &str, signals: &str, word_count: i64,
+    conn: &Connection, story_folder: &str, file: &str, title: &str, signals: &str, source_hash: &str, word_count: i64,
 ) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO chapter_summaries (story_folder, file, title, signals, word_count, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO chapter_summaries (story_folder, file, title, signals, source_hash, word_count, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(story_folder, file) DO UPDATE SET
             title = excluded.title, signals = excluded.signals,
+            source_hash = excluded.source_hash,
             word_count = excluded.word_count, updated_at = excluded.updated_at",
-        params![story_folder, file, title, signals, word_count, now],
+        params![story_folder, file, title, signals, source_hash, word_count, now],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1407,9 +1413,9 @@ pub fn chapter_summary_count(conn: &Connection, story_folder: &str) -> i64 {
     ).unwrap_or(0)
 }
 
-pub fn load_chapter_summary_updates(conn: &Connection, story_folder: &str) -> std::collections::HashMap<String, String> {
+pub fn load_chapter_summary_hashes(conn: &Connection, story_folder: &str) -> std::collections::HashMap<String, String> {
     let mut stmt = match conn.prepare(
-        "SELECT file, updated_at FROM chapter_summaries WHERE story_folder = ?1"
+        "SELECT file, source_hash FROM chapter_summaries WHERE story_folder = ?1"
     ) { Ok(s) => s, Err(_) => return std::collections::HashMap::new() };
 
     stmt.query_map(params![story_folder], |r| {

@@ -207,6 +207,20 @@ function estimateReportModel(reportId: string): string {
   return RECOMMENDED_MODEL_BY_REPORT[reportId] || 'claude-sonnet-4';
 }
 
+function hasSummaryDependency(reportId: string, visited = new Set<string>()): boolean {
+  if (reportId === 'chapter_summaries') return true;
+  if (visited.has(reportId)) return false;
+  visited.add(reportId);
+
+  const report = reportTypes.value.find(r => r.id === reportId);
+  if (!report) return false;
+  return report.depends_on.some(dep => hasSummaryDependency(dep, visited));
+}
+
+function selectionNeedsSummaries(): boolean {
+  return selected.value.some(id => hasSummaryDependency(id));
+}
+
 const totalEstimatedCost = computed(() => {
   let total = 0;
   for (const id of selected.value) {
@@ -227,6 +241,76 @@ function reportCardDescription(report: { id: string; description: string }): str
     ? ' Estimated run cost: N/A.'
     : ` Estimated run cost: ${formatCost(estimate)}/run.`;
   return `${report.description}${costText}`;
+}
+
+function summaryModelPrice(): { modelId: string; inputPrice: number | null; outputPrice: number | null } {
+  const modelId = settings.modelFor('summaries') || settings.modelFor('default') || estimateReportModel('chapter_summaries');
+  const modelInfo = settings.models.value.find(m => m.id === modelId);
+  const fallback = fallbackModelPrice(modelId) || fallbackModelPrice(estimateReportModel('chapter_summaries'));
+  return {
+    modelId,
+    inputPrice: modelInfo?.input_price ?? fallback?.input_price ?? null,
+    outputPrice: modelInfo?.output_price ?? fallback?.output_price ?? null,
+  };
+}
+
+async function maybeRefreshSummariesBeforeRun(folder: string): Promise<boolean> {
+  if (!selectionNeedsSummaries() || !summaryStatus.value.needsRefresh) {
+    return true;
+  }
+
+  const price = summaryModelPrice();
+  try {
+    const estimate = await invoke<{
+      success: boolean;
+      files: string[];
+      chapter_count: number;
+      input_tokens: number;
+      output_tokens: number;
+      estimated_cost: number | null;
+      error: string;
+    }>('estimate_summary_refresh_cost', {
+      request: {
+        folder,
+        input_price: price.inputPrice,
+        output_price: price.outputPrice,
+      },
+    });
+
+    if (!estimate.success) {
+      const proceedNoEstimate = confirm(`Chapter summaries need refresh before running reports.\n\nCould not estimate cost: ${estimate.error || 'unknown error'}\n\nRefresh summaries now?`);
+      if (!proceedNoEstimate) return false;
+    } else {
+      const costText = estimate.estimated_cost == null
+        ? 'Estimated cost: N/A (model pricing unavailable).'
+        : `Estimated cost: ${formatCost(estimate.estimated_cost)} total.`;
+      const msg = [
+        'Chapter summaries must be refreshed before these reports can run.',
+        '',
+        `Model: ${price.modelId}`,
+        `Chapters to summarize: ${estimate.chapter_count}`,
+        `Estimated input tokens: ${estimate.input_tokens}`,
+        `Estimated output tokens: ${estimate.output_tokens}`,
+        costText,
+        '',
+        'Refresh summaries now?'
+      ].join('\n');
+      const proceed = confirm(msg);
+      if (!proceed) return false;
+    }
+  } catch (e) {
+    const proceedAfterError = confirm(`Chapter summaries need refresh before running reports.\n\nFailed to estimate refresh cost: ${String(e)}\n\nRefresh summaries now anyway?`);
+    if (!proceedAfterError) return false;
+  }
+
+  await analysisCtx.runSummaries(folder);
+
+  const s = analysisCtx.analysisState.value;
+  if (s && (s.summary_missing_count > 0 || s.summary_stale_count > 0)) {
+    alert('Summaries are still not up to date after refresh. Please resolve chapter read errors and try again.');
+    return false;
+  }
+  return true;
 }
 
 async function fetchCostEstimates(): Promise<void> {
@@ -289,12 +373,15 @@ watch(() => reportTypes.value, () => fetchCostEstimates());
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-function onGetReports(): void {
+async function onGetReports(): Promise<void> {
   const folder = storiesCtx.activeFolder.value;
-  if (summaryStatus.value.needsRefresh) {
-    alert('Chapter summaries are out of date. Refresh summaries first, then run reports.');
+  if (!folder) return;
+
+  const ready = await maybeRefreshSummariesBeforeRun(folder);
+  if (!ready) {
     return;
   }
+
   hasRun.value = true;
   const plat = platformCtx.platform.value;
   if (plat === 'craft' || plat === 'publish') {
@@ -307,9 +394,9 @@ function onGetReports(): void {
     const scope: ContinuityScope = needsSeries && continuityScopeMode.value === 'series' && continuitySeriesId.value != null
       ? { mode: 'series', seriesId: continuitySeriesId.value }
       : { mode: 'manuscript' };
-    analysisCtx.runCraftAnalysis(folder, selected.value, scope);
+    await analysisCtx.runCraftAnalysis(folder, selected.value, scope);
   } else {
-    analysisCtx.runAnalyze(folder, forceResummarize.value, plat);
+    await analysisCtx.runAnalyze(folder, forceResummarize.value, plat);
   }
 }
 

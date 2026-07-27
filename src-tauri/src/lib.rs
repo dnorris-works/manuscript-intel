@@ -45,6 +45,7 @@ pub fn run() {
             commands::write_manuscript_fix,
             commands::list_manuscript_files,
             commands::estimate_report_costs,
+            commands::estimate_summary_refresh_cost,
             commands::chat_with_context,
             analysis::chapters::generate_summaries,
             analysis::genres::analyze_genre,

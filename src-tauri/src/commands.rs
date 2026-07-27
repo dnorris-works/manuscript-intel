@@ -733,6 +733,24 @@ pub struct ReportCostEstimate {
     pub output_tokens: usize,
 }
 
+#[derive(Deserialize)]
+pub struct SummaryRefreshEstimateRequest {
+    pub folder: String,
+    pub input_price: Option<f64>,   // per 1K tokens
+    pub output_price: Option<f64>,  // per 1K tokens
+}
+
+#[derive(Serialize)]
+pub struct SummaryRefreshEstimateResult {
+    pub success: bool,
+    pub files: Vec<String>,
+    pub chapter_count: usize,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub estimated_cost: Option<f64>,
+    pub error: String,
+}
+
 /// Estimate the AI cost for each report based on manuscript size and model pricing.
 #[tauri::command]
 pub async fn estimate_report_costs(
@@ -823,6 +841,90 @@ pub async fn estimate_report_costs(
         chapter_count,
         total_words,
         estimates,
+        error: String::new(),
+    })
+}
+
+/// Estimate the one-time cost to refresh chapter summaries for changed/new chapters only.
+#[tauri::command]
+pub async fn estimate_summary_refresh_cost(
+    db: tauri::State<'_, crate::db::Db>,
+    request: SummaryRefreshEstimateRequest,
+) -> Result<SummaryRefreshEstimateResult, String> {
+    use crate::analysis::chapters::{chapter_source_hash, clean_for_ai, collect_chapters};
+
+    let folder = std::path::PathBuf::from(&request.folder);
+    if !folder.exists() {
+        return Ok(SummaryRefreshEstimateResult {
+            success: false,
+            files: Vec::new(),
+            chapter_count: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            estimated_cost: None,
+            error: "Folder does not exist.".to_string(),
+        });
+    }
+
+    let chapters = collect_chapters(&folder);
+    let summary_hashes = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        crate::db::load_chapter_summary_hashes(&conn, &request.folder)
+    };
+
+    let mut files_to_refresh: Vec<String> = Vec::new();
+    let mut word_counts: Vec<usize> = Vec::new();
+
+    for chapter in &chapters {
+        let Some(file) = chapter.file_name().map(|f| f.to_string_lossy().to_string()) else {
+            continue;
+        };
+
+        let source = std::fs::read_to_string(chapter).unwrap_or_default();
+        let cleaned = clean_for_ai(&source);
+        if cleaned.is_empty() {
+            continue;
+        }
+
+        let hash = chapter_source_hash(&cleaned);
+        let changed = summary_hashes.get(&file).map(|h| h != &hash).unwrap_or(true);
+        if changed {
+            files_to_refresh.push(file);
+            word_counts.push(cleaned.split_whitespace().count());
+        }
+    }
+
+    let params = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        crate::db::load_report_cost_params(&conn, "chapter_summaries")
+    };
+
+    const WORDS_TO_TOKENS: f64 = 1.3;
+    const SYSTEM_PROMPT_TOKENS: usize = 400;
+
+    let input_tokens: usize = word_counts.iter().map(|&wc| {
+        let truncated = if params.truncation > 0 { wc.min(params.truncation) } else { wc };
+        (truncated as f64 * WORDS_TO_TOKENS) as usize + SYSTEM_PROMPT_TOKENS
+    }).sum();
+
+    let output_tokens: usize = files_to_refresh.len() * params.output_max;
+
+    let estimated_cost = match (request.input_price, request.output_price) {
+        (Some(in_p), Some(out_p)) => {
+            let cost = (input_tokens as f64 / 1000.0 * in_p)
+                + (output_tokens as f64 / 1000.0 * out_p);
+            Some((cost * 1000.0).round() / 1000.0)
+        }
+        _ => None,
+    };
+
+    Ok(SummaryRefreshEstimateResult {
+        success: true,
+        files: files_to_refresh.clone(),
+        chapter_count: files_to_refresh.len(),
+        input_tokens,
+        output_tokens,
+        estimated_cost,
         error: String::new(),
     })
 }
