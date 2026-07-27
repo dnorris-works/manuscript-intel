@@ -238,6 +238,7 @@ onMounted(() => {
 
       <HelpPanel v-else-if="activePanel === 'help'" />
       <SettingsPanel v-else-if="activePanel === 'settings'" />
+      <SeriesForm v-else-if="activePanel === 'series'" :series="editingSeries" />
 
       <!-- Writing mode -->
       <WritingPanel
@@ -252,7 +253,6 @@ onMounted(() => {
         <AnalyzerPanel v-if="activePanel === 'analyzer'" />
         <ReportsViewer v-if="activePanel === 'reports'" />
         <StoryForm v-if="activePanel === 'story-form'" :story="editingStory" />
-        <SeriesForm v-if="activePanel === 'series'" :series="editingSeries" />
         <ManuscriptViewer
           v-if="activePanel === 'manuscript'"
           :findings="manuscriptFindings"

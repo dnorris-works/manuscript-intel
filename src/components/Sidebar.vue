@@ -336,7 +336,7 @@ function formatTimestamp(ts: string): string {
       </div>
     </section>
 
-    <section v-if="appMode === 'analyzer'" class="sidebar-block">
+    <section class="sidebar-block">
       <button class="section-header" @click="toggleSection('series')">
         <span class="section-title">Series</span>
         <span class="section-chevron" :class="{ open: sectionOpen.series }">&#8250;</span>
