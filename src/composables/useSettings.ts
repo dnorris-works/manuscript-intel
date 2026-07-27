@@ -105,6 +105,8 @@ applyTheme(theme.value);
 function setTheme(mode: ThemeMode): void {
   theme.value = mode;
   applyTheme(mode);
+  if (!settingsHydrated) return;
+  void persistUiSettings();
 }
 
 const provider = ref('tokenmix');
@@ -189,6 +191,24 @@ function removeFolderEntry(index: number): void {
   folderStructure.value.extra.splice(index, 1);
 }
 
+function currentUiSettingsPayload(): UiSettingsRow {
+  return {
+    theme: theme.value,
+    provider: provider.value,
+    api_key: apiKey.value.trim(),
+    model_assignments: JSON.stringify(modelAssignments.value),
+    canopy_api_key: canopyApiKey.value.trim(),
+    dataforseo_login: dataforseoLogin.value.trim(),
+    dataforseo_password: dataforseoPassword.value.trim(),
+  };
+}
+
+async function persistUiSettings(): Promise<void> {
+  await invoke<UiSettingsRow>('save_ui_settings', {
+    settings: currentUiSettingsPayload(),
+  });
+}
+
 async function saveSettings(): Promise<void> {
   provider.value = 'tokenmix';
   const saved = await invoke<FolderStructure>('save_folder_structure', {
@@ -196,17 +216,7 @@ async function saveSettings(): Promise<void> {
   });
   folderStructure.value = cloneStructure(saved);
 
-  await invoke<UiSettingsRow>('save_ui_settings', {
-    settings: {
-      theme: theme.value,
-      provider: provider.value,
-      api_key: apiKey.value.trim(),
-      model_assignments: JSON.stringify(modelAssignments.value),
-      canopy_api_key: canopyApiKey.value.trim(),
-      dataforseo_login: dataforseoLogin.value.trim(),
-      dataforseo_password: dataforseoPassword.value.trim(),
-    },
-  });
+  await persistUiSettings();
 
   await autoLoadModelsIfConfigured();
 }
@@ -239,17 +249,7 @@ void hydrateSettings();
 watch([provider, apiKey], () => {
   if (!settingsHydrated) return;
   provider.value = 'tokenmix';
-  void invoke<UiSettingsRow>('save_ui_settings', {
-    settings: {
-      theme: theme.value,
-      provider: provider.value,
-      api_key: apiKey.value.trim(),
-      model_assignments: JSON.stringify(modelAssignments.value),
-      canopy_api_key: canopyApiKey.value.trim(),
-      dataforseo_login: dataforseoLogin.value.trim(),
-      dataforseo_password: dataforseoPassword.value.trim(),
-    },
-  });
+  void persistUiSettings();
 });
 
 async function testCanopy(): Promise<{ success: boolean; error: string }> {
