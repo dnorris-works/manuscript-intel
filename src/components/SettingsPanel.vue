@@ -500,9 +500,10 @@ async function onRemoveStale(): Promise<void> {
 
 <style scoped>
 .settings-panel {
-  padding: 20px;
+  padding: clamp(14px, 2vw, 24px);
   overflow-y: auto;
-  max-width: 560px;
+  width: 100%;
+  max-width: none;
 }
 
 .panel-title {
@@ -527,7 +528,8 @@ async function onRemoveStale(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 480px;
+  width: 100%;
+  max-width: none;
 }
 
 .settings-form label {
@@ -556,6 +558,7 @@ async function onRemoveStale(): Promise<void> {
 .provider-options {
   display: flex;
   gap: 16px;
+  flex-wrap: wrap;
 }
 
 .provider-option {
@@ -578,6 +581,21 @@ async function onRemoveStale(): Promise<void> {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+@media (max-width: 760px) {
+  .settings-form {
+    width: 100%;
+  }
+
+  .model-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .model-row .btn {
+    width: 100%;
+  }
 }
 
 .model-row select {

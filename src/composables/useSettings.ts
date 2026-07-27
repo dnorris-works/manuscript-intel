@@ -106,7 +106,7 @@ function setTheme(mode: ThemeMode): void {
   theme.value = mode;
   applyTheme(mode);
   if (!settingsHydrated) return;
-  void persistUiSettings();
+  scheduleUiSettingsSave();
 }
 
 const provider = ref('tokenmix');
@@ -119,6 +119,8 @@ const models = ref<ModelInfo[]>([]);
 const folderStructure = ref<FolderStructure>(cloneStructure(DEFAULT_FOLDER_STRUCTURE));
 let modelsAutoLoadStarted = false;
 let settingsHydrated = false;
+let uiSettingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let folderStructureSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function normalizeProvider(value: string | null | undefined): string {
   return value === 'tokenmix' ? 'tokenmix' : 'tokenmix';
@@ -209,6 +211,30 @@ async function persistUiSettings(): Promise<void> {
   });
 }
 
+function scheduleUiSettingsSave(): void {
+  if (!settingsHydrated) return;
+  if (uiSettingsSaveTimer) clearTimeout(uiSettingsSaveTimer);
+  uiSettingsSaveTimer = setTimeout(() => {
+    uiSettingsSaveTimer = null;
+    void persistUiSettings();
+  }, 1800);
+}
+
+function scheduleFolderStructureSave(): void {
+  if (!settingsHydrated) return;
+  if (folderStructureSaveTimer) clearTimeout(folderStructureSaveTimer);
+  folderStructureSaveTimer = setTimeout(() => {
+    folderStructureSaveTimer = null;
+    void invoke<FolderStructure>('save_folder_structure', {
+      structure: folderStructure.value,
+    }).then((saved) => {
+      folderStructure.value = cloneStructure(saved);
+    }).catch((e) => {
+      console.error('save_folder_structure:', e);
+    });
+  }, 1800);
+}
+
 async function saveSettings(): Promise<void> {
   provider.value = 'tokenmix';
   const saved = await invoke<FolderStructure>('save_folder_structure', {
@@ -246,10 +272,22 @@ async function hydrateSettings(): Promise<void> {
 
 void hydrateSettings();
 
-watch([provider, apiKey], () => {
+watch([theme, provider, apiKey, modelAssignments, canopyApiKey, dataforseoLogin, dataforseoPassword], () => {
   if (!settingsHydrated) return;
   provider.value = 'tokenmix';
-  void persistUiSettings();
+  scheduleUiSettingsSave();
+}, { deep: true });
+
+watch(folderStructure, () => {
+  if (!settingsHydrated) return;
+  scheduleFolderStructureSave();
+}, { deep: true });
+
+watch([provider, apiKey], () => {
+  if (!settingsHydrated) return;
+  if (provider.value === 'tokenmix' && apiKey.value.trim()) {
+    void autoLoadModelsIfConfigured();
+  }
 });
 
 async function testCanopy(): Promise<{ success: boolean; error: string }> {
