@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
-use regex::Regex;
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 use super::{emit, err, GenreResult};
 use super::chapters::{collect_chapters, extract_title};
@@ -175,12 +175,32 @@ pub async fn analyze_zeigarnik_for_story(app: AppHandle, request: ZeigarnikReque
 /// Strip the leading "# Title" line and light markdown formatting so pattern
 /// matching runs against plain prose.
 fn strip_markdown(raw: &str) -> String {
-    raw.lines()
+    let without_title = raw
+        .lines()
         .filter(|l| !l.trim_start().starts_with("# "))
         .collect::<Vec<_>>()
-        .join("\n")
-        .replace("**", "")
-        .replace("__", "")
+        .join("\n");
+
+    let mut out = String::with_capacity(without_title.len());
+    let parser = Parser::new_ext(&without_title, Options::all());
+    for ev in parser {
+        match ev {
+            Event::Text(t) | Event::Code(t) => out.push_str(&t),
+            Event::SoftBreak | Event::HardBreak => out.push('\n'),
+            Event::Start(Tag::Paragraph) | Event::Start(Tag::Heading { .. }) => {
+                if !out.is_empty() { out.push('\n'); }
+            }
+            Event::End(TagEnd::Paragraph) | Event::End(TagEnd::Heading { .. }) => {
+                out.push('\n');
+            }
+            _ => {}
+        }
+    }
+
+    if out.trim().is_empty() {
+        return without_title;
+    }
+    out
 }
 
 fn last_paragraph(body: &str) -> String {
@@ -192,28 +212,69 @@ fn last_paragraph(body: &str) -> String {
         .to_string()
 }
 
-/// Naive sentence splitter: good enough for pattern scanning, not linguistics.
-/// Splits on ./!/? runs followed by whitespace, keeping the terminator.
+/// Sentence splitter with lightweight abbreviation/decimal guards.
 fn split_sentences(body: &str) -> Vec<String> {
-    let re = Regex::new(r"[^.!?]*[.!?]+[\)\]\u{201d}'\u{2019}\u{201c}\u{22}]*").unwrap();
-    let mut out: Vec<String> = re.find_iter(body)
-        .map(|m| m.as_str().trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let abbreviations = [
+        "mr.", "mrs.", "ms.", "dr.", "prof.", "jr.", "sr.", "st.", "vs.", "etc.", "e.g.", "i.e.", "u.s.", "u.k.", "no.",
+    ];
 
-    // Catch a trailing fragment with no terminal punctuation (common at the
-    // very end of a chapter file).
-    let matched_len: usize = out.iter().map(|s| s.len()).sum::<usize>();
-    let remainder = body.trim();
-    if remainder.len() > matched_len + 20 {
-        if let Some(tail) = remainder.rsplit(['.', '!', '?']).next() {
-            let tail = tail.trim();
-            if tail.split_whitespace().count() >= 3 {
-                out.push(tail.to_string());
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    let chars: Vec<(usize, char)> = body.char_indices().collect();
+
+    for (i, (byte_idx, ch)) in chars.iter().enumerate() {
+        if !matches!(ch, '.' | '!' | '?') {
+            continue;
+        }
+
+        let mut end = byte_idx + ch.len_utf8();
+        let mut j = i + 1;
+        while j < chars.len() {
+            let c = chars[j].1;
+            if matches!(c, ')' | ']' | '"' | '\'' | '’' | '”') {
+                end = chars[j].0 + c.len_utf8();
+                j += 1;
+                continue;
+            }
+            break;
+        }
+
+        // Decimal guard: 3.14 is not sentence terminal.
+        let prev = body[..*byte_idx].chars().next_back();
+        let next_non_ws = body[end..].chars().find(|c| !c.is_whitespace());
+        if *ch == '.' && prev.map(|c| c.is_ascii_digit()).unwrap_or(false)
+            && next_non_ws.map(|c| c.is_ascii_digit()).unwrap_or(false)
+        {
+            continue;
+        }
+
+        // Abbreviation guard.
+        if *ch == '.' {
+            let recent = body[start..end].trim_end();
+            let last_token = recent
+                .rsplit_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if abbreviations.contains(&last_token.as_str()) {
+                continue;
             }
         }
+
+        let sentence = body[start..end].trim();
+        if !sentence.is_empty() {
+            out.push(sentence.to_string());
     }
+
+        start = end;
+    }
+
+    // Trailing fragment with no terminal punctuation.
+    let tail = body[start..].trim();
+    if tail.split_whitespace().count() >= 3 {
+        out.push(tail.to_string());
     out
+
 }
 
 // ── Chapter-ending tension scoring ──────────────────────────────────────────
@@ -292,8 +353,6 @@ struct Occurrence {
 /// objects) in each chapter, noting whether each occurrence sits at the
 /// start of a sentence (where capitalization is just grammar, not a name).
 fn scan_entity_occurrences(chapter_texts: &[String]) -> HashMap<String, Vec<Occurrence>> {
-    let cap_word = r"[A-Z][a-zA-Z'\u{2019}]+";
-    let re = Regex::new(&format!(r"(?:{cw})(?:\s+(?:{cw})){{0,2}}", cw = cap_word)).unwrap();
     let stopwords: [&str; 24] = [
         "The", "A", "An", "He", "She", "It", "They", "We", "I", "But", "And", "So",
         "Then", "When", "If", "As", "You", "Chapter", "There", "Here", "This", "That", "Her", "His",
@@ -302,18 +361,52 @@ fn scan_entity_occurrences(chapter_texts: &[String]) -> HashMap<String, Vec<Occu
     let mut map: HashMap<String, Vec<Occurrence>> = HashMap::new();
 
     for (chapter_idx, text) in chapter_texts.iter().enumerate() {
-        for m in re.find_iter(text) {
-            let raw = m.as_str();
-            let words: Vec<&str> = raw.split_whitespace().collect();
-            let is_multiword = words.len() > 1;
+        let tokens = word_spans(text);
+        for i in 0..tokens.len() {
+            let (start, end) = tokens[i];
+            let first = &text[start..end];
+            if !is_capitalized_word(first) {
+                continue;
+            }
 
-            if !is_multiword && stopwords.contains(&raw) { continue; }
+            let mut phrase_start = start;
+            let mut phrase_end = end;
+            let mut word_count = 1usize;
+
+            for next_idx in [i + 1, i + 2] {
+                if next_idx >= tokens.len() {
+                    break;
+                }
+                let (ns, ne) = tokens[next_idx];
+                let between = &text[phrase_end..ns];
+                if !between.chars().all(|c| c.is_whitespace()) {
+                    break;
+                }
+                let nw = &text[ns..ne];
+                if !is_capitalized_word(nw) {
+                    break;
+                }
+                phrase_end = ne;
+                word_count += 1;
+                if word_count >= 3 {
+                    break;
+                }
+            }
+
+            let raw = text[phrase_start..phrase_end].trim();
+            if raw.is_empty() {
+                continue;
+            }
+
+            let is_multiword = raw.split_whitespace().count() > 1;
+            if !is_multiword && stopwords.contains(&raw) {
+                continue;
+            }
 
             // Sentence-initial if the preceding non-space char is a sentence
             // terminator, a quote, or we're at the start of the text.
-            let start = m.start();
             let sentence_initial = {
-                let before = text[..start].trim_end();
+                let before = text[..phrase_start].trim_end();
                 match before.chars().last() {
                     None => true,
                     Some(c) => matches!(c, '.' | '!' | '?' | '\u{201c}' | '\u{2018}' | '"'),
@@ -321,8 +414,8 @@ fn scan_entity_occurrences(chapter_texts: &[String]) -> HashMap<String, Vec<Occu
             };
 
             let norm = raw.to_lowercase();
-            let ctx_start = floor_char_boundary(text, start.saturating_sub(40));
-            let ctx_end = ceil_char_boundary(text, (m.end() + 40).min(text.len()));
+            let ctx_start = floor_char_boundary(text, phrase_start.saturating_sub(40));
+            let ctx_end = ceil_char_boundary(text, (phrase_end + 40).min(text.len()));
             let snippet = format!("…{}…", text[ctx_start..ctx_end].trim());
 
             map.entry(norm).or_default().push(Occurrence { chapter_idx, sentence_initial, snippet });
@@ -330,6 +423,45 @@ fn scan_entity_occurrences(chapter_texts: &[String]) -> HashMap<String, Vec<Occu
     }
 
     map
+}
+
+fn word_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+
+    for (idx, ch) in text.char_indices() {
+        let is_word_char = ch.is_alphabetic() || ch == '\'' || ch == '’';
+        match (start, is_word_char) {
+            (None, true) => start = Some(idx),
+            (Some(s), false) => {
+                out.push((s, idx));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(s) = start {
+        out.push((s, text.len()));
+    }
+    out
+}
+
+fn is_capitalized_word(word: &str) -> bool {
+    let mut chars = word.chars();
+    let Some(first) = chars.next() else { return false; };
+    if !first.is_uppercase() {
+        return false;
+    }
+    let mut has_lower = false;
+    for ch in chars {
+        if ch.is_lowercase() {
+            has_lower = true;
+        } else if !(ch.is_alphabetic() || ch == '\'' || ch == '’') {
+            return false;
+        }
+    }
+    has_lower
 }
 
 fn find_open_threads(

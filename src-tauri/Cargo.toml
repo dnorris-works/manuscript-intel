@@ -30,6 +30,7 @@ log = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 sha2 = "0.10"
+pulldown-cmark = "0.12"
 
 [dev-dependencies]
 proptest = "1"
