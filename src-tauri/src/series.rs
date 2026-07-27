@@ -1,6 +1,8 @@
 // series.rs — Series management (groups stories into reading order)
 
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 use crate::db;
 
@@ -33,6 +35,12 @@ pub struct SeriesResult {
 pub struct CreateSeriesRequest {
     pub name: String,
     pub books: Vec<SeriesBookInput>,
+    #[serde(default)]
+    pub bible_path: String,
+    #[serde(default)]
+    pub create_empty: bool,
+    #[serde(default)]
+    pub parent_folder: String,
 }
 
 #[derive(Deserialize)]
@@ -79,19 +87,54 @@ pub async fn list_series(app: AppHandle) -> SeriesResult {
 
 #[tauri::command]
 pub async fn create_series(app: AppHandle, request: CreateSeriesRequest) -> SeriesResult {
+    let name = request.name.trim().to_string();
+    if name.is_empty() {
+        return SeriesResult { success: false, series: Vec::new(), error: "Series name is required.".to_string() };
+    }
+
+    let mut bible_path = request.bible_path.trim().to_string();
+
+    if request.create_empty {
+        let _ = crate::folder_structure::load(&app);
+        let parent = PathBuf::from(request.parent_folder.trim());
+        if !parent.is_dir() {
+            return SeriesResult {
+                success: false,
+                series: Vec::new(),
+                error: format!("Parent folder does not exist: {}", request.parent_folder),
+            };
+        }
+
+        let series_dir = parent.join(sanitize_folder_name(&name));
+        if series_dir.exists() {
+            return SeriesResult {
+                success: false,
+                series: Vec::new(),
+                error: format!("A folder already exists at: {}", series_dir.to_string_lossy()),
+            };
+        }
+
+        match ensure_series_scaffold(&series_dir) {
+            Ok(default_bible_path) => {
+                if bible_path.is_empty() {
+                    bible_path = default_bible_path;
+                }
+            }
+            Err(e) => {
+                let _ = fs::remove_dir_all(&series_dir);
+                return SeriesResult { success: false, series: Vec::new(), error: e };
+            }
+        }
+    }
+
     {
         let database = app.state::<db::Db>();
         let conn = database.0.lock().unwrap();
 
-        let name = request.name.trim();
-        if name.is_empty() {
-            return SeriesResult { success: false, series: Vec::new(), error: "Series name is required.".to_string() };
-        }
-
         let now = chrono::Utc::now().to_rfc3339();
         if let Err(e) = conn.execute(
-            "INSERT INTO series (name, created_at) VALUES (?1, ?2)",
-            rusqlite::params![name, now],
+            "INSERT INTO series (name, created_at, bible_path) VALUES (?1, ?2, ?3)",
+            rusqlite::params![name, now, bible_path],
         ) {
             return SeriesResult { success: false, series: Vec::new(), error: format!("Could not create series: {}", e) };
         }
@@ -100,6 +143,55 @@ pub async fn create_series(app: AppHandle, request: CreateSeriesRequest) -> Seri
         save_series_books(&conn, series_id, &request.books);
     }
     list_series(app).await
+}
+
+fn sanitize_folder_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            c if c.is_control() => '-',
+            c => c,
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+    if cleaned.is_empty() {
+        "Untitled Series".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn ensure_series_scaffold(series_dir: &Path) -> Result<String, String> {
+    let structure = crate::folder_structure::current();
+
+    let mut dirs = vec![
+        structure.bible().to_string(),
+        structure.characters().to_string(),
+        structure.locations().to_string(),
+        "Books".to_string(),
+    ];
+    for extra in &structure.extra {
+        let trimmed = extra.trim();
+        if !trimmed.is_empty() {
+            dirs.push(trimmed.to_string());
+        }
+    }
+
+    for sub in dirs {
+        fs::create_dir_all(series_dir.join(&sub))
+            .map_err(|e| format!("Cannot create {}/: {}", sub, e))?;
+    }
+
+    let bible_file = series_dir.join(structure.bible()).join("Series-Bible.md");
+    if !bible_file.exists() {
+        fs::write(&bible_file, "# Series Bible\n\n")
+            .map_err(|e| format!("Cannot write {}: {}", bible_file.display(), e))?;
+    }
+
+    Ok(bible_file.to_string_lossy().to_string())
 }
 
 #[tauri::command]

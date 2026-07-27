@@ -14,8 +14,22 @@ async function loadSeries(): Promise<void> {
   }
 }
 
-async function createSeries(name: string, books: { story_folder: string; story_name: string; book_order: number }[]): Promise<SeriesResult> {
-  const result = await invoke<SeriesResult>('create_series', { request: { name, books } });
+async function createSeries(
+  name: string,
+  books: { story_folder: string; story_name: string; book_order: number }[],
+  biblePath: string = '',
+  createEmpty: boolean = false,
+  parentFolder: string = ''
+): Promise<SeriesResult> {
+  const result = await invoke<SeriesResult>('create_series', {
+    request: {
+      name,
+      books,
+      bible_path: biblePath,
+      create_empty: createEmpty,
+      parent_folder: parentFolder,
+    },
+  });
   if (result.success) seriesList.value = result.series;
   return result;
 }
