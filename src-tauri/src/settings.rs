@@ -123,12 +123,16 @@ fn load_key_value(conn: &Connection, key: &str) -> String {
     ).unwrap_or_default()
 }
 
+fn normalize_provider(value: &str) -> String {
+    if value == "tokenmix" { "tokenmix".to_string() } else { "tokenmix".to_string() }
+}
+
 #[tauri::command]
 pub async fn load_ui_settings(db: tauri::State<'_, Db>) -> Result<UiSettings, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     Ok(UiSettings {
         theme: load_key_value(&conn, "theme"),
-        provider: load_key_value(&conn, "provider"),
+        provider: normalize_provider(&load_key_value(&conn, "provider")),
         api_key: load_key_value(&conn, "api_key"),
         model_assignments: load_key_value(&conn, "model_assignments"),
         canopy_api_key: load_key_value(&conn, "canopy_api_key"),
@@ -149,8 +153,9 @@ pub async fn load_app_state(db: tauri::State<'_, Db>) -> Result<AppState, String
 #[tauri::command]
 pub async fn save_ui_settings(
     db: tauri::State<'_, Db>,
-    settings: UiSettings,
+    mut settings: UiSettings,
 ) -> Result<UiSettings, String> {
+    settings.provider = normalize_provider(&settings.provider);
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     for (key, value) in [

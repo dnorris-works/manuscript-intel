@@ -145,7 +145,7 @@ watch(() => platformCtx.platform.value, () => {
 
 const costEstimates = ref<Record<string, number>>({});
 
-const STATIC_CLAUDE_PRICES: Record<string, { input_price: number; output_price: number }> = {
+const STATIC_SEEDED_MODEL_PRICES: Record<string, { input_price: number; output_price: number }> = {
   'claude-opus-4-20250514': { input_price: 15, output_price: 75 },
   'claude-sonnet-4-20250514': { input_price: 3, output_price: 15 },
   'claude-haiku-4-5-20251001': { input_price: 1, output_price: 5 },
@@ -199,7 +199,7 @@ function normalizeModelId(id: string): string {
 
 function fallbackModelPrice(modelId: string): { input_price: number; output_price: number } | null {
   const normalized = normalizeModelId(modelId);
-  if (STATIC_CLAUDE_PRICES[normalized]) return STATIC_CLAUDE_PRICES[normalized];
+  if (STATIC_SEEDED_MODEL_PRICES[normalized]) return STATIC_SEEDED_MODEL_PRICES[normalized];
   return null;
 }
 

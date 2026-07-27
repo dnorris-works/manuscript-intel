@@ -118,8 +118,13 @@ const folderStructure = ref<FolderStructure>(cloneStructure(DEFAULT_FOLDER_STRUC
 let modelsAutoLoadStarted = false;
 let settingsHydrated = false;
 
+function normalizeProvider(value: string | null | undefined): string {
+  return value === 'tokenmix' ? 'tokenmix' : 'tokenmix';
+}
+
 watch([provider, apiKey], () => {
-  if (provider.value === 'claude' || (provider.value === 'tokenmix' && apiKey.value.trim())) {
+  provider.value = normalizeProvider(provider.value);
+  if (provider.value === 'tokenmix' && apiKey.value.trim()) {
     void autoLoadModelsIfConfigured();
   }
 });
@@ -185,6 +190,7 @@ function removeFolderEntry(index: number): void {
 }
 
 async function saveSettings(): Promise<void> {
+  provider.value = 'tokenmix';
   const saved = await invoke<FolderStructure>('save_folder_structure', {
     structure: folderStructure.value,
   });
@@ -210,7 +216,7 @@ async function hydrateSettings(): Promise<void> {
     const loaded = await invoke<UiSettingsRow>('load_ui_settings');
     theme.value = (loaded.theme as ThemeMode) === 'light' ? 'light' : 'dark';
     applyTheme(theme.value);
-    provider.value = loaded.provider || 'tokenmix';
+    provider.value = normalizeProvider(loaded.provider || 'tokenmix');
     apiKey.value = loaded.api_key || '';
     canopyApiKey.value = loaded.canopy_api_key || '';
     dataforseoLogin.value = loaded.dataforseo_login || '';
@@ -232,6 +238,7 @@ void hydrateSettings();
 
 watch([provider, apiKey], () => {
   if (!settingsHydrated) return;
+  provider.value = 'tokenmix';
   void invoke<UiSettingsRow>('save_ui_settings', {
     settings: {
       theme: theme.value,

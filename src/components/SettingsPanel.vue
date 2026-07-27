@@ -241,12 +241,8 @@ async function onRemoveStale(): Promise<void> {
       <!-- Provider -->
       <label>Provider</label>
       <div class="provider-options">
-        <label class="provider-option">
-          <input type="radio" v-model="settingsCtx.provider.value" value="claude" />
-          Claude
-        </label>
-        <label class="provider-option">
-          <input type="radio" v-model="settingsCtx.provider.value" value="tokenmix" />
+        <label class="provider-option active">
+          <input type="radio" :checked="true" disabled />
           TokenMix
         </label>
       </div>
@@ -346,7 +342,7 @@ async function onRemoveStale(): Promise<void> {
         <div class="model-assign-row">
           <div class="model-assign-label">
             <strong>Continuity Check</strong>
-            <span class="model-recommend">Needs reasoning ability to spot contradictions across chapters. Use a capable model (e.g. GPT-4o, Claude Sonnet).</span>
+            <span class="model-recommend">Needs reasoning ability to spot contradictions across chapters. Use a capable model (e.g. GPT-4o or another high-reasoning model).</span>
           </div>
           <select v-model="settingsCtx.modelAssignments.value.continuity">
             <option value="">(Use default)</option>
@@ -357,7 +353,7 @@ async function onRemoveStale(): Promise<void> {
         <div class="model-assign-row">
           <div class="model-assign-label">
             <strong>Show Don't Tell</strong>
-            <span class="model-recommend">Literary judgment — needs to understand prose craft. Use a strong model (e.g. Claude Sonnet, GPT-4o).</span>
+            <span class="model-recommend">Literary judgment — needs to understand prose craft. Use a strong model (e.g. GPT-4o or another high-reasoning model).</span>
           </div>
           <select v-model="settingsCtx.modelAssignments.value.showDontTell">
             <option value="">(Use default)</option>
@@ -368,7 +364,7 @@ async function onRemoveStale(): Promise<void> {
         <div class="model-assign-row">
           <div class="model-assign-label">
             <strong>AI-isms</strong>
-            <span class="model-recommend">Literary judgment — spots synthetic / template-sounding prose. Use a strong model (e.g. Claude Sonnet, GPT-4o).</span>
+            <span class="model-recommend">Literary judgment — spots synthetic / template-sounding prose. Use a strong model (e.g. GPT-4o or another high-reasoning model).</span>
           </div>
           <select v-model="settingsCtx.modelAssignments.value.aiIsms">
             <option value="">(Use default)</option>

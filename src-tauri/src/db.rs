@@ -208,7 +208,7 @@ CREATE TABLE IF NOT EXISTS report_types (
     min_tier          TEXT NOT NULL DEFAULT 'basic'      -- basic | capable | strong
 );
 
--- Static provider model catalogs (e.g. Claude). TokenMix is fetched live.
+-- Static provider model catalogs for seeded pricing fallbacks. TokenMix is fetched live.
 CREATE TABLE IF NOT EXISTS provider_models (
     id           TEXT PRIMARY KEY,
     provider     TEXT NOT NULL,

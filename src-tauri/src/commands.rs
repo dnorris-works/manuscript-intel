@@ -73,10 +73,10 @@ pub async fn call_llm(
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    match provider {
-        "tokenmix" => call_tokenmix(api_key, model, system, user, max_tokens, false).await,
-        _ => call_claude(api_key, model, system, user, max_tokens).await,
+    if provider != "tokenmix" {
+        return Err(format!("Unsupported provider '{}'. TokenMix is the only supported provider.", provider));
     }
+    call_tokenmix(api_key, model, system, user, max_tokens, false).await
 }
 
 /// Same as call_llm but forces JSON mode (valid JSON guaranteed in response).
@@ -88,53 +88,10 @@ pub async fn call_llm_json(
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    match provider {
-        "tokenmix" => call_tokenmix(api_key, model, system, user, max_tokens, true).await,
-        _ => call_claude(api_key, model, system, user, max_tokens).await,
+    if provider != "tokenmix" {
+        return Err(format!("Unsupported provider '{}'. TokenMix is the only supported provider.", provider));
     }
-}
-
-async fn call_claude(
-    api_key: &str,
-    model: &str,
-    system: &str,
-    user: &str,
-    max_tokens: u32,
-) -> Result<String, String> {
-    let body = json!({
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": [{"role": "user", "content": user}]
-    });
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-
-    let resp = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Claude request failed: {}", e))?;
-
-    let json: Value = resp.json()
-        .await
-        .map_err(|e| format!("Claude response parse failed: {}", e))?;
-
-    if let Some(err) = json.get("error") {
-        return Err(format!("Claude API error: {}", err["message"].as_str().unwrap_or("unknown")));
-    }
-
-    json["content"][0]["text"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| "Claude: empty response".to_string())
+    call_tokenmix(api_key, model, system, user, max_tokens, true).await
 }
 
 async fn call_tokenmix(
@@ -267,7 +224,6 @@ pub async fn list_models(
 ) -> Result<ModelsResult, String> {
     Ok(match provider.as_str() {
         "tokenmix" => fetch_tokenmix_models(&db, &api_key).await,
-        "claude" => fetch_claude_models(&db),
         _ => ModelsResult {
             success: false, models: Vec::new(),
             error: format!("Unknown provider: {}", provider),
@@ -336,7 +292,7 @@ async fn fetch_tokenmix_models(db: &crate::db::Db, api_key: &str) -> ModelsResul
     let tokenmix_models = fetch_tokenmix_models_legacy(&client, api_key).await;
 
     if tokenmix_models.success && !tokenmix_models.models.is_empty() {
-        let claude_catalog = {
+        let seeded_catalog = {
             let conn = match db.0.lock() {
                 Ok(c) => c,
                 Err(_) => {
@@ -356,7 +312,7 @@ async fn fetch_tokenmix_models(db: &crate::db::Db, api_key: &str) -> ModelsResul
                 price_map.insert(key.to_ascii_lowercase(), (m.input_price, m.output_price, m.owned_by.clone()));
             }
         }
-        for m in &claude_catalog {
+        for m in &seeded_catalog {
             for key in tokenmix_model_candidates(&m.id) {
                 price_map.insert(
                     key.to_ascii_lowercase(),
@@ -364,8 +320,8 @@ async fn fetch_tokenmix_models(db: &crate::db::Db, api_key: &str) -> ModelsResul
                 );
             }
 
-            // Alias support for TokenMix anthropic naming like "claude-opus-4.6".
-            if let Some(alias) = claude_price_alias(&m.id) {
+            // Alias support for TokenMix vendor naming variants.
+            if let Some(alias) = seeded_model_alias(&m.id) {
                 price_map.insert(
                     alias.to_ascii_lowercase(),
                     (m.input_price, m.output_price, m.owned_by.clone()),
@@ -407,7 +363,7 @@ async fn fetch_tokenmix_models(db: &crate::db::Db, api_key: &str) -> ModelsResul
     tokenmix_models
 }
 
-fn claude_price_alias(seed_id: &str) -> Option<String> {
+fn seeded_model_alias(seed_id: &str) -> Option<String> {
     // Map seeded ids to common TokenMix aliases.
     match seed_id {
         "claude-opus-4-20250514" => Some("claude-opus-4.6".to_string()),
@@ -469,36 +425,6 @@ async fn fetch_tokenmix_models_legacy(client: &reqwest::Client, api_key: &str) -
         .filter(|m| !m.id.is_empty())
         .collect();
 
-    ModelsResult { success: true, models, error: String::new() }
-}
-
-fn fetch_claude_models(db: &crate::db::Db) -> ModelsResult {
-    let conn = match db.0.lock() {
-        Ok(c) => c,
-        Err(e) => {
-            return ModelsResult {
-                success: false,
-                models: Vec::new(),
-                error: format!("Database lock error: {}", e),
-            };
-        }
-    };
-    let models = crate::db::list_provider_models(&conn, "claude")
-        .into_iter()
-        .map(|m| ModelInfo {
-            id: m.id,
-            owned_by: m.owned_by,
-            input_price: m.input_price,
-            output_price: m.output_price,
-        })
-        .collect::<Vec<_>>();
-    if models.is_empty() {
-        return ModelsResult {
-            success: false,
-            models: Vec::new(),
-            error: "No Claude models seeded in provider_models.".to_string(),
-        };
-    }
     ModelsResult { success: true, models, error: String::new() }
 }
 
@@ -963,6 +889,14 @@ pub async fn chat_with_context(
     db: tauri::State<'_, crate::db::Db>,
     request: ChatRequest,
 ) -> Result<ChatResponse, ()> {
+    if request.provider != "tokenmix" {
+        return Ok(ChatResponse {
+            success: false,
+            reply: String::new(),
+            error: format!("Unsupported provider '{}'. TokenMix is the only supported provider.", request.provider),
+        });
+    }
+
     if request.api_key.is_empty() || request.model.is_empty() {
         return Ok(ChatResponse { success: false, reply: String::new(), error: "Set an API key and model in Settings.".to_string() });
     }
@@ -1015,51 +949,8 @@ pub async fn chat_with_context(
         Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Client error: {}", e) }),
     };
 
-    let base_url = match request.provider.as_str() {
-        "claude" => "https://api.anthropic.com/v1/messages",
-        _ => "https://api.tokenmix.ai/v1/chat/completions",
-    };
-
-    // For Claude, use their native API format
-    if request.provider == "claude" {
-        let claude_messages: Vec<serde_json::Value> = request.history.iter()
-            .map(|m| json!({"role": m.role, "content": m.content}))
-            .chain(std::iter::once(json!({"role": "user", "content": request.message})))
-            .collect();
-
-        let claude_body = json!({
-            "model": request.model,
-            "max_tokens": 2000,
-            "system": system,
-            "messages": claude_messages,
-        });
-
-        let resp = match client.post(base_url)
-            .header("x-api-key", &request.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&claude_body)
-            .send().await
-        {
-            Ok(r) => r,
-            Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Request failed: {}", e) }),
-        };
-
-        let json: Value = match resp.json().await {
-            Ok(v) => v,
-            Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Parse failed: {}", e) }),
-        };
-
-        if let Some(err) = json.get("error") {
-            return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Claude: {}", err["message"].as_str().unwrap_or("unknown")) });
-        }
-
-        let reply = json["content"][0]["text"].as_str().unwrap_or("").to_string();
-        return Ok(ChatResponse { success: true, reply, error: String::new() });
-    }
-
     // OpenAI-compatible (TokenMix)
-    let resp = match client.post(base_url)
+    let resp = match client.post("https://api.tokenmix.ai/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", request.api_key))
         .header("content-type", "application/json")
         .json(&body)
