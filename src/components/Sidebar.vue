@@ -232,7 +232,7 @@ function formatTimestamp(ts: string): string {
 <template>
   <aside id="sidebar">
     <div class="nav-section mode-tabs">
-      <button class="mode-tab" :class="{ active: appMode === 'analyzer' }" @click="setAppMode('analyzer')">Analyzer</button>
+      <button class="mode-tab" :class="{ active: appMode === 'analyzer' }" @click="setAppMode('analyzer'); showPanel('analyzer')">Analyzer</button>
       <button class="mode-tab" :class="{ active: appMode === 'writing' }" @click="setAppMode('writing'); sidebarMode = 'files'">Writing</button>
       <button class="mode-tab" :class="{ active: appMode === 'marketing' }" @click="setAppMode('marketing')">Marketing</button>
     </div>

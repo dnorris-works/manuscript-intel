@@ -57,6 +57,11 @@ provide('setAppMode', (mode: AppMode) => {
   appMode.value = mode;
   if (mode === 'marketing') {
     activePanel.value = 'campaigns';
+  } else if (mode === 'analyzer') {
+    const marketingPanels: Panel[] = ['campaigns', 'campaign-detail', 'campaign-form', 'platform-accounts'];
+    if (marketingPanels.includes(activePanel.value)) {
+      activePanel.value = 'analyzer';
+    }
   }
 });
 
