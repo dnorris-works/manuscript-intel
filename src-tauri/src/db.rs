@@ -1,10 +1,9 @@
 // db.rs — SQLite-backed storage for the genre/category reference system.
 //
-// Source of truth for: genres, KDP category paths, genre<->category links,
-// and per-story genre rankings / category-finder results. Story registration
-// (stories.json) and the human-readable .md reports stay as files — those are
-// meant to be read directly outside the app. The DB is queried to produce
-// those reports, not the other way around.
+// Source of truth for: story registry, genres, KDP category paths,
+// genre<->category links, and per-story analysis/report state.
+// Human-readable manuscript/report .md files still live in story folders for
+// direct user access; the DB stores metadata and analysis records.
 //
 // The genre-list.json / genre-kdp-map.json files in src-tauri/data/ are used
 // ONLY as one-time seed data on first launch (when the genres table is
@@ -27,6 +26,16 @@ const SEED_PROVIDER_MODELS_JSON: &str = include_str!("../data/provider-models.js
 const SEED_LOOKUP_CONFIG_JSON: &str = include_str!("../data/lookup-config.json");
 
 const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS stories (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    folder     TEXT NOT NULL UNIQUE,
+    created    TEXT NOT NULL,
+    bible_path TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_stories_name ON stories(name);
+
 CREATE TABLE IF NOT EXISTS genres (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL UNIQUE,

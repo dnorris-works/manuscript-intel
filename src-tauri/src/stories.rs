@@ -1,10 +1,9 @@
 // stories.rs — Persistent story registry
 //
-// Stores story metadata in:
-//   ~/Library/Application Support/manuscript-intel/stories.json
-//
-// Each story has: id, name, folder path, created date.
+// Stores story metadata in SQLite (`stories` table).
+// Manuscript and report documents remain filesystem-based under story folders.
 
+use rusqlite::{params, Connection};
 use std::fs;
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
@@ -21,46 +20,30 @@ pub struct Story {
     pub bible_path: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct StoriesFile {
-    stories: Vec<Story>,
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn app_data_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map_err(|e| format!("Cannot resolve app data dir: {}", e))
-}
+fn load_stories(conn: &Connection) -> Result<Vec<Story>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, folder, created, bible_path
+             FROM stories
+             ORDER BY created DESC, name COLLATE NOCASE ASC",
+        )
+        .map_err(|e| e.to_string())?;
 
-fn stories_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app_data_path(app)?;
-    fs::create_dir_all(&dir)
-        .map_err(|e| format!("Cannot create app data dir: {}", e))?;
-    Ok(dir.join("stories.json"))
-}
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(Story {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                folder: r.get(2)?,
+                created: r.get(3)?,
+                bible_path: r.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
 
-fn load_stories(app: &AppHandle) -> Result<Vec<Story>, String> {
-    let path = stories_path(app)?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let raw = fs::read_to_string(&path)
-        .map_err(|e| format!("Cannot read stories.json: {}", e))?;
-    let sf: StoriesFile = serde_json::from_str(&raw)
-        .map_err(|e| format!("Cannot parse stories.json: {}", e))?;
-    Ok(sf.stories)
-}
-
-fn save_stories(app: &AppHandle, stories: &[Story]) -> Result<(), String> {
-    let path = stories_path(app)?;
-    let sf = StoriesFile { stories: stories.to_vec() };
-    let json = serde_json::to_string_pretty(&sf)
-        .map_err(|e| format!("Cannot serialize stories: {}", e))?;
-    fs::write(&path, json)
-        .map_err(|e| format!("Cannot write stories.json: {}", e))?;
-    Ok(())
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 fn new_id() -> String {
@@ -135,13 +118,21 @@ fn ensure_story_scaffold(story_dir: &std::path::Path) -> Result<(), String> {
 /// List all stories.
 #[tauri::command]
 pub async fn list_stories(app: AppHandle) -> StoriesResult {
-    match load_stories(&app) {
+    let db = app.state::<crate::db::Db>();
+    let conn = match db.0.lock() {
+        Ok(conn) => conn,
+        Err(e) => {
+            return StoriesResult { success: false, stories: Vec::new(), error: e.to_string() };
+        }
+    };
+
+    match load_stories(&conn) {
         Ok(stories) => StoriesResult { success: true, stories, error: String::new() },
         Err(e)      => StoriesResult { success: false, stories: Vec::new(), error: e },
     }
 }
 
-fn register_story(app: &AppHandle, name: String, folder: String) -> StoriesResult {
+fn register_story(db: &crate::db::Db, name: String, folder: String) -> StoriesResult {
     let now = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let story = Story {
         id:         new_id(),
@@ -151,15 +142,29 @@ fn register_story(app: &AppHandle, name: String, folder: String) -> StoriesResul
         bible_path: String::new(),
     };
 
-    match load_stories(app) {
-        Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
-        Ok(mut stories) => {
-            stories.push(story);
-            match save_stories(app, &stories) {
-                Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
-                Ok(_)  => StoriesResult { success: true, stories, error: String::new() },
-            }
+    let conn = match db.0.lock() {
+        Ok(conn) => conn,
+        Err(e) => return StoriesResult { success: false, stories: Vec::new(), error: e.to_string() },
+    };
+
+    if let Err(e) = conn.execute(
+        "INSERT INTO stories (id, name, folder, created, bible_path) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![story.id, story.name, story.folder, story.created, story.bible_path],
+    ) {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint failed: stories.folder") {
+            return StoriesResult {
+                success: false,
+                stories: Vec::new(),
+                error: "This story folder is already registered.".to_string(),
+            };
         }
+        return StoriesResult { success: false, stories: Vec::new(), error: msg };
+    }
+
+    match load_stories(&conn) {
+        Ok(stories) => StoriesResult { success: true, stories, error: String::new() },
+        Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
     }
 }
 
@@ -173,7 +178,8 @@ pub async fn add_story(app: AppHandle, request: AddStoryRequest) -> StoriesResul
             error: format!("Folder does not exist: {}", request.folder),
         };
     }
-    register_story(&app, request.name.trim().to_string(), request.folder.clone())
+    let db = app.state::<crate::db::Db>();
+    register_story(&db, request.name.trim().to_string(), request.folder.clone())
 }
 
 /// Create a new empty story folder named after the story, with the configured
@@ -215,11 +221,8 @@ pub async fn init_story(app: AppHandle, request: InitStoryRequest) -> StoriesRes
         return StoriesResult { success: false, stories: Vec::new(), error: e };
     }
 
-    register_story(
-        &app,
-        name,
-        story_dir.to_string_lossy().to_string(),
-    )
+    let db = app.state::<crate::db::Db>();
+    register_story(&db, name, story_dir.to_string_lossy().to_string())
 }
 
 /// Update a story's name and/or folder.
@@ -233,34 +236,43 @@ pub async fn update_story(app: AppHandle, request: UpdateStoryRequest) -> Storie
         };
     }
 
-    match load_stories(&app) {
+    let db = app.state::<crate::db::Db>();
+    let conn = match db.0.lock() {
+        Ok(conn) => conn,
+        Err(e) => return StoriesResult { success: false, stories: Vec::new(), error: e.to_string() },
+    };
+
+    if let Err(e) = conn.execute(
+        "UPDATE stories
+         SET name = ?1, folder = ?2, bible_path = ?3
+         WHERE id = ?4",
+        params![request.name.trim(), request.folder, request.bible_path, request.id],
+    ) {
+        return StoriesResult { success: false, stories: Vec::new(), error: e.to_string() };
+    }
+
+    match load_stories(&conn) {
+        Ok(stories) => StoriesResult { success: true, stories, error: String::new() },
         Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
-        Ok(mut stories) => {
-            if let Some(s) = stories.iter_mut().find(|s| s.id == request.id) {
-                s.name   = request.name.trim().to_string();
-                s.folder = request.folder.clone();
-                s.bible_path = request.bible_path.clone();
-            }
-            match save_stories(&app, &stories) {
-                Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
-                Ok(_)  => StoriesResult { success: true, stories, error: String::new() },
-            }
-        }
     }
 }
 
 /// Delete a story by id (does NOT delete the folder).
 #[tauri::command]
 pub async fn delete_story(app: AppHandle, id: String) -> StoriesResult {
-    match load_stories(&app) {
+    let db = app.state::<crate::db::Db>();
+    let conn = match db.0.lock() {
+        Ok(conn) => conn,
+        Err(e) => return StoriesResult { success: false, stories: Vec::new(), error: e.to_string() },
+    };
+
+    if let Err(e) = conn.execute("DELETE FROM stories WHERE id = ?1", params![id]) {
+        return StoriesResult { success: false, stories: Vec::new(), error: e.to_string() };
+    }
+
+    match load_stories(&conn) {
+        Ok(stories) => StoriesResult { success: true, stories, error: String::new() },
         Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
-        Ok(mut stories) => {
-            stories.retain(|s| s.id != id);
-            match save_stories(&app, &stories) {
-                Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
-                Ok(_)  => StoriesResult { success: true, stories, error: String::new() },
-            }
-        }
     }
 }
 
