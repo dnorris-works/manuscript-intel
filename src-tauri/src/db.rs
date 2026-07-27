@@ -1369,13 +1369,6 @@ pub struct ChapterSummaryRow {
     pub word_count: i64,
 }
 
-pub fn chapter_summary_exists(conn: &Connection, story_folder: &str, file: &str) -> bool {
-    conn.query_row(
-        "SELECT 1 FROM chapter_summaries WHERE story_folder = ?1 AND file = ?2",
-        params![story_folder, file], |_| Ok(())
-    ).is_ok()
-}
-
 pub fn save_chapter_summary(
     conn: &Connection, story_folder: &str, file: &str, title: &str, signals: &str, source_hash: &str, word_count: i64,
 ) -> Result<(), String> {
