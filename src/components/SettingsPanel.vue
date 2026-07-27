@@ -512,7 +512,7 @@ async function onRemoveStale(): Promise<void> {
       </div>
     </div>
 
-    <div class="settings-footer">
+    <div v-if="activeTab !== 'winningcat'" class="settings-footer">
       <button class="btn" @click="onSave">Save Settings</button>
       <div class="settings-saved">{{ savedMsg }}</div>
     </div>
