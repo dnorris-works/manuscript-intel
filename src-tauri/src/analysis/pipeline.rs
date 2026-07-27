@@ -745,9 +745,9 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
     } // end of if !is_wide for search terms
     if crate::is_cancelled() { return err("Cancelled."); }
 
-    // ── Step 6: BISAC Classification ───────────────────────────────────────
-    emit(&app, "Step 6: BISAC classification...");
-    let bisac_section: String = {
+    // ── Step 6: BISAC Classification (Wide only) ───────────────────────────
+    let bisac_section: String = if is_wide {
+        emit(&app, "Step 6: BISAC classification...");
         let bisac_master = { let conn = database.0.lock().unwrap(); db::master_bisac_list(&conn) };
         let same_as_ebook = genre_data.industry_print.trim().eq_ignore_ascii_case(genre_data.industry_ebook.trim());
 
@@ -784,10 +784,13 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                 })).collect::<Vec<_>>()),
             },
         });
-        bisac_json.to_string()
+        let section = bisac_json.to_string();
+        { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "bisac_classification", &section, &run_ts); }
+        section
+    } else {
+        emit(&app, "Step 6: Skipping BISAC classification (KDP mode).");
+        String::new()
     };
-    // Save BISAC as standalone report
-    { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "bisac_classification", &bisac_section, &run_ts); }
     if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 7: Keyword Search (KDP only) ────────────────────────────────────

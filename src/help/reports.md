@@ -9,7 +9,7 @@ This guide explains every report you can run from the Analyzer. Reports are grou
 | Tab | Purpose |
 |---|---|
 | **KDP** | Amazon Kindle Direct Publishing — categories, keywords, competition |
-| **Wide** | Non-Amazon stores — discovery keywords, shared genre/BISAC work |
+| **Wide** | Non-Amazon stores — discovery keywords, BISAC, and shared genre work |
 | **Craft** | Structural and prose craft audits |
 | **Publish** | Reader experience, polish, and formatter prep |
 
@@ -23,7 +23,7 @@ Dependencies: some reports need others first (shown in the Analyzer). Selecting 
 
 Reads each manuscript chapter and extracts **genre signals** — setting, tone, themes, conflict type, romance/faith/supernatural markers, pacing, POV, and tropes — not a plot synopsis.
 
-Use this as the foundation for genre analysis, ranking, categories, keywords, and BISAC. Re-run with “Force re-summarize” if chapters changed substantially.
+Use this as the foundation for genre analysis, ranking, categories, and keywords. Re-run with “Force re-summarize” if chapters changed substantially.
 
 ### Genre Analysis
 
@@ -32,10 +32,6 @@ Uses chapter summaries to produce industry ebook/print genre labels, suggested K
 ### Genre Ranking
 
 Scores the manuscript independently against every genre in the app’s catalog (scores need not sum to 100). Helps spot cross-genre fit and confidence levels.
-
-### BISAC Classification
-
-Picks 1–3 BISAC subject codes from the seeded fiction catalog for print / Ingram-style metadata. Prefers specific headings over vague “General” codes when confidence is close.
 
 ---
 
@@ -55,7 +51,7 @@ Short Amazon-style phrases (about 2–4 words) for competition research — what
 
 ### Full Analysis
 
-Combined packaging report: categories, BISAC, keywords, and positioning in one document after the supporting reports have run.
+Combined packaging report: categories, keywords, and positioning in one document after the supporting reports have run.
 
 ### Keyword Search Results
 
@@ -76,6 +72,10 @@ Looks at competitor catalogs: release cadence, pricing patterns, series vs stand
 ---
 
 ## Wide only
+
+### BISAC Classification
+
+Picks 1–3 BISAC subject codes from the seeded fiction catalog for Ingram, wide distributors, and print metadata. Not used for KDP ebook listings (Amazon derives categories from browse nodes). Prefers specific headings over vague “General” codes when confidence is close.
 
 ### Discovery Keywords
 
