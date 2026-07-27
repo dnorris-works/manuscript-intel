@@ -348,6 +348,12 @@ function formatTimestamp(ts: string): string {
         </div>
         <div class="series-list">
           <div
+            v-if="seriesCtx.series.value.length === 0"
+            class="sidebar-hint"
+          >
+            No series yet. Click + to add one.
+          </div>
+          <div
             v-for="s in seriesCtx.series.value"
             :key="s.id"
             class="story-item"
@@ -355,6 +361,11 @@ function formatTimestamp(ts: string): string {
           >
             <span class="story-item-name">{{ s.name }}</span>
             <span class="series-book-count">{{ s.books.length }}</span>
+            <button
+              class="story-item-edit"
+              :title="'Edit series'"
+              @click.stop="onEditSeries(s)"
+            >&#x270E;</button>
           </div>
         </div>
       </div>
