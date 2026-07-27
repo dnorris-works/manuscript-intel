@@ -1,9 +1,6 @@
 #![deny(dead_code)]
 
 mod analysis;
-mod api_client;
-mod api_config;
-mod api_types;
 mod cancel;
 mod canopy;
 mod commands;

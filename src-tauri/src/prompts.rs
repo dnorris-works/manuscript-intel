@@ -17,9 +17,7 @@ use crate::db::Db;
 // ── Template loading ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PromptTemplate {
-    pub id:            String,
     pub system_prompt: String,
     pub user_template: String,
     pub max_tokens:    u32,
@@ -29,14 +27,13 @@ pub struct PromptTemplate {
 /// Load a prompt template from the database by id.
 pub fn load_template(conn: &Connection, template_id: &str) -> Result<PromptTemplate, String> {
     conn.query_row(
-        "SELECT id, system_prompt, user_template, max_tokens, json_mode FROM prompt_templates WHERE id = ?1",
+        "SELECT system_prompt, user_template, max_tokens, json_mode FROM prompt_templates WHERE id = ?1",
         params![template_id],
         |r| Ok(PromptTemplate {
-            id:            r.get(0)?,
-            system_prompt: r.get(1)?,
-            user_template: r.get(2)?,
-            max_tokens:    r.get::<_, i64>(3)? as u32,
-            json_mode:     r.get::<_, i64>(4)? != 0,
+            system_prompt: r.get(0)?,
+            user_template: r.get(1)?,
+            max_tokens:    r.get::<_, i64>(2)? as u32,
+            json_mode:     r.get::<_, i64>(3)? != 0,
         }),
     ).map_err(|e| format!("Prompt template '{}' not found: {}", template_id, e))
 }
@@ -257,12 +254,6 @@ pub async fn execute_prompt(
 
 // ── Chapter preprocessing functions ───────────────────────────────────────────
 
-/// Preprocess chapter text for continuity extraction: keep full text but truncate at 4000 words.
-#[allow(dead_code)]
-pub fn preprocess_for_continuity(content: &str) -> String {
-    truncate_words(content, 4000)
-}
-
 /// Preprocess chapter text for show-don't-tell checking: keep prose, truncate at 4000 words.
 pub fn preprocess_for_sdt(content: &str) -> String {
     truncate_words(content, 4000)
@@ -271,12 +262,6 @@ pub fn preprocess_for_sdt(content: &str) -> String {
 /// Preprocess chapter text for AI-isms checking (same truncation as SDT).
 pub fn preprocess_for_ai_isms(content: &str) -> String {
     truncate_words(content, 4000)
-}
-
-/// Preprocess chapter text for genre summary: aggressive truncation to 2000 words.
-#[allow(dead_code)]
-pub fn preprocess_for_genre(content: &str) -> String {
-    truncate_words(content, 2000)
 }
 
 fn truncate_words(text: &str, max: usize) -> String {
