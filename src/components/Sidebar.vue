@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { inject, ref, watch, type Ref } from 'vue';
+import { inject, ref, watch, computed, type Ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { storiesKey, reportsKey, platformKey, showPanelKey, seriesKey, campaignsKey } from '../injectionKeys';
-import type { Story, Series } from '../types';
+import type { Story, Series, SeriesBook } from '../types';
 import FileTreeNodes, { type FileTreeEntry } from './FileTreeNodes.vue';
 
 // ── Injections ────────────────────────────────────────────────────────────────
@@ -19,6 +19,7 @@ const setAppMode = inject<(mode: 'analyzer' | 'writing' | 'marketing') => void>(
 const openInWritingMode = inject<(filePath: string, title: string) => void>('openInWritingMode')!;
 const openNewDocumentForm = inject<(location?: string) => void>('openNewDocumentForm')!;
 const fileTreeTick = inject<Ref<number>>('fileTreeTick')!;
+const writingBrowseFolder = inject<Ref<string>>('writingBrowseFolder')!;
 
 // ── Emits ─────────────────────────────────────────────────────────────────────
 
@@ -49,6 +50,48 @@ function toggleSection(section: SidebarSection): void {
   sectionOpen.value[section] = !sectionOpen.value[section];
 }
 
+/** Story folders linked to any series — shown under Series, not in the flat Stories list (writing mode). */
+const seriesBookFolders = computed(() => {
+  const folders = new Set<string>();
+  for (const s of seriesCtx.series.value) {
+    for (const b of s.books) {
+      folders.add(b.story_folder.replace(/[/\\]+$/, ''));
+    }
+  }
+  return folders;
+});
+
+const standaloneStories = computed(() => {
+  if (appMode.value !== 'writing') {
+    return storiesCtx.stories.value;
+  }
+  return storiesCtx.stories.value.filter(s => {
+    const folder = s.folder.replace(/[/\\]+$/, '');
+    return !seriesBookFolders.value.has(folder);
+  });
+});
+
+const expandedSeriesIds = ref<Set<number>>(new Set());
+
+const effectiveBrowseFolder = computed(() => {
+  if (appMode.value === 'writing' && writingBrowseFolder.value) {
+    return writingBrowseFolder.value;
+  }
+  return storiesCtx.activeFolder.value;
+});
+
+function toggleSeriesExpand(seriesId: number): void {
+  const next = new Set(expandedSeriesIds.value);
+  if (next.has(seriesId)) next.delete(seriesId);
+  else next.add(seriesId);
+  expandedSeriesIds.value = next;
+}
+
+function findStoryByFolder(folder: string): Story | undefined {
+  const norm = folder.replace(/[/\\]+$/, '');
+  return storiesCtx.stories.value.find(s => s.folder.replace(/[/\\]+$/, '') === norm);
+}
+
 // ── File tree state ───────────────────────────────────────────────────────────
 
 const fileTree = ref<FileTreeEntry[]>([]);
@@ -56,7 +99,7 @@ const expandedDirs = ref<Set<string>>(new Set());
 const fileTreeError = ref('');
 
 function relativeLocation(absolutePath: string): string {
-  const root = storiesCtx.activeFolder.value.replace(/[/\\]+$/, '');
+  const root = effectiveBrowseFolder.value.replace(/[/\\]+$/, '');
   const full = absolutePath.replace(/\\/g, '/');
   const base = root.replace(/\\/g, '/');
   if (full === base) return '';
@@ -65,34 +108,19 @@ function relativeLocation(absolutePath: string): string {
 }
 
 async function loadFileTree(): Promise<void> {
-  const folder = storiesCtx.activeFolder.value;
+  const folder = effectiveBrowseFolder.value;
   if (!folder) {
     fileTree.value = [];
     fileTreeError.value = '';
     return;
   }
-  fileTreeError.value = '';
-  try {
-    fileTree.value = await invoke<FileTreeEntry[]>('list_manuscript_files', { folder });
-    const expand = new Set<string>();
-    function walk(entries: FileTreeEntry[]) {
-      for (const e of entries) {
-        if (e.is_dir) { expand.add(e.path); walk(e.children); }
-      }
-    }
-    walk(fileTree.value);
-    expandedDirs.value = expand;
-  } catch (e) {
-    console.error('list_manuscript_files:', e);
-    fileTree.value = [];
-    fileTreeError.value = 'Could not load files for this story folder.';
-  }
+  await loadFileTreeForFolder(folder);
 }
 
 function switchSidebarMode(mode: SidebarMode): void {
   sidebarMode.value = mode;
   sectionOpen.value.workspace = true;
-  if (mode === 'files' && storiesCtx.activeFolder.value) {
+  if (mode === 'files' && effectiveBrowseFolder.value) {
     void loadFileTree();
   }
 }
@@ -120,22 +148,30 @@ function onAddDocument(): void {
 }
 
 watch(() => storiesCtx.activeFolder.value, (folder) => {
-  if (folder) loadFileTree();
-  else fileTree.value = [];
+  if (folder) {
+    writingBrowseFolder.value = '';
+    loadFileTree();
+  } else if (!writingBrowseFolder.value) {
+    fileTree.value = [];
+  }
 }, { immediate: true });
 
 watch(fileTreeTick, () => {
-  if (storiesCtx.activeFolder.value) loadFileTree();
+  if (effectiveBrowseFolder.value) loadFileTree();
 });
 
 watch(sidebarMode, (mode) => {
-  if (mode === 'files' && storiesCtx.activeFolder.value) loadFileTree();
+  if (mode === 'files' && effectiveBrowseFolder.value) loadFileTree();
 });
 
 watch(() => sectionOpen.value.workspace, (open) => {
-  if (open && sidebarMode.value === 'files' && storiesCtx.activeFolder.value) {
+  if (open && sidebarMode.value === 'files' && effectiveBrowseFolder.value) {
     void loadFileTree();
   }
+});
+
+watch(writingBrowseFolder, () => {
+  if (writingBrowseFolder.value) void loadFileTree();
 });
 
 function onEditSeries(s: Series): void {
@@ -143,7 +179,7 @@ function onEditSeries(s: Series): void {
 }
 
 watch(appMode, (mode) => {
-  if (mode === 'writing' && storiesCtx.activeFolder.value) {
+  if (mode === 'writing' && effectiveBrowseFolder.value) {
     sidebarMode.value = 'files';
     loadFileTree();
   }
@@ -171,13 +207,57 @@ function toggleExpand(docType: string): void {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 function onStoryClick(story: Story): void {
+  writingBrowseFolder.value = '';
   storiesCtx.setActiveStory(story.id);
   if (appMode.value === 'marketing') {
     showPanel('campaigns');
     void campaignsCtx.loadCampaigns(story.folder);
+  } else if (appMode.value === 'writing') {
+    void loadFileTree();
   } else {
     switchSidebarMode('files');
     showPanel('analyzer');
+  }
+}
+
+function onSeriesBookClick(book: SeriesBook): void {
+  const story = findStoryByFolder(book.story_folder);
+  if (story) {
+    onStoryClick(story);
+    return;
+  }
+  writingBrowseFolder.value = book.story_folder;
+  storiesCtx.setActiveStory(null);
+  void loadFileTree();
+}
+
+function isSeriesBookActive(book: SeriesBook): boolean {
+  const norm = book.story_folder.replace(/[/\\]+$/, '');
+  const story = findStoryByFolder(book.story_folder);
+  if (story) return story.id === storiesCtx.activeStoryId.value;
+  return writingBrowseFolder.value.replace(/[/\\]+$/, '') === norm;
+}
+
+async function loadFileTreeForFolder(folder: string): Promise<void> {
+  if (!folder) {
+    fileTree.value = [];
+    return;
+  }
+  fileTreeError.value = '';
+  try {
+    fileTree.value = await invoke<FileTreeEntry[]>('list_manuscript_files', { folder });
+    const expand = new Set<string>();
+    function walk(entries: FileTreeEntry[]) {
+      for (const e of entries) {
+        if (e.is_dir) { expand.add(e.path); walk(e.children); }
+      }
+    }
+    walk(fileTree.value);
+    expandedDirs.value = expand;
+  } catch (e) {
+    console.error('list_manuscript_files:', e);
+    fileTree.value = [];
+    fileTreeError.value = 'Could not load files for this book folder.';
   }
 }
 
@@ -249,13 +329,18 @@ function formatTimestamp(ts: string): string {
         </div>
         <div class="stories-list">
           <div
-            v-if="storiesCtx.stories.value.length === 0"
+            v-if="standaloneStories.length === 0"
             class="sidebar-hint"
           >
-            No stories yet. Click + to add one.
+            <template v-if="appMode === 'writing' && seriesCtx.series.value.length > 0">
+              No standalone stories. Open a book under Series below.
+            </template>
+            <template v-else>
+              No stories yet. Click + to add one.
+            </template>
           </div>
           <div
-            v-for="story in storiesCtx.stories.value"
+            v-for="story in standaloneStories"
             :key="story.id"
             class="story-item"
             :class="{ active: story.id === storiesCtx.activeStoryId.value }"
@@ -273,15 +358,15 @@ function formatTimestamp(ts: string): string {
       </div>
     </section>
 
-    <section v-if="appMode !== 'marketing'" class="sidebar-block" :class="{ disabled: !storiesCtx.activeFolder.value }">
+    <section v-if="appMode !== 'marketing'" class="sidebar-block" :class="{ disabled: !effectiveBrowseFolder }">
       <button class="section-header" @click="toggleSection('workspace')">
         <span class="section-title">Workspace</span>
         <span class="section-chevron" :class="{ open: sectionOpen.workspace }">&#8250;</span>
       </button>
 
       <div v-show="sectionOpen.workspace" class="section-content workspace-section">
-        <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint files-hint">
-          Select a story to browse files.
+        <div v-if="!effectiveBrowseFolder" class="sidebar-hint files-hint">
+          Select a story or series book to browse files.
         </div>
 
         <div v-if="appMode === 'analyzer'" class="mode-toggle-row">
@@ -305,7 +390,7 @@ function formatTimestamp(ts: string): string {
           >+</button>
         </div>
 
-        <div v-if="(sidebarMode === 'files' || appMode === 'writing') && storiesCtx.activeFolder.value" class="files-section">
+        <div v-if="(sidebarMode === 'files' || appMode === 'writing') && effectiveBrowseFolder" class="files-section">
           <div v-if="appMode === 'writing'" class="nav-label-row files-header">
             <span class="nav-label">Files</span>
             <button class="btn-new-story" title="New document" @click="onAddDocument">+</button>
@@ -398,7 +483,7 @@ function formatTimestamp(ts: string): string {
       </div>
     </section>
 
-    <section v-if="appMode === 'analyzer'" class="sidebar-block">
+    <section v-if="appMode === 'analyzer' || appMode === 'writing'" class="sidebar-block">
       <button class="section-header" @click="toggleSection('series')">
         <span class="section-title">Series</span>
         <span class="section-chevron" :class="{ open: sectionOpen.series }">&#8250;</span>
@@ -406,7 +491,12 @@ function formatTimestamp(ts: string): string {
       <div v-show="sectionOpen.series" class="section-content series-section">
         <div class="nav-label-row">
           <span class="nav-label">Collections</span>
-          <button class="btn-new-story" title="New series" @click.stop="onNewSeries">+</button>
+          <button
+            v-if="appMode === 'analyzer'"
+            class="btn-new-story"
+            title="New series"
+            @click.stop="onNewSeries"
+          >+</button>
         </div>
         <div class="series-list">
           <div
@@ -415,20 +505,58 @@ function formatTimestamp(ts: string): string {
           >
             No series yet. Click + to add one.
           </div>
-          <div
-            v-for="s in seriesCtx.series.value"
-            :key="s.id"
-            class="story-item"
-            @click="onEditSeries(s)"
-          >
-            <span class="story-item-name">{{ s.name }}</span>
-            <span class="series-book-count">{{ s.books.length }}</span>
-            <button
-              class="story-item-edit"
-              :title="'Edit series'"
-              @click.stop="onEditSeries(s)"
-            >&#x270E;</button>
-          </div>
+
+          <!-- Analyzer: tap series to edit -->
+          <template v-if="appMode === 'analyzer'">
+            <div
+              v-for="s in seriesCtx.series.value"
+              :key="s.id"
+              class="story-item"
+              @click="onEditSeries(s)"
+            >
+              <span class="story-item-name">{{ s.name }}</span>
+              <span class="series-book-count">{{ s.books.length }}</span>
+              <button
+                class="story-item-edit"
+                title="Edit series"
+                @click.stop="onEditSeries(s)"
+              >&#x270E;</button>
+            </div>
+          </template>
+
+          <!-- Writing: expand series to browse books -->
+          <template v-else>
+            <div v-for="s in seriesCtx.series.value" :key="s.id" class="series-group">
+              <div
+                class="story-item series-header"
+                :class="{ open: expandedSeriesIds.has(s.id) }"
+                @click="toggleSeriesExpand(s.id)"
+              >
+                <span class="series-expand-chevron" :class="{ open: expandedSeriesIds.has(s.id) }">&#8250;</span>
+                <span class="story-item-name">{{ s.name }}</span>
+                <span class="series-book-count">{{ s.books.length }}</span>
+              </div>
+              <div v-if="expandedSeriesIds.has(s.id)" class="series-books">
+                <div
+                  v-if="s.books.length === 0"
+                  class="sidebar-hint series-books-hint"
+                >
+                  No books in this series yet.
+                </div>
+                <div
+                  v-for="book in s.books"
+                  :key="book.story_folder"
+                  class="story-item series-book-item"
+                  :class="{ active: isSeriesBookActive(book) }"
+                  :title="book.story_folder"
+                  @click="onSeriesBookClick(book)"
+                >
+                  <span class="series-book-order">{{ book.book_order }}</span>
+                  <span class="story-item-name">{{ book.story_name }}</span>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
     </section>
@@ -899,5 +1027,52 @@ function formatTimestamp(ts: string): string {
   padding: 1px 5px;
   border-radius: 6px;
   margin-left: auto;
+}
+
+.series-group {
+  margin-bottom: 2px;
+}
+
+.series-header {
+  cursor: pointer;
+}
+
+.series-header .story-item-name {
+  flex: 1;
+}
+
+.series-expand-chevron {
+  display: inline-block;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+  width: 12px;
+}
+
+.series-expand-chevron.open {
+  transform: rotate(90deg);
+}
+
+.series-books {
+  padding-left: 14px;
+}
+
+.series-books-hint {
+  padding: 4px 10px 8px;
+}
+
+.series-book-item {
+  padding-left: 8px;
+  gap: 6px;
+}
+
+.series-book-order {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 14px;
+  text-align: center;
+  flex-shrink: 0;
 }
 </style>

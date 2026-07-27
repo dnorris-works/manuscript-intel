@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, provide } from 'vue';
+import { ref, watch, onMounted, provide, computed } from 'vue';
 import { useStories } from './composables/useStories';
 import { useAnalysis } from './composables/useAnalysis';
 import { usePlatform } from './composables/usePlatform';
@@ -127,6 +127,14 @@ provide(openManuscriptEditorKey, openManuscriptEditor);
 const writingFilePath = ref('');
 const writingChapterTitle = ref('');
 const newDocLocation = ref<string | undefined>(undefined);
+/** Folder browsed in Writing mode when the book is only linked via series metadata. */
+const writingBrowseFolder = ref('');
+
+const effectiveStoryFolder = computed(() => {
+  return storiesCtx.activeFolder.value || writingBrowseFolder.value;
+});
+
+provide('writingBrowseFolder', writingBrowseFolder);
 
 function openInWritingMode(filePath: string, title: string): void {
   writingFilePath.value = filePath;
@@ -152,7 +160,7 @@ function bumpFileTree(): void {
 provide('bumpFileTree', bumpFileTree);
 
 function openNewDocumentForm(location?: string): void {
-  if (!storiesCtx.activeFolder.value) return;
+  if (!effectiveStoryFolder.value) return;
   panelBeforeNewDoc.value = activePanel.value;
   modeBeforeNewDoc.value = appMode.value;
   newDocLocation.value = location;
@@ -310,7 +318,7 @@ onMounted(() => {
         v-else-if="appMode === 'writing'"
         :file-path="writingFilePath"
         :chapter-title="writingChapterTitle"
-        :story-folder="storiesCtx.activeFolder.value"
+        :story-folder="effectiveStoryFolder"
       />
 
       <!-- Marketing mode -->
@@ -344,7 +352,7 @@ onMounted(() => {
           v-if="activePanel === 'manuscript'"
           :findings="manuscriptFindings"
           :start-index="manuscriptStartIndex"
-          :story-folder="storiesCtx.activeFolder.value"
+          :story-folder="effectiveStoryFolder"
           @close="closeManuscriptEditor"
         />
       </template>
