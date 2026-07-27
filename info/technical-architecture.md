@@ -289,7 +289,7 @@ Typical order:
 4. KDP categories (skipped in wide mode)
 5. Search terms (KDP-only)
 6. BISAC
-7. Keyword search via DataForSEO/Canopy fallback (KDP-only)
+7. Enriched keyword intelligence via DataForSEO (with Canopy fallback only when DataForSEO credentials are absent) (KDP-only)
 8. KDP keyword optimization (KDP-only)
 9. Discovery keywords
 10. Assemble combined analysis report
@@ -413,6 +413,51 @@ Normalization safeguards:
 
 - Amazon keyword search volume/competition sourcing
 - Optional Google search-volume enrichment for discovery keywords
+- Enriched KDP keyword intelligence pipeline:
+  - Google autocomplete expansion for long-tail seed growth
+  - Amazon related-keyword expansion
+  - ASIN-driven enrichment from competition_data using ranked keywords and product competitors
+  - Cross-ASIN keyword intersections for higher-intent overlap terms
+  - Bulk Amazon search-volume normalization across the merged candidate set
+  - Trend-delta enrichment from DataForSEO Trends
+
+
+## 16.4 DataForSEO Enriched Keyword Intelligence (Implemented)
+
+The KDP keyword-search stage now uses a multi-source enrichment workflow in backend code at src-tauri/src/analysis/keywords.rs and src-tauri/src/dataforseo.rs.
+
+Primary goal:
+
+- Improve keyword quality beyond seed-only expansion by combining semantic, product-rank, and trend signals before KDP keyword optimization.
+
+Execution sequence:
+
+1. Start from derived seed terms.
+2. Expand candidate set with Google autocomplete suggestions from DataForSEO SERP API.
+3. Add Amazon related-keyword candidates with initial volume signals.
+4. Read competitor ASINs from the latest competition_data document.
+5. Expand ASIN set with Amazon product competitors.
+6. Pull ranked keywords for selected ASINs.
+7. Pull product keyword intersections for top ASIN combinations.
+8. Normalize merged candidates with Amazon bulk search volume.
+9. Enrich top candidates with trend deltas from DataForSEO Trends.
+10. Emit deduped, ranked keyword_search_results for downstream optimization.
+
+Internal scoring and output shaping:
+
+- Keyword deduplication is case-insensitive.
+- Final competition labels are currently volume-banded:
+  - High: > 50,000
+  - Medium: > 5,000
+  - Low: <= 5,000
+- The result set is sorted by search volume descending and capped for safety.
+- Provenance and trend notes are carried into estimated_earnings as metadata text so downstream UI remains backward-compatible without schema changes.
+
+Persistence and compatibility:
+
+- Persisted storage path is unchanged (keyword_search_results in SQLite).
+- No frontend contract changes were required.
+- Existing KDP keyword optimization consumes the richer pool automatically.
 
 
 ## 17. Chat with Context (Writing Mode)
@@ -465,7 +510,7 @@ flowchart TD
   S3 --> S4[KDP categories if KDP mode]
   S4 --> S5[Search terms if KDP mode]
   S5 --> S6[BISAC]
-  S6 --> S7[Keyword search if KDP mode]
+  S6 --> S7[Enriched keyword intelligence if KDP mode]
   S7 --> S8[KDP keywords if KDP mode]
   S8 --> S9[Discovery keywords]
   S9 --> S10[Assemble analysis_v1 report]
@@ -628,6 +673,10 @@ Columns:
 | Command | Input | Output | Frontend Caller(s) | Side Effects | Errors |
 |---|---|---|---|---|---|
 | test_dataforseo_connection | login, password | DfsTestResult | src/composables/useSettings.ts | Validates DataForSEO credentials | Returns success false + error |
-| search_amazon_keywords | app, seeds, login, password | KeywordSearchResponse | No direct invoke in src (invoked by backend pipeline) | Fetches related Amazon keywords and volumes; emits cdp:log | Auth/API errors produce failure response |
+| search_amazon_keywords | app, seeds, login, password | KeywordSearchResponse | No direct invoke in src (backend-capable helper command) | Fetches related Amazon keywords and volumes; emits cdp:log | Auth/API errors produce failure response |
 | search_google_keywords | app, keywords, login, password | KeywordSearchResponse | No direct invoke in src (invoked by backend pipeline) | Fetches Google volume/CPC metrics; emits cdp:log | Auth/API errors produce failure response |
+
+Note:
+
+- The main analyze_story pipeline currently uses internal DataForSeoClient methods directly (run_keyword_searches_dataforseo in analysis/keywords.rs) to execute the enriched multi-endpoint flow described in section 16.4.
 

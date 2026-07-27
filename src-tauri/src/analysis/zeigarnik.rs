@@ -252,8 +252,8 @@ fn split_sentences(body: &str) -> Vec<String> {
         if *ch == '.' {
             let recent = body[start..end].trim_end();
             let last_token = recent
-                .rsplit_whitespace()
-                .next()
+                .split_whitespace()
+                .last()
                 .unwrap_or("")
                 .to_ascii_lowercase();
             if abbreviations.contains(&last_token.as_str()) {
@@ -264,7 +264,7 @@ fn split_sentences(body: &str) -> Vec<String> {
         let sentence = body[start..end].trim();
         if !sentence.is_empty() {
             out.push(sentence.to_string());
-    }
+        }
 
         start = end;
     }
@@ -273,6 +273,8 @@ fn split_sentences(body: &str) -> Vec<String> {
     let tail = body[start..].trim();
     if tail.split_whitespace().count() >= 3 {
         out.push(tail.to_string());
+    }
+
     out
 
 }
@@ -369,7 +371,7 @@ fn scan_entity_occurrences(chapter_texts: &[String]) -> HashMap<String, Vec<Occu
                 continue;
             }
 
-            let mut phrase_start = start;
+            let phrase_start = start;
             let mut phrase_end = end;
             let mut word_count = 1usize;
 
