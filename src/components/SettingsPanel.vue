@@ -127,6 +127,18 @@ const showStaleRow = ref(false);
 const importDisabled = ref(false);
 let lastImportedAt = '';
 
+type SettingsTab = 'general' | 'ai' | 'folders' | 'canopy' | 'dataforseo' | 'winningcat';
+const activeTab = ref<SettingsTab>('general');
+
+const settingsTabs: { id: SettingsTab; label: string }[] = [
+  { id: 'general', label: 'General' },
+  { id: 'ai', label: 'AI Models' },
+  { id: 'folders', label: 'Folders' },
+  { id: 'canopy', label: 'Canopy' },
+  { id: 'dataforseo', label: 'DataForSEO' },
+  { id: 'winningcat', label: 'WinningCat' },
+];
+
 function modelLabel(m: ModelInfo): string {
   let label = m.id;
   if (m.owned_by) label += ` (${m.owned_by})`;
@@ -212,288 +224,297 @@ async function onRemoveStale(): Promise<void> {
   <div class="panel settings-panel">
     <h2 class="panel-title">Settings</h2>
 
-    <div class="settings-form">
-      <!-- Appearance -->
-      <label>Theme</label>
-      <div class="provider-options">
-        <label class="provider-option" :class="{ active: settingsCtx.theme.value === 'dark' }">
-          <input
-            type="radio"
-            name="theme"
-            value="dark"
-            :checked="settingsCtx.theme.value === 'dark'"
-            @change="settingsCtx.setTheme('dark')"
-          />
-          Dark
-        </label>
-        <label class="provider-option" :class="{ active: settingsCtx.theme.value === 'light' }">
-          <input
-            type="radio"
-            name="theme"
-            value="light"
-            :checked="settingsCtx.theme.value === 'light'"
-            @change="settingsCtx.setTheme('light')"
-          />
-          Light
-        </label>
-      </div>
-
-      <!-- Provider -->
-      <label>Provider</label>
-      <div class="provider-options">
-        <label class="provider-option active">
-          <input type="radio" :checked="true" disabled />
-          TokenMix
-        </label>
-      </div>
-
-      <!-- API Key -->
-      <label>API Key</label>
-      <input
-        type="password"
-        v-model="settingsCtx.apiKey.value"
-        placeholder="Enter your API key"
-      />
-
-      <!-- Model -->
-      <label>
-        Default Model
-        <span class="model-hint">Fetch models first, then assign each function below.</span>
-      </label>
-      <div class="model-row">
-        <select v-model="settingsCtx.modelAssignments.value.default">
-          <option v-if="settingsCtx.models.value.length === 0" value="" disabled>
-            No models loaded
-          </option>
-          <option v-else-if="filteredModels.length === 0" value="" disabled>
-            No models match current filters
-          </option>
-          <option
-            v-for="m in filteredModels"
-            :key="m.id"
-            :value="m.id"
-          >{{ modelLabel(m) }}</option>
-        </select>
-        <button class="btn btn-sm" @click="onFetchModels">Fetch Models</button>
-      </div>
-      <div class="model-fetch-status">{{ modelFetchStatus }}</div>
-
-      <!-- Sort toggle -->
-      <div v-if="sortedModels.length > 0" class="model-sort-row">
-        <span class="model-sort-label">Sort:</span>
-        <button class="model-sort-btn" :class="{ active: modelSort === 'price' }" @click="modelSort = 'price'">Price</button>
-        <button class="model-sort-btn" :class="{ active: modelSort === 'provider' }" @click="modelSort = 'provider'">Provider</button>
-      </div>
-
-      <!-- Price filters -->
-      <div v-if="sortedModels.length > 0" class="model-filter-row">
-        <label class="model-filter-opt">
-          <input type="checkbox" v-model="pricedOnly" :disabled="freeOnly" />
-          Priced only
-        </label>
-        <label class="model-filter-opt">
-          <input type="checkbox" v-model="freeOnly" />
-          Free only
-        </label>
-        <span class="model-filter-count">{{ filteredModels.length }} shown</span>
-      </div>
-
-      <!-- Per-function model assignments -->
-      <div v-if="sortedModels.length > 0" class="model-assignments">
-        <div class="model-assign-header">Model per function</div>
-
-        <div v-if="filteredModels.length === 0" class="model-filter-empty">
-          No models match the current filters. Disable filters to see all models.
-        </div>
-
-        <div class="model-assign-row">
-          <div class="model-assign-label">
-            <strong>Chapter Summaries</strong>
-            <span class="model-recommend">Fast model. Structured extraction — accuracy matters more than creativity. A smaller, cheaper model works well.</span>
-          </div>
-          <select v-model="settingsCtx.modelAssignments.value.summaries">
-            <option value="">(Use default)</option>
-            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'summaries') }}</option>
-          </select>
-        </div>
-
-        <div class="model-assign-row">
-          <div class="model-assign-label">
-            <strong>Genre Analysis</strong>
-            <span class="model-recommend">Classification task. Needs broad book-market knowledge. Mid-tier model is sufficient.</span>
-          </div>
-          <select v-model="settingsCtx.modelAssignments.value.genre">
-            <option value="">(Use default)</option>
-            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'genre') }}</option>
-          </select>
-        </div>
-
-        <div class="model-assign-row">
-          <div class="model-assign-label">
-            <strong>Keywords &amp; Categories</strong>
-            <span class="model-recommend">Short structured output. Fast model works — speed over depth.</span>
-          </div>
-          <select v-model="settingsCtx.modelAssignments.value.keywords">
-            <option value="">(Use default)</option>
-            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'keywords') }}</option>
-          </select>
-        </div>
-
-        <div class="model-assign-row">
-          <div class="model-assign-label">
-            <strong>Continuity Check</strong>
-            <span class="model-recommend">Needs reasoning ability to spot contradictions across chapters. Use a capable model (e.g. GPT-4o or another high-reasoning model).</span>
-          </div>
-          <select v-model="settingsCtx.modelAssignments.value.continuity">
-            <option value="">(Use default)</option>
-            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'continuity') }}</option>
-          </select>
-        </div>
-
-        <div class="model-assign-row">
-          <div class="model-assign-label">
-            <strong>Show Don't Tell</strong>
-            <span class="model-recommend">Literary judgment — needs to understand prose craft. Use a strong model (e.g. GPT-4o or another high-reasoning model).</span>
-          </div>
-          <select v-model="settingsCtx.modelAssignments.value.showDontTell">
-            <option value="">(Use default)</option>
-            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'showDontTell') }}</option>
-          </select>
-        </div>
-
-        <div class="model-assign-row">
-          <div class="model-assign-label">
-            <strong>AI-isms</strong>
-            <span class="model-recommend">Literary judgment — spots synthetic / template-sounding prose. Use a strong model (e.g. GPT-4o or another high-reasoning model).</span>
-          </div>
-          <select v-model="settingsCtx.modelAssignments.value.aiIsms">
-            <option value="">(Use default)</option>
-            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'aiIsms') }}</option>
-          </select>
-        </div>
-
-        <div class="model-assign-row">
-          <div class="model-assign-label">
-            <strong>Prose Suggestions</strong>
-            <span class="model-recommend">Creative rewriting. Use the highest-quality model you have — this writes prose the author will paste into their manuscript.</span>
-          </div>
-          <select v-model="settingsCtx.modelAssignments.value.prose">
-            <option value="">(Use default)</option>
-            <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'prose') }}</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- Save -->
-      <button class="btn" @click="onSave">Save Settings</button>
-      <div class="settings-saved">{{ savedMsg }}</div>
+    <div class="platform-tabs settings-tabs">
+      <button
+        v-for="tab in settingsTabs"
+        :key="tab.id"
+        class="platform-tab"
+        :class="{ active: activeTab === tab.id }"
+        @click="activeTab = tab.id"
+      >{{ tab.label }}</button>
     </div>
 
-    <!-- Folder structure -->
-    <div class="settings-section-divider"></div>
-    <h3 class="section-title">Folder Structure</h3>
-    <div class="settings-form">
-      <p class="panel-desc">
-        Used when you choose <strong>Create empty story</strong>. The app uses these folders by purpose
-        — you can rename the paths, but not remove them.
-      </p>
+    <!-- General -->
+    <div v-show="activeTab === 'general'" class="settings-tab-panel">
+      <div class="settings-form">
+        <label>Theme</label>
+        <div class="provider-options">
+          <label class="provider-option" :class="{ active: settingsCtx.theme.value === 'dark' }">
+            <input
+              type="radio"
+              name="theme"
+              value="dark"
+              :checked="settingsCtx.theme.value === 'dark'"
+              @change="settingsCtx.setTheme('dark')"
+            />
+            Dark
+          </label>
+          <label class="provider-option" :class="{ active: settingsCtx.theme.value === 'light' }">
+            <input
+              type="radio"
+              name="theme"
+              value="light"
+              :checked="settingsCtx.theme.value === 'light'"
+              @change="settingsCtx.setTheme('light')"
+            />
+            Light
+          </label>
+        </div>
 
-      <label>Manuscript <span class="form-hint">— chapter files (analysis)</span></label>
-      <input type="text" v-model="settingsCtx.folderStructure.value.manuscript" placeholder="Manuscript" />
-      <p class="panel-desc manuscript-acts-hint">
-        Always created under Manuscript:
-        <template v-for="(act, i) in (settingsCtx.folderStructure.value.acts || [])" :key="act">
-          <strong>{{ settingsCtx.folderStructure.value.manuscript || 'Manuscript' }}/{{ act }}</strong><span v-if="i < (settingsCtx.folderStructure.value.acts.length - 1)">, </span>
-        </template>
-        — not optional.
-      </p>
-
-      <label>Bible <span class="form-hint">— story bible docs</span></label>
-      <input type="text" v-model="settingsCtx.folderStructure.value.bible" placeholder="Bible" />
-
-      <label>Characters <span class="form-hint">— character docs</span></label>
-      <input type="text" v-model="settingsCtx.folderStructure.value.characters" placeholder="Characters" />
-
-      <label>Locations <span class="form-hint">— location docs</span></label>
-      <input type="text" v-model="settingsCtx.folderStructure.value.locations" placeholder="Locations" />
-
-      <label class="extra-folders-label">Additional folders</label>
-      <p class="panel-desc extra-folders-desc">
-        Created with new stories for your own use. The app does not read these specially — add or delete freely.
-      </p>
-      <div
-        v-for="(_path, index) in settingsCtx.folderStructure.value.extra"
-        :key="index"
-        class="folder-entry-row"
-      >
-        <input
-          type="text"
-          v-model="settingsCtx.folderStructure.value.extra[index]"
-          placeholder="Extra/Folder"
-          class="folder-path-input"
-        />
-        <button
-          type="button"
-          class="btn btn-sm btn-danger"
-          title="Remove folder"
-          @click="settingsCtx.removeFolderEntry(index)"
-        >Delete</button>
+        <label>Provider</label>
+        <div class="provider-options">
+          <label class="provider-option active">
+            <input type="radio" :checked="true" disabled />
+            TokenMix
+          </label>
+        </div>
       </div>
-      <div class="folder-entry-actions">
+    </div>
+
+    <!-- AI Models -->
+    <div v-show="activeTab === 'ai'" class="settings-tab-panel">
+      <div class="settings-form">
+        <label>API Key</label>
+        <input
+          type="password"
+          v-model="settingsCtx.apiKey.value"
+          placeholder="Enter your API key"
+        />
+
+        <label>
+          Default Model
+          <span class="model-hint">Fetch models first, then assign each function below.</span>
+        </label>
+        <div class="model-row">
+          <select v-model="settingsCtx.modelAssignments.value.default">
+            <option v-if="settingsCtx.models.value.length === 0" value="" disabled>
+              No models loaded
+            </option>
+            <option v-else-if="filteredModels.length === 0" value="" disabled>
+              No models match current filters
+            </option>
+            <option
+              v-for="m in filteredModels"
+              :key="m.id"
+              :value="m.id"
+            >{{ modelLabel(m) }}</option>
+          </select>
+          <button class="btn btn-sm" @click="onFetchModels">Fetch Models</button>
+        </div>
+        <div class="model-fetch-status">{{ modelFetchStatus }}</div>
+
+        <div v-if="sortedModels.length > 0" class="model-sort-row">
+          <span class="model-sort-label">Sort:</span>
+          <button class="model-sort-btn" :class="{ active: modelSort === 'price' }" @click="modelSort = 'price'">Price</button>
+          <button class="model-sort-btn" :class="{ active: modelSort === 'provider' }" @click="modelSort = 'provider'">Provider</button>
+        </div>
+
+        <div v-if="sortedModels.length > 0" class="model-filter-row">
+          <label class="model-filter-opt">
+            <input type="checkbox" v-model="pricedOnly" :disabled="freeOnly" />
+            Priced only
+          </label>
+          <label class="model-filter-opt">
+            <input type="checkbox" v-model="freeOnly" />
+            Free only
+          </label>
+          <span class="model-filter-count">{{ filteredModels.length }} shown</span>
+        </div>
+
+        <div v-if="sortedModels.length > 0" class="model-assignments">
+          <div class="model-assign-header">Model per function</div>
+
+          <div v-if="filteredModels.length === 0" class="model-filter-empty">
+            No models match the current filters. Disable filters to see all models.
+          </div>
+
+          <div class="model-assign-row">
+            <div class="model-assign-label">
+              <strong>Chapter Summaries</strong>
+              <span class="model-recommend">Fast model. Structured extraction — accuracy matters more than creativity. A smaller, cheaper model works well.</span>
+            </div>
+            <select v-model="settingsCtx.modelAssignments.value.summaries">
+              <option value="">(Use default)</option>
+              <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'summaries') }}</option>
+            </select>
+          </div>
+
+          <div class="model-assign-row">
+            <div class="model-assign-label">
+              <strong>Genre Analysis</strong>
+              <span class="model-recommend">Classification task. Needs broad book-market knowledge. Mid-tier model is sufficient.</span>
+            </div>
+            <select v-model="settingsCtx.modelAssignments.value.genre">
+              <option value="">(Use default)</option>
+              <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'genre') }}</option>
+            </select>
+          </div>
+
+          <div class="model-assign-row">
+            <div class="model-assign-label">
+              <strong>Keywords &amp; Categories</strong>
+              <span class="model-recommend">Short structured output. Fast model works — speed over depth.</span>
+            </div>
+            <select v-model="settingsCtx.modelAssignments.value.keywords">
+              <option value="">(Use default)</option>
+              <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'keywords') }}</option>
+            </select>
+          </div>
+
+          <div class="model-assign-row">
+            <div class="model-assign-label">
+              <strong>Continuity Check</strong>
+              <span class="model-recommend">Needs reasoning ability to spot contradictions across chapters. Use a capable model (e.g. GPT-4o or another high-reasoning model).</span>
+            </div>
+            <select v-model="settingsCtx.modelAssignments.value.continuity">
+              <option value="">(Use default)</option>
+              <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'continuity') }}</option>
+            </select>
+          </div>
+
+          <div class="model-assign-row">
+            <div class="model-assign-label">
+              <strong>Show Don't Tell</strong>
+              <span class="model-recommend">Literary judgment — needs to understand prose craft. Use a strong model (e.g. GPT-4o or another high-reasoning model).</span>
+            </div>
+            <select v-model="settingsCtx.modelAssignments.value.showDontTell">
+              <option value="">(Use default)</option>
+              <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'showDontTell') }}</option>
+            </select>
+          </div>
+
+          <div class="model-assign-row">
+            <div class="model-assign-label">
+              <strong>AI-isms</strong>
+              <span class="model-recommend">Literary judgment — spots synthetic / template-sounding prose. Use a strong model (e.g. GPT-4o or another high-reasoning model).</span>
+            </div>
+            <select v-model="settingsCtx.modelAssignments.value.aiIsms">
+              <option value="">(Use default)</option>
+              <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'aiIsms') }}</option>
+            </select>
+          </div>
+
+          <div class="model-assign-row">
+            <div class="model-assign-label">
+              <strong>Prose Suggestions</strong>
+              <span class="model-recommend">Creative rewriting. Use the highest-quality model you have — this writes prose the author will paste into their manuscript.</span>
+            </div>
+            <select v-model="settingsCtx.modelAssignments.value.prose">
+              <option value="">(Use default)</option>
+              <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'prose') }}</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Folders -->
+    <div v-show="activeTab === 'folders'" class="settings-tab-panel">
+      <div class="settings-form">
+        <p class="panel-desc">
+          Used when you choose <strong>Create empty story</strong>. The app uses these folders by purpose
+          — you can rename the paths, but not remove them.
+        </p>
+
+        <label>Manuscript <span class="form-hint">— chapter files (analysis)</span></label>
+        <input type="text" v-model="settingsCtx.folderStructure.value.manuscript" placeholder="Manuscript" />
+        <p class="panel-desc manuscript-acts-hint">
+          Always created under Manuscript:
+          <template v-for="(act, i) in (settingsCtx.folderStructure.value.acts || [])" :key="act">
+            <strong>{{ settingsCtx.folderStructure.value.manuscript || 'Manuscript' }}/{{ act }}</strong><span v-if="i < (settingsCtx.folderStructure.value.acts.length - 1)">, </span>
+          </template>
+          — not optional.
+        </p>
+
+        <label>Bible <span class="form-hint">— story bible docs</span></label>
+        <input type="text" v-model="settingsCtx.folderStructure.value.bible" placeholder="Bible" />
+
+        <label>Characters <span class="form-hint">— character docs</span></label>
+        <input type="text" v-model="settingsCtx.folderStructure.value.characters" placeholder="Characters" />
+
+        <label>Locations <span class="form-hint">— location docs</span></label>
+        <input type="text" v-model="settingsCtx.folderStructure.value.locations" placeholder="Locations" />
+
+        <label class="extra-folders-label">Additional folders</label>
+        <p class="panel-desc extra-folders-desc">
+          Created with new stories for your own use. The app does not read these specially — add or delete freely.
+        </p>
+        <div
+          v-for="(_path, index) in settingsCtx.folderStructure.value.extra"
+          :key="index"
+          class="folder-entry-row"
+        >
+          <input
+            type="text"
+            v-model="settingsCtx.folderStructure.value.extra[index]"
+            placeholder="Extra/Folder"
+            class="folder-path-input"
+          />
+          <button
+            type="button"
+            class="btn btn-sm btn-danger"
+            title="Remove folder"
+            @click="settingsCtx.removeFolderEntry(index)"
+          >Delete</button>
+        </div>
         <button type="button" class="btn btn-sm btn-secondary" @click="settingsCtx.addFolderEntry()">
           Add Folder
         </button>
-        <button class="btn" @click="onSave">Save Settings</button>
       </div>
+    </div>
+
+    <!-- Canopy -->
+    <div v-show="activeTab === 'canopy'" class="settings-tab-panel">
+      <div class="settings-form">
+        <p class="panel-desc">Connect to the Canopy API for market intelligence reports.</p>
+        <label>Canopy API Key</label>
+        <input
+          type="password"
+          v-model="settingsCtx.canopyApiKey.value"
+          placeholder="Enter Canopy API key"
+        />
+        <button class="btn btn-sm" @click="onTestCanopy">Test Connection</button>
+        <div class="canopy-test-status">{{ canopyTestStatus }}</div>
+      </div>
+    </div>
+
+    <!-- DataForSEO -->
+    <div v-show="activeTab === 'dataforseo'" class="settings-tab-panel">
+      <div class="settings-form">
+        <p class="panel-desc">Used for keyword search volume data (Amazon + Google). Get credentials at <strong>app.dataforseo.com</strong>.</p>
+        <label>Login (email)</label>
+        <input
+          type="text"
+          v-model="settingsCtx.dataforseoLogin.value"
+          placeholder="your@email.com"
+        />
+        <label>Password</label>
+        <input
+          type="password"
+          v-model="settingsCtx.dataforseoPassword.value"
+          placeholder="DataForSEO API password"
+        />
+        <button class="btn btn-sm" @click="onTestDataforseo">Test Connection</button>
+        <div class="canopy-test-status">{{ dataforseoTestStatus }}</div>
+      </div>
+    </div>
+
+    <!-- WinningCat -->
+    <div v-show="activeTab === 'winningcat'" class="settings-tab-panel">
+      <div class="settings-form">
+        <p class="panel-desc">Import the WinningCat category catalog CSV to enable category matching.</p>
+        <button class="btn" :disabled="importDisabled" @click="onImportWinningCat">Import CSV</button>
+        <div class="winningcat-status">{{ winningcatStatus }}</div>
+        <div v-if="showStaleRow" class="stale-row">
+          <div class="stale-status">{{ staleStatus }}</div>
+          <button class="btn btn-sm btn-danger" @click="onRemoveStale">Remove Stale</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-footer">
+      <button class="btn" @click="onSave">Save Settings</button>
       <div class="settings-saved">{{ savedMsg }}</div>
-    </div>
-
-    <!-- Canopy section -->
-    <div class="settings-section-divider"></div>
-    <h3 class="section-title">Canopy API</h3>
-    <div class="settings-form">
-      <label>Canopy API Key</label>
-      <input
-        type="password"
-        v-model="settingsCtx.canopyApiKey.value"
-        placeholder="Enter Canopy API key"
-      />
-      <button class="btn btn-sm" @click="onTestCanopy">Test Connection</button>
-      <div class="canopy-test-status">{{ canopyTestStatus }}</div>
-    </div>
-
-    <!-- DataForSEO section -->
-    <div class="settings-section-divider"></div>
-    <h3 class="section-title">DataForSEO</h3>
-    <div class="settings-form">
-      <p class="panel-desc">Used for keyword search volume data (Amazon + Google). Get credentials at <strong>app.dataforseo.com</strong>.</p>
-      <label>Login (email)</label>
-      <input
-        type="text"
-        v-model="settingsCtx.dataforseoLogin.value"
-        placeholder="your@email.com"
-      />
-      <label>Password</label>
-      <input
-        type="password"
-        v-model="settingsCtx.dataforseoPassword.value"
-        placeholder="DataForSEO API password"
-      />
-      <button class="btn btn-sm" @click="onTestDataforseo">Test Connection</button>
-      <div class="canopy-test-status">{{ dataforseoTestStatus }}</div>
-    </div>
-
-    <!-- WinningCat section -->
-    <div class="settings-section-divider"></div>
-    <h3 class="section-title">WinningCat Import</h3>
-    <div class="settings-form">
-      <p class="panel-desc">Import the WinningCat category catalog CSV to enable category matching.</p>
-      <button class="btn" :disabled="importDisabled" @click="onImportWinningCat">Import CSV</button>
-      <div class="winningcat-status">{{ winningcatStatus }}</div>
-      <div v-if="showStaleRow" class="stale-row">
-        <div class="stale-status">{{ staleStatus }}</div>
-        <button class="btn btn-sm btn-danger" @click="onRemoveStale">Remove Stale</button>
-      </div>
     </div>
   </div>
 </template>
@@ -512,16 +533,22 @@ async function onRemoveStale(): Promise<void> {
   margin-bottom: 16px;
 }
 
-.section-title {
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 10px;
-  color: var(--text);
+.settings-tabs {
+  flex-wrap: wrap;
+  margin-bottom: 16px;
 }
 
-.settings-section-divider {
+.settings-tab-panel {
+  min-height: 0;
+}
+
+.settings-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+  padding-top: 16px;
   border-top: 1px solid var(--border);
-  margin: 20px 0;
 }
 
 .settings-form {
@@ -830,13 +857,6 @@ async function onRemoveStale(): Promise<void> {
 .extra-folders-desc {
   margin: -4px 0 8px;
   font-size: 12px;
-}
-
-.folder-entry-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 8px;
 }
 
 .form-hint {
