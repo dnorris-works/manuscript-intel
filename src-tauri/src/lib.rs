@@ -11,6 +11,7 @@ mod folder_structure;
 mod genre_taxonomy;
 mod models;
 mod prompts;
+mod campaigns;
 mod series;
 mod settings;
 mod stories;
@@ -114,6 +115,33 @@ pub fn run() {
             series::create_series,
             series::update_series,
             series::delete_series,
+            campaigns::list_campaigns,
+            campaigns::create_campaign,
+            campaigns::update_campaign,
+            campaigns::delete_campaign,
+            campaigns::get_campaign_detail,
+            campaigns::list_creatives,
+            campaigns::create_creative,
+            campaigns::update_creative,
+            campaigns::delete_creative,
+            campaigns::list_performance_snapshots,
+            campaigns::add_performance_snapshot,
+            campaigns::delete_performance_snapshot,
+            campaigns::list_spend_entries,
+            campaigns::add_spend_entry,
+            campaigns::delete_spend_entry,
+            campaigns::list_landing_pages,
+            campaigns::create_landing_page,
+            campaigns::update_landing_page,
+            campaigns::delete_landing_page,
+            campaigns::list_audience_notes,
+            campaigns::add_audience_note,
+            campaigns::update_audience_note,
+            campaigns::delete_audience_note,
+            campaigns::list_platform_accounts,
+            campaigns::create_platform_account,
+            campaigns::update_platform_account,
+            campaigns::delete_platform_account,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

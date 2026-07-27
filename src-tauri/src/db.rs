@@ -369,6 +369,113 @@ CREATE TABLE IF NOT EXISTS folder_structure (
     role       TEXT NOT NULL DEFAULT '',
     sort_order INTEGER NOT NULL DEFAULT 0
 );
+
+-- Ad campaign tracking (Marketing mode)
+CREATE TABLE IF NOT EXISTS ad_platform_accounts (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform       TEXT NOT NULL,
+    account_id     TEXT NOT NULL DEFAULT '',
+    pixel_id       TEXT NOT NULL DEFAULT '',
+    tracking_notes TEXT NOT NULL DEFAULT '',
+    payment_notes  TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ad_landing_pages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_folder    TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    url             TEXT NOT NULL DEFAULT '',
+    conversion_rate REAL,
+    notes           TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ad_landing_pages_story ON ad_landing_pages(story_folder);
+
+CREATE TABLE IF NOT EXISTS ad_campaigns (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_folder        TEXT NOT NULL,
+    name                TEXT NOT NULL,
+    platform            TEXT NOT NULL DEFAULT '',
+    platform_account_id INTEGER REFERENCES ad_platform_accounts(id),
+    objective           TEXT NOT NULL DEFAULT 'awareness',
+    status              TEXT NOT NULL DEFAULT 'draft',
+    budget              REAL,
+    budget_period       TEXT NOT NULL DEFAULT 'lifetime',
+    start_date          TEXT NOT NULL DEFAULT '',
+    end_date            TEXT NOT NULL DEFAULT '',
+    target_audience     TEXT NOT NULL DEFAULT '',
+    landing_page_id     INTEGER REFERENCES ad_landing_pages(id),
+    notes               TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ad_campaigns_story ON ad_campaigns(story_folder);
+
+CREATE TABLE IF NOT EXISTS ad_creatives (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id     INTEGER NOT NULL REFERENCES ad_campaigns(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    creative_type   TEXT NOT NULL DEFAULT 'video',
+    version         TEXT NOT NULL DEFAULT 'v1',
+    platform_format TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'draft',
+    asset_path      TEXT NOT NULL DEFAULT '',
+    body_text       TEXT NOT NULL DEFAULT '',
+    notes           TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ad_creatives_campaign ON ad_creatives(campaign_id);
+
+CREATE TABLE IF NOT EXISTS ad_performance_snapshots (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id   INTEGER NOT NULL REFERENCES ad_campaigns(id) ON DELETE CASCADE,
+    creative_id   INTEGER REFERENCES ad_creatives(id) ON DELETE SET NULL,
+    snapshot_date TEXT NOT NULL,
+    impressions   INTEGER NOT NULL DEFAULT 0,
+    clicks        INTEGER NOT NULL DEFAULT 0,
+    conversions   INTEGER NOT NULL DEFAULT 0,
+    ctr           REAL NOT NULL DEFAULT 0,
+    cpc           REAL NOT NULL DEFAULT 0,
+    cpa           REAL NOT NULL DEFAULT 0,
+    spend         REAL NOT NULL DEFAULT 0,
+    notes         TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ad_perf_campaign_date ON ad_performance_snapshots(campaign_id, snapshot_date);
+
+CREATE TABLE IF NOT EXISTS ad_spend_entries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL REFERENCES ad_campaigns(id) ON DELETE CASCADE,
+    platform    TEXT NOT NULL DEFAULT '',
+    amount      REAL NOT NULL DEFAULT 0,
+    spent_at    TEXT NOT NULL,
+    notes       TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ad_spend_campaign ON ad_spend_entries(campaign_id);
+
+CREATE TABLE IF NOT EXISTS ad_audience_notes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id     INTEGER NOT NULL REFERENCES ad_campaigns(id) ON DELETE CASCADE,
+    label           TEXT NOT NULL DEFAULT '',
+    demographics    TEXT NOT NULL DEFAULT '',
+    interests       TEXT NOT NULL DEFAULT '',
+    lookalike_notes TEXT NOT NULL DEFAULT '',
+    outcome         TEXT NOT NULL DEFAULT 'untested',
+    notes           TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ad_audience_campaign ON ad_audience_notes(campaign_id);
 "#;
 
 pub struct Db(pub Mutex<Connection>);

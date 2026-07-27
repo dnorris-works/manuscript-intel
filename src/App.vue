@@ -6,9 +6,10 @@ import { usePlatform } from './composables/usePlatform';
 import { useSettings } from './composables/useSettings';
 import { useReports } from './composables/useReports';
 import { useSeries } from './composables/useSeries';
+import { useCampaigns } from './composables/useCampaigns';
 import {
   storiesKey, analysisKey, platformKey, settingsKey,
-  reportsKey, seriesKey, showPanelKey, openManuscriptEditorKey,
+  reportsKey, seriesKey, campaignsKey, showPanelKey, openManuscriptEditorKey,
 } from './injectionKeys';
 import type { Story, Finding, Series } from './types';
 
@@ -23,6 +24,10 @@ import SeriesForm from './components/SeriesForm.vue';
 import NewDocumentForm from './components/NewDocumentForm.vue';
 import ManuscriptViewer from './components/ManuscriptViewer.vue';
 import WritingPanel from './components/WritingPanel.vue';
+import CampaignsPanel from './components/marketing/CampaignsPanel.vue';
+import CampaignForm from './components/marketing/CampaignForm.vue';
+import CampaignDetailPanel from './components/marketing/CampaignDetailPanel.vue';
+import PlatformAccountsPanel from './components/marketing/PlatformAccountsPanel.vue';
 
 // ── Composables ───────────────────────────────────────────────────────────────
 
@@ -32,6 +37,7 @@ const platformCtx = usePlatform();
 const settingsCtx = useSettings();
 const reportsCtx = useReports();
 const seriesCtx = useSeries();
+const campaignsCtx = useCampaigns();
 
 provide(storiesKey, storiesCtx);
 provide(analysisKey, analysisCtx);
@@ -39,18 +45,24 @@ provide(platformKey, platformCtx);
 provide(settingsKey, settingsCtx);
 provide(reportsKey, reportsCtx);
 provide(seriesKey, seriesCtx);
+provide(campaignsKey, campaignsCtx);
 
 // ── Top-level mode ────────────────────────────────────────────────────────────
 
-type AppMode = 'analyzer' | 'writing';
+type AppMode = 'analyzer' | 'writing' | 'marketing';
 const appMode = ref<AppMode>('analyzer');
 
 provide('appMode', appMode);
-provide('setAppMode', (mode: AppMode) => { appMode.value = mode; });
+provide('setAppMode', (mode: AppMode) => {
+  appMode.value = mode;
+  if (mode === 'marketing') {
+    activePanel.value = 'campaigns';
+  }
+});
 
 // ── Panel state (within Analyzer mode) ────────────────────────────────────────
 
-type Panel = 'analyzer' | 'reports' | 'settings' | 'help' | 'story-form' | 'series' | 'manuscript' | 'new-document';
+type Panel = 'analyzer' | 'reports' | 'settings' | 'help' | 'story-form' | 'series' | 'manuscript' | 'new-document' | 'campaigns' | 'campaign-detail' | 'campaign-form' | 'platform-accounts';
 const activePanel = ref<Panel>('analyzer');
 const prevPanel = ref<Panel>('analyzer');
 /** Panel to restore after cancelling New Document (works across writing/analyzer). */
@@ -177,15 +189,56 @@ function openSeriesForm(series: Series | null): void {
   showPanel('series');
 }
 
+// ── Campaign state ────────────────────────────────────────────────────────────
+
+const editingCampaignId = ref<number | null>(null);
+
+function openCampaignDetail(id: number): void {
+  editingCampaignId.value = id;
+  showPanel('campaign-detail');
+}
+
+function openCampaignForm(id: number | null = null): void {
+  editingCampaignId.value = id;
+  showPanel('campaign-form');
+}
+
+function onCampaignSaved(id: number): void {
+  editingCampaignId.value = id;
+  const folder = storiesCtx.activeFolder.value;
+  if (folder) void campaignsCtx.loadCampaigns(folder);
+  showPanel('campaign-detail');
+}
+
+function onCampaignFormCancel(): void {
+  if (editingCampaignId.value) {
+    showPanel('campaign-detail');
+  } else {
+    showPanel('campaigns');
+  }
+}
+
+function onCampaignDetailBack(): void {
+  editingCampaignId.value = null;
+  showPanel('campaigns');
+}
+
+function openPlatformAccounts(): void {
+  showPanel('platform-accounts');
+}
+
 // ── Watchers ──────────────────────────────────────────────────────────────────
 
 watch(() => storiesCtx.activeStoryId.value, (id) => {
   if (id && storiesCtx.activeFolder.value) {
     analysisCtx.refreshState(storiesCtx.activeFolder.value);
     reportsCtx.loadSidebarReports(storiesCtx.activeFolder.value, platformCtx.platform.value);
+    void campaignsCtx.loadCampaigns(storiesCtx.activeFolder.value);
+    void campaignsCtx.loadLandingPages(storiesCtx.activeFolder.value);
   } else {
     analysisCtx.refreshState('');
     reportsCtx.loadSidebarReports('', platformCtx.platform.value);
+    void campaignsCtx.loadCampaigns('');
   }
 });
 
@@ -221,13 +274,20 @@ onMounted(() => {
     }
   });
   seriesCtx.loadSeries();
+  void campaignsCtx.loadPlatformAccounts();
 });
 </script>
 
 <template>
   <div id="app-root">
     <TitleBar />
-    <Sidebar @open-story-form="openStoryForm" @open-series-form="openSeriesForm" />
+    <Sidebar
+      @open-story-form="openStoryForm"
+      @open-series-form="openSeriesForm"
+      @open-campaign-form="openCampaignForm"
+      @open-campaign-detail="openCampaignDetail"
+      @open-platform-accounts="openPlatformAccounts"
+    />
     <main id="main">
       <NewDocumentForm
         v-if="activePanel === 'new-document'"
@@ -247,6 +307,28 @@ onMounted(() => {
         :chapter-title="writingChapterTitle"
         :story-folder="storiesCtx.activeFolder.value"
       />
+
+      <!-- Marketing mode -->
+      <template v-else-if="appMode === 'marketing'">
+        <CampaignsPanel
+          v-if="activePanel === 'campaigns'"
+          @open-campaign="openCampaignDetail"
+          @new-campaign="openCampaignForm(null)"
+        />
+        <CampaignDetailPanel
+          v-if="activePanel === 'campaign-detail' && editingCampaignId"
+          :campaign-id="editingCampaignId"
+          @back="onCampaignDetailBack"
+          @edit="openCampaignForm(editingCampaignId)"
+        />
+        <CampaignForm
+          v-if="activePanel === 'campaign-form'"
+          :campaign-id="editingCampaignId"
+          @saved="onCampaignSaved"
+          @cancel="onCampaignFormCancel"
+        />
+        <PlatformAccountsPanel v-if="activePanel === 'platform-accounts'" />
+      </template>
 
       <!-- Analyzer mode panels -->
       <template v-else-if="appMode === 'analyzer'">

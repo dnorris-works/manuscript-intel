@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { inject, ref, watch, type Ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { storiesKey, reportsKey, platformKey, showPanelKey, seriesKey } from '../injectionKeys';
+import { storiesKey, reportsKey, platformKey, showPanelKey, seriesKey, campaignsKey } from '../injectionKeys';
 import type { Story, Series } from '../types';
 import FileTreeNodes, { type FileTreeEntry } from './FileTreeNodes.vue';
 
@@ -12,9 +12,10 @@ const reportsCtx = inject(reportsKey)!;
 const platformCtx = inject(platformKey)!;
 const showPanel = inject(showPanelKey)!;
 const seriesCtx = inject(seriesKey)!;
+const campaignsCtx = inject(campaignsKey)!;
 
-const appMode = inject<Ref<'analyzer' | 'writing'>>('appMode')!;
-const setAppMode = inject<(mode: 'analyzer' | 'writing') => void>('setAppMode')!;
+const appMode = inject<Ref<'analyzer' | 'writing' | 'marketing'>>('appMode')!;
+const setAppMode = inject<(mode: 'analyzer' | 'writing' | 'marketing') => void>('setAppMode')!;
 const openInWritingMode = inject<(filePath: string, title: string) => void>('openInWritingMode')!;
 const openNewDocumentForm = inject<(location?: string) => void>('openNewDocumentForm')!;
 const fileTreeTick = inject<Ref<number>>('fileTreeTick')!;
@@ -24,6 +25,9 @@ const fileTreeTick = inject<Ref<number>>('fileTreeTick')!;
 const emit = defineEmits<{
   (e: 'open-story-form', story: Story | null): void;
   (e: 'open-series-form', series: Series | null): void;
+  (e: 'open-campaign-form', id: number | null): void;
+  (e: 'open-campaign-detail', id: number): void;
+  (e: 'open-platform-accounts'): void;
 }>();
 
 // ── Sidebar mode toggle ───────────────────────────────────────────────────────
@@ -31,11 +35,13 @@ const emit = defineEmits<{
 type SidebarMode = 'files' | 'reports';
 const sidebarMode = ref<SidebarMode>('files');
 
-type SidebarSection = 'stories' | 'workspace' | 'series' | 'tools';
+type SidebarSection = 'stories' | 'workspace' | 'series' | 'campaigns' | 'platformAccounts' | 'tools';
 const sectionOpen = ref<Record<SidebarSection, boolean>>({
   stories: true,
   workspace: true,
   series: true,
+  campaigns: true,
+  platformAccounts: true,
   tools: true,
 });
 
@@ -132,10 +138,18 @@ watch(() => sectionOpen.value.workspace, (open) => {
   }
 });
 
+function onEditSeries(s: Series): void {
+  emit('open-series-form', s);
+}
+
 watch(appMode, (mode) => {
   if (mode === 'writing' && storiesCtx.activeFolder.value) {
     sidebarMode.value = 'files';
     loadFileTree();
+  }
+  if (mode === 'marketing' && storiesCtx.activeFolder.value) {
+    showPanel('campaigns');
+    void campaignsCtx.loadCampaigns(storiesCtx.activeFolder.value);
   }
 });
 
@@ -158,8 +172,13 @@ function toggleExpand(docType: string): void {
 
 function onStoryClick(story: Story): void {
   storiesCtx.setActiveStory(story.id);
-  switchSidebarMode('files');
-  showPanel('analyzer');
+  if (appMode.value === 'marketing') {
+    showPanel('campaigns');
+    void campaignsCtx.loadCampaigns(story.folder);
+  } else {
+    switchSidebarMode('files');
+    showPanel('analyzer');
+  }
 }
 
 function onEditStory(story: Story): void {
@@ -174,8 +193,16 @@ function onNewSeries(): void {
   emit('open-series-form', null);
 }
 
-function onEditSeries(s: Series): void {
-  emit('open-series-form', s);
+function onNewCampaign(): void {
+  emit('open-campaign-form', null);
+}
+
+function onCampaignClick(id: number): void {
+  emit('open-campaign-detail', id);
+}
+
+function onPlatformAccounts(): void {
+  emit('open-platform-accounts');
 }
 
 async function onVersionClick(id: number): Promise<void> {
@@ -207,6 +234,7 @@ function formatTimestamp(ts: string): string {
     <div class="nav-section mode-tabs">
       <button class="mode-tab" :class="{ active: appMode === 'analyzer' }" @click="setAppMode('analyzer')">Analyzer</button>
       <button class="mode-tab" :class="{ active: appMode === 'writing' }" @click="setAppMode('writing'); sidebarMode = 'files'">Writing</button>
+      <button class="mode-tab" :class="{ active: appMode === 'marketing' }" @click="setAppMode('marketing')">Marketing</button>
     </div>
 
     <section class="sidebar-block">
@@ -245,7 +273,7 @@ function formatTimestamp(ts: string): string {
       </div>
     </section>
 
-    <section class="sidebar-block" :class="{ disabled: !storiesCtx.activeFolder.value }">
+    <section v-if="appMode !== 'marketing'" class="sidebar-block" :class="{ disabled: !storiesCtx.activeFolder.value }">
       <button class="section-header" @click="toggleSection('workspace')">
         <span class="section-title">Workspace</span>
         <span class="section-chevron" :class="{ open: sectionOpen.workspace }">&#8250;</span>
@@ -336,7 +364,41 @@ function formatTimestamp(ts: string): string {
       </div>
     </section>
 
-    <section class="sidebar-block">
+    <section v-if="appMode === 'marketing'" class="sidebar-block" :class="{ disabled: !storiesCtx.activeFolder.value }">
+      <button class="section-header" @click="toggleSection('campaigns')">
+        <span class="section-title">Campaigns</span>
+        <span class="section-chevron" :class="{ open: sectionOpen.campaigns }">&#8250;</span>
+      </button>
+      <div v-show="sectionOpen.campaigns" class="section-content campaigns-section">
+        <div class="nav-label-row">
+          <span class="nav-label">For this story</span>
+          <button class="btn-new-story" title="New campaign" :disabled="!storiesCtx.activeFolder.value" @click.stop="onNewCampaign">+</button>
+        </div>
+        <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint">Select a story first.</div>
+        <div v-else-if="campaignsCtx.campaigns.value.length === 0" class="sidebar-hint">No campaigns yet.</div>
+        <div
+          v-for="c in campaignsCtx.campaigns.value"
+          :key="c.id"
+          class="story-item"
+          @click="onCampaignClick(c.id)"
+        >
+          <span class="story-item-name">{{ c.name }}</span>
+          <span class="series-book-count">{{ c.status }}</span>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="appMode === 'marketing'" class="sidebar-block">
+      <button class="section-header" @click="toggleSection('platformAccounts')">
+        <span class="section-title">Platform Accounts</span>
+        <span class="section-chevron" :class="{ open: sectionOpen.platformAccounts }">&#8250;</span>
+      </button>
+      <div v-show="sectionOpen.platformAccounts" class="section-content">
+        <button class="nav-item" @click="onPlatformAccounts">Manage accounts</button>
+      </div>
+    </section>
+
+    <section v-if="appMode === 'analyzer'" class="sidebar-block">
       <button class="section-header" @click="toggleSection('series')">
         <span class="section-title">Series</span>
         <span class="section-chevron" :class="{ open: sectionOpen.series }">&#8250;</span>

@@ -9,6 +9,14 @@ import type {
   SidebarReportGroup,
   Series,
   LogLine,
+  AdCampaign,
+  AdCampaignDetail,
+  AdCreative,
+  AdLandingPage,
+  AdPerformanceSnapshot,
+  AdSpendEntry,
+  AdAudienceNote,
+  AdPlatformAccount,
   Finding,
   ModelInfo,
 } from './types';
@@ -108,6 +116,54 @@ export interface SeriesContext {
 }
 
 export const seriesKey: InjectionKey<SeriesContext> = Symbol('series');
+
+// ── Campaigns ─────────────────────────────────────────────────────────────────
+
+export interface CampaignsContext {
+  campaigns: Ref<AdCampaign[]>;
+  platformAccounts: Ref<AdPlatformAccount[]>;
+  landingPages: Ref<AdLandingPage[]>;
+  campaignDetail: Ref<AdCampaignDetail | null>;
+  loadCampaigns: (storyFolder: string) => Promise<void>;
+  createCampaign: (storyFolder: string, name: string, platform: string, objective: string) => Promise<{ success: boolean; id: number; error: string }>;
+  updateCampaign: (request: {
+    id: number;
+    name: string;
+    platform: string;
+    platform_account_id: number | null;
+    objective: string;
+    status: string;
+    budget: number | null;
+    budget_period: string;
+    start_date: string;
+    end_date: string;
+    target_audience: string;
+    landing_page_id: number | null;
+    notes: string;
+  }) => Promise<{ success: boolean; error: string }>;
+  deleteCampaign: (id: number) => Promise<{ success: boolean; error: string }>;
+  loadCampaignDetail: (id: number) => Promise<AdCampaignDetail | null>;
+  createCreative: (request: Omit<AdCreative, 'id' | 'created_at' | 'updated_at'>) => Promise<{ success: boolean; id: number; error: string }>;
+  updateCreative: (request: Omit<AdCreative, 'created_at' | 'updated_at'>) => Promise<{ success: boolean; error: string }>;
+  deleteCreative: (id: number) => Promise<{ success: boolean; error: string }>;
+  addPerformanceSnapshot: (request: Omit<AdPerformanceSnapshot, 'id' | 'created_at'>) => Promise<{ success: boolean; id: number; error: string }>;
+  deletePerformanceSnapshot: (id: number) => Promise<{ success: boolean; error: string }>;
+  addSpendEntry: (request: Omit<AdSpendEntry, 'id' | 'created_at'>) => Promise<{ success: boolean; id: number; error: string }>;
+  deleteSpendEntry: (id: number) => Promise<{ success: boolean; error: string }>;
+  loadLandingPages: (storyFolder: string) => Promise<void>;
+  createLandingPage: (request: { story_folder: string; name: string; url: string; conversion_rate: number | null; notes: string }) => Promise<{ success: boolean; id: number; error: string }>;
+  updateLandingPage: (request: { id: number; name: string; url: string; conversion_rate: number | null; notes: string }, storyFolder: string) => Promise<{ success: boolean; error: string }>;
+  deleteLandingPage: (id: number, storyFolder: string) => Promise<{ success: boolean; error: string }>;
+  addAudienceNote: (request: Omit<AdAudienceNote, 'id' | 'created_at'>) => Promise<{ success: boolean; id: number; error: string }>;
+  updateAudienceNote: (request: Omit<AdAudienceNote, 'created_at'>) => Promise<{ success: boolean; error: string }>;
+  deleteAudienceNote: (id: number) => Promise<{ success: boolean; error: string }>;
+  loadPlatformAccounts: () => Promise<void>;
+  createPlatformAccount: (request: { platform: string; account_id: string; pixel_id: string; tracking_notes: string; payment_notes: string }) => Promise<{ success: boolean; id: number; error: string }>;
+  updatePlatformAccount: (request: { id: number; platform: string; account_id: string; pixel_id: string; tracking_notes: string; payment_notes: string }) => Promise<{ success: boolean; error: string }>;
+  deletePlatformAccount: (id: number) => Promise<{ success: boolean; error: string }>;
+}
+
+export const campaignsKey: InjectionKey<CampaignsContext> = Symbol('campaigns');
 
 // ── Panel navigation ──────────────────────────────────────────────────────────
 
