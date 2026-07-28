@@ -104,28 +104,114 @@ fn model_installed(models: &[String], name: &str) -> bool {
     })
 }
 
-pub fn start_local_ai(app: &AppHandle) -> Result<(), String> {
-    let models_dir = app
+/// Directory containing llama-server and inference libraries from the Ollama darwin tarball.
+fn ollama_library_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    #[cfg(debug_assertions)]
+    {
+        let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/runtime");
+        if dev.join("llama-server").exists() {
+            return Ok(dev);
+        }
+    }
+
+    if let Ok(resource) = app.path().resource_dir() {
+        let bundled = resource.join("ollama-runtime");
+        if bundled.join("llama-server").exists() {
+            return Ok(bundled);
+        }
+    }
+
+    Err(
+        "Ollama runtime not found (llama-server missing). Run: pnpm run fetch-ollama"
+            .to_string(),
+    )
+}
+
+fn bundled_models_source(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    #[cfg(debug_assertions)]
+    {
+        let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/models");
+        if dev.join("manifests").is_dir() {
+            return Ok(dev);
+        }
+    }
+
+    if let Ok(resource) = app.path().resource_dir() {
+        let bundled = resource.join("ollama-models");
+        if bundled.join("manifests").is_dir() {
+            return Ok(bundled);
+        }
+    }
+
+    Err(
+        "Bundled Ollama models not found. Run: pnpm run fetch-ollama before building."
+            .to_string(),
+    )
+}
+
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Use bundled models. Dev reads directly from binaries/models; release seeds app data once from the bundle.
+fn ollama_models_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    #[cfg(debug_assertions)]
+    {
+        let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/models");
+        if dev.join("manifests").is_dir() {
+            return Ok(dev);
+        }
+    }
+
+    let app_models = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("ollama")
         .join("models");
-    std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+
+    if app_models.join("manifests").is_dir() {
+        return Ok(app_models);
+    }
+
+    let bundled = bundled_models_source(app)?;
+    std::fs::create_dir_all(&app_models).map_err(|e| e.to_string())?;
+    copy_dir_all(&bundled, &app_models).map_err(|e| {
+        format!("Failed to install bundled models to app data: {}", e)
+    })?;
+    Ok(app_models)
+}
+
+pub fn start_local_ai(app: &AppHandle) -> Result<(), String> {
+    let models_dir = ollama_models_path(app)?;
 
     let port = pick_port()?;
     let host = format!("127.0.0.1:{}", port);
     let base = format!("http://{}", host);
+    let library_path = ollama_library_path(app)?;
 
     let sidecar = app
         .shell()
-        .sidecar("binaries/ollama")
+        .sidecar("ollama")
         .map_err(|e| format!("Failed to locate Ollama sidecar: {}", e))?;
 
     let (mut rx, child) = sidecar
         .args(["serve"])
         .env("OLLAMA_HOST", &host)
         .env("OLLAMA_MODELS", models_dir.to_string_lossy().as_ref())
+        .env("OLLAMA_LIBRARY_PATH", library_path.to_string_lossy().as_ref())
         .spawn()
         .map_err(|e| format!("Failed to start Ollama: {}", e))?;
 
@@ -170,6 +256,13 @@ pub fn shutdown_local_ai(app: &AppHandle) {
     LOCAL_READY.store(false, Ordering::SeqCst);
 }
 
+/// Retry starting local AI (e.g. after a failed first attempt or app resume).
+#[tauri::command]
+pub fn restart_local_ai(app: AppHandle) -> Result<(), String> {
+    shutdown_local_ai(&app);
+    start_local_ai(&app)
+}
+
 #[tauri::command]
 pub async fn local_ai_status(app: AppHandle) -> LocalAiStatus {
     let base = LOCAL_BASE.get().cloned().unwrap_or_default();
@@ -180,7 +273,13 @@ pub async fn local_ai_status(app: AppHandle) -> LocalAiStatus {
     } else {
         Vec::new()
     };
-    let default_model_installed = model_installed(&models, DEFAULT_LOCAL_MODEL);
+    let default_model_installed = if model_installed(&models, DEFAULT_LOCAL_MODEL) {
+        true
+    } else {
+        bundled_models_source(&app)
+            .ok()
+            .is_some_and(|p| p.join("manifests").is_dir())
+    };
     LocalAiStatus {
         running,
         ready,
@@ -188,62 +287,6 @@ pub async fn local_ai_status(app: AppHandle) -> LocalAiStatus {
         models,
         default_model_installed,
     }
-}
-
-#[tauri::command]
-pub async fn pull_local_model(app: AppHandle, name: String) -> Result<(), String> {
-    let model = name.trim();
-    if model.is_empty() {
-        return Err("Model name is required.".to_string());
-    }
-    let base = LOCAL_BASE
-        .get()
-        .cloned()
-        .ok_or_else(|| "Local AI is not running.".to_string())?;
-    if !is_ready() {
-        wait_until_ready(&base, 30).await;
-    }
-    if !is_ready() {
-        return Err("Local AI is not ready.".to_string());
-    }
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3600))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let url = format!("{}/api/pull", base.trim_end_matches('/'));
-    let resp = client
-        .post(&url)
-        .json(&serde_json::json!({ "name": model, "stream": true }))
-        .send()
-        .await
-        .map_err(|e| format!("Model download failed: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Model download failed: HTTP {}", resp.status()));
-    }
-
-    let mut stream = resp.bytes_stream();
-    use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        let line = String::from_utf8_lossy(&chunk);
-        for part in line.split('\n') {
-            let trimmed = part.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(status) = json.get("status").and_then(|s| s.as_str()) {
-                    let _ = app.emit("local-ai:progress", status.to_string());
-                }
-            }
-        }
-    }
-
-    let _ = app.emit("local-ai:progress", "done");
-    Ok(())
 }
 
 #[tauri::command]

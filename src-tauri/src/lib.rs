@@ -149,7 +149,7 @@ pub fn run() {
             campaigns::update_platform_account,
             campaigns::delete_platform_account,
             local_ai::local_ai_status,
-            local_ai::pull_local_model,
+            local_ai::restart_local_ai,
             local_ai::test_local_ai_connection,
         ])
         .build(tauri::generate_context!())

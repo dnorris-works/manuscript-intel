@@ -83,9 +83,7 @@ export interface SettingsContext {
   activeModelAssignments: ComputedRef<ModelAssignments>;
   modelFor: (fn: keyof ModelAssignments) => string;
   localAiStatus: Ref<LocalAiStatus | null>;
-  localAiProgress: Ref<string>;
   refreshLocalAiStatus: () => Promise<LocalAiStatus>;
-  pullLocalModel: (name?: string) => Promise<{ success: boolean; error: string }>;
   testLocalAi: () => Promise<{ success: boolean; error: string; reply?: string }>;
   canopyApiKey: Ref<string>;
   dataforseoLogin: Ref<string>;

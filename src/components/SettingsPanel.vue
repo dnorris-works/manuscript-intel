@@ -15,7 +15,6 @@ const modelFetchStatus = ref('');
 const canopyTestStatus = ref('');
 const dataforseoTestStatus = ref('');
 const localTestStatus = ref('');
-const localPullStatus = ref('');
 
 const isLocalProvider = computed(() => settingsCtx.provider.value === 'local');
 const isTokenmixProvider = computed(() => settingsCtx.provider.value === 'tokenmix');
@@ -25,8 +24,7 @@ const localStatusText = computed(() => {
   if (!s) return 'Checking...';
   if (!s.running) return 'Not running';
   if (!s.ready) return 'Starting...';
-  if (s.default_model_installed) return 'Running — model installed';
-  return 'Running — model not installed';
+  return 'Running — bundled model ready';
 });
 
 // ── Sorted models: user-selectable sort order ─────────────────────────────────
@@ -168,12 +166,6 @@ async function onFetchModels(): Promise<void> {
   } else {
     modelFetchStatus.value = result.error;
   }
-}
-
-async function onPullLocalModel(): Promise<void> {
-  localPullStatus.value = 'Downloading...';
-  const result = await settingsCtx.pullLocalModel();
-  localPullStatus.value = result.success ? '✓ Download complete' : '✗ ' + result.error;
 }
 
 async function onTestLocalAi(): Promise<void> {
@@ -329,18 +321,9 @@ async function onRemoveStale(): Promise<void> {
             <span class="local-status">{{ localStatusText }}</span>
             <button class="btn btn-sm" @click="onRefreshLocalStatus">Refresh</button>
           </div>
-          <p v-if="settingsCtx.localAiProgress.value" class="panel-desc">{{ settingsCtx.localAiProgress.value }}</p>
-
-          <label>Default Local Model</label>
-          <div class="model-row">
-            <input
-              type="text"
-              v-model="settingsCtx.localDefaultModel.value"
-              placeholder="phi4-mini"
-            />
-            <button class="btn btn-sm" @click="onPullLocalModel">Download</button>
-          </div>
-          <div class="model-fetch-status">{{ localPullStatus }}</div>
+          <p class="panel-desc">
+            Default model <strong>{{ settingsCtx.localDefaultModel.value || 'phi4-mini' }}</strong> is bundled with the app — no download after install.
+          </p>
 
           <div class="model-row">
             <button class="btn btn-sm" @click="onTestLocalAi">Test connection</button>

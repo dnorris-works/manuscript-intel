@@ -9,11 +9,22 @@
     "core:webview:allow-set-webview-focus",
     "clipboard-manager:allow-write-text",
     "shell:allow-execute",
+    "shell:allow-spawn",
     {
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "binaries/ollama",
+          "name": "ollama",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "ollama",
           "sidecar": true,
           "args": true
         }

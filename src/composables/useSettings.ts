@@ -132,7 +132,6 @@ const dataforseoPassword = ref('');
 const models = ref<ModelInfo[]>([]);
 const folderStructure = ref<FolderStructure>(cloneStructure(DEFAULT_FOLDER_STRUCTURE));
 const localAiStatus = ref<LocalAiStatus | null>(null);
-const localAiProgress = ref('');
 let modelsAutoLoadStarted = false;
 let settingsHydrated = false;
 let uiSettingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -170,7 +169,16 @@ const proseModel = computed(() => activeModelAssignments.value.prose || activeMo
 
 async function refreshLocalAiStatus(): Promise<LocalAiStatus> {
   try {
-    const status = await invoke<LocalAiStatus>('local_ai_status');
+    let status = await invoke<LocalAiStatus>('local_ai_status');
+    if (!status.running || !status.ready) {
+      try {
+        await invoke('restart_local_ai');
+        await new Promise((r) => setTimeout(r, 1500));
+        status = await invoke<LocalAiStatus>('local_ai_status');
+      } catch {
+        // keep last status
+      }
+    }
     localAiStatus.value = status;
     return status;
   } catch {
@@ -183,24 +191,6 @@ async function refreshLocalAiStatus(): Promise<LocalAiStatus> {
     };
     localAiStatus.value = fallback;
     return fallback;
-  }
-}
-
-async function pullLocalModel(name?: string): Promise<{ success: boolean; error: string }> {
-  const modelName = (name || localDefaultModel.value || DEFAULT_LOCAL_MODEL).trim();
-  if (!modelName) {
-    return { success: false, error: 'No model name specified.' };
-  }
-  localAiProgress.value = 'Starting download...';
-  try {
-    await invoke('pull_local_model', { name: modelName });
-    await refreshLocalAiStatus();
-    await fetchModels();
-    localAiProgress.value = '';
-    return { success: true, error: '' };
-  } catch (e) {
-    localAiProgress.value = '';
-    return { success: false, error: String(e) };
   }
 }
 
@@ -350,6 +340,9 @@ async function hydrateSettings(): Promise<void> {
         localModelAssignments.value = defaultModelAssignments();
       }
     }
+    if (!localModelAssignments.value.default) {
+      localModelAssignments.value.default = localDefaultModel.value || DEFAULT_LOCAL_MODEL;
+    }
   } finally {
     settingsHydrated = true;
     void refreshLocalAiStatus();
@@ -358,10 +351,6 @@ async function hydrateSettings(): Promise<void> {
 }
 
 void hydrateSettings();
-
-void listen<string>('local-ai:progress', (event) => {
-  localAiProgress.value = event.payload || '';
-});
 
 void listen('local-ai:ready', () => {
   void refreshLocalAiStatus().then(() => autoLoadModelsIfConfigured());
@@ -429,10 +418,8 @@ export function useSettings() {
     models,
     folderStructure,
     localAiStatus,
-    localAiProgress,
     fetchModels,
     refreshLocalAiStatus,
-    pullLocalModel,
     testLocalAi,
     loadFolderStructure,
     addFolderEntry,

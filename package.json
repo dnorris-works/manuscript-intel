@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:build": "pnpm run fetch-ollama && tauri build",
     "fetch-ollama": "bash scripts/fetch-ollama-binaries.sh"
   },
   "dependencies": {
