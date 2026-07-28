@@ -12,6 +12,7 @@ loadReportTypes();
 
 const savedMsg = ref('');
 const modelFetchStatus = ref('');
+const tokenmixFetchStatus = ref('');
 const canopyTestStatus = ref('');
 const dataforseoTestStatus = ref('');
 const localTestStatus = ref('');
@@ -61,6 +62,22 @@ const filteredModels = computed(() => {
     return true;
   });
 });
+
+const sortedTokenmixModels = computed(() => {
+  return [...settingsCtx.tokenmixModels.value].sort((a, b) => {
+    const priceA = a.input_price ?? Infinity;
+    const priceB = b.input_price ?? Infinity;
+    return priceA - priceB;
+  });
+});
+
+const genreModelOptions = computed(() => (
+  isLocalProvider.value ? sortedTokenmixModels.value : filteredModels.value
+));
+
+const tokenmixKeyMissing = computed(() => (
+  isLocalProvider.value && !settingsCtx.tokenmixApiKey.value.trim()
+));
 
 // ── Model fitness indicators ──────────────────────────────────────────────────
 
@@ -165,6 +182,16 @@ async function onFetchModels(): Promise<void> {
     modelFetchStatus.value = `${settingsCtx.models.value.length} models loaded.`;
   } else {
     modelFetchStatus.value = result.error;
+  }
+}
+
+async function onFetchTokenmixModels(): Promise<void> {
+  tokenmixFetchStatus.value = 'Fetching TokenMix models...';
+  const result = await settingsCtx.fetchTokenmixModels();
+  if (result.success) {
+    tokenmixFetchStatus.value = `${settingsCtx.tokenmixModels.value.length} TokenMix models loaded.`;
+  } else {
+    tokenmixFetchStatus.value = result.error;
   }
 }
 
@@ -329,6 +356,24 @@ async function onRemoveStale(): Promise<void> {
             <button class="btn btn-sm" @click="onTestLocalAi">Test connection</button>
             <span class="model-fetch-status">{{ localTestStatus }}</span>
           </div>
+
+          <label class="settings-required-label">
+            TokenMix API Key
+            <span class="settings-required-badge">Required</span>
+          </label>
+          <p class="panel-desc">
+            Genre and niche classification uses TokenMix even when Local AI handles everything else.
+          </p>
+          <input
+            type="password"
+            v-model="settingsCtx.tokenmixApiKey.value"
+            placeholder="Enter your TokenMix API key"
+            :class="{ 'input-missing': tokenmixKeyMissing }"
+          />
+          <div class="model-row">
+            <button class="btn btn-sm" @click="onFetchTokenmixModels">Fetch TokenMix Models</button>
+            <span class="model-fetch-status">{{ tokenmixFetchStatus }}</span>
+          </div>
         </template>
 
         <!-- TokenMix panel -->
@@ -398,11 +443,24 @@ async function onRemoveStale(): Promise<void> {
           <div class="model-assign-row">
             <div class="model-assign-label">
               <strong>Genre Analysis</strong>
-              <span class="model-recommend">Classification task. Uses TokenMix when Local AI is your provider. Mid-tier model is sufficient.</span>
+              <span class="model-recommend">
+                {{ isLocalProvider
+                  ? 'Required TokenMix model for niche classification. Fetch TokenMix models above, then pick one here.'
+                  : 'Classification task. Mid-tier model is sufficient.' }}
+              </span>
             </div>
             <select v-model="settingsCtx.activeModelAssignments.value.genre">
-              <option value="">(Use default)</option>
-              <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'genre') }}</option>
+              <option v-if="!isLocalProvider" value="">(Use default)</option>
+              <option
+                v-if="genreModelOptions.length === 0"
+                value=""
+                disabled
+              >{{ isLocalProvider ? 'Fetch TokenMix models first' : 'No models loaded' }}</option>
+              <option
+                v-for="m in genreModelOptions"
+                :key="`genre-${m.id}`"
+                :value="m.id"
+              >{{ fnOptionLabel(m, 'genre') }}</option>
             </select>
           </div>
 
@@ -854,6 +912,27 @@ async function onRemoveStale(): Promise<void> {
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.settings-required-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-required-badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid rgba(232, 97, 44, 0.35);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.input-missing {
+  border-color: rgba(232, 97, 44, 0.55) !important;
 }
 
 .btn {

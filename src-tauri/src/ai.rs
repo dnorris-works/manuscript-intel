@@ -42,21 +42,18 @@ pub fn route_for_genre_work(
         };
         if key.trim().is_empty() {
             return Err(
-                "Genre analysis uses TokenMix when Local AI is selected. Add your TokenMix API key in Settings.".to_string(),
+                "TokenMix API key required. Open Settings → AI Models and add your TokenMix key (needed for genre classification with Local AI).".to_string(),
             );
         }
-        let m = if genre_model.trim().is_empty() {
-            model
-        } else {
-            genre_model
-        };
-        if m.trim().is_empty() {
-            return Err("No genre model set. Assign a model to Genre in Settings.".to_string());
+        if genre_model.trim().is_empty() {
+            return Err(
+                "Assign a TokenMix model to Genre Analysis in Settings → AI Models (fetch TokenMix models first).".to_string(),
+            );
         }
         return Ok(LlmRoute {
             provider: "tokenmix".to_string(),
             api_key: key.to_string(),
-            model: m.to_string(),
+            model: genre_model.to_string(),
         });
     }
 

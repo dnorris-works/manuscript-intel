@@ -93,20 +93,34 @@ async function refreshState(folder: string): Promise<void> {
 
 function getSettings() {
   const s = useSettings();
+  const genreModel = s.provider.value === 'local'
+    ? s.activeModelAssignments.value.genre
+    : s.modelFor('genre');
   return {
     provider: s.provider.value,
     apiKey: s.apiKey.value,
+    tokenmixApiKey: s.effectiveTokenmixApiKey(),
     model: s.model.value,
-    genreModel: s.modelFor('genre'),
+    genreModel,
     canopyApiKey: s.canopyApiKey.value,
     dataforseoLogin: s.dataforseoLogin.value,
     dataforseoPassword: s.dataforseoPassword.value,
   };
 }
 
+function formatSetupBlock(issues: { message: string }[]): string {
+  return issues.map(i => `• ${i.message}`).join('\n');
+}
+
 async function runAnalyze(folder: string, forceResummarize: boolean, platform: string): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
-  const { provider, apiKey, model, genreModel, canopyApiKey, dataforseoLogin, dataforseoPassword } = getSettings();
+  const s = useSettings();
+  const setupIssues = s.checkPublishAnalyzeSetup();
+  if (setupIssues.length > 0) {
+    appendLog('✗ Setup required before Analyze:\n' + formatSetupBlock(setupIssues));
+    return;
+  }
+  const { provider, apiKey, tokenmixApiKey, model, genreModel, canopyApiKey, dataforseoLogin, dataforseoPassword } = getSettings();
 
   clearLog();
   isWorking.value = true;
@@ -117,7 +131,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
     const result = await invoke<GenreResult>('analyze_story', {
       request: {
         folder, api_key: apiKey, model, provider,
-        tokenmix_api_key: apiKey,
+        tokenmix_api_key: tokenmixApiKey,
         genre_model: genreModel,
         force_resummarize: forceResummarize,
         canopy_api_key: canopyApiKey,
@@ -148,6 +162,11 @@ async function runCraftAnalysis(folder: string, selected: string[], continuitySc
   if (!folder) { appendLog('✗ No story selected.'); return; }
 
   const s = useSettings();
+  const setupIssues = s.checkCraftAnalyzeSetup();
+  if (setupIssues.length > 0) {
+    appendLog('✗ Setup required before running reports:\n' + formatSetupBlock(setupIssues));
+    return;
+  }
   const { provider, apiKey } = getSettings();
   clearLog();
   isWorking.value = true;
@@ -182,6 +201,12 @@ async function runCraftAnalysis(folder: string, selected: string[], continuitySc
 
 async function runMarketIntel(folder: string): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
+  const s = useSettings();
+  const setupIssues = s.checkMarketIntelSetup();
+  if (setupIssues.length > 0) {
+    appendLog('✗ Setup required before Market Intel:\n' + formatSetupBlock(setupIssues));
+    return;
+  }
   const { provider, apiKey, model, canopyApiKey } = getSettings();
 
   clearLog();

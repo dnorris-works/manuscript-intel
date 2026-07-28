@@ -3,7 +3,7 @@ import { inject, ref, computed, watch, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { ContinuityScope } from '../composables/useAnalysis';
 import { useSettings } from '../composables/useSettings';
-import { storiesKey, analysisKey, seriesKey, platformKey } from '../injectionKeys';
+import { storiesKey, analysisKey, seriesKey, platformKey, showPanelKey } from '../injectionKeys';
 import LogStream from './LogStream.vue';
 import { useReportTypes } from '../composables/useReportTypes';
 
@@ -13,6 +13,7 @@ const storiesCtx = inject(storiesKey)!;
 const analysisCtx = inject(analysisKey)!;
 const seriesCtx = inject(seriesKey)!;
 const platformCtx = inject(platformKey)!;
+const showPanel = inject(showPanelKey);
 const settings = useSettings();
 
 // ── Report types from DB ──────────────────────────────────────────────────────
@@ -122,8 +123,23 @@ function summaryFileMarker(filename: string): string {
 const getReportsDisabled = computed(() => {
   return analysisCtx.isWorking.value
     || !storiesCtx.activeFolder.value
-    || selected.value.length === 0;
+    || selected.value.length === 0
+    || setupIssues.value.length > 0;
 });
+
+const setupIssues = computed(() => {
+  const plat = platformCtx.platform.value;
+  if (plat === 'craft' || plat === 'publish') {
+    return settings.checkCraftAnalyzeSetup();
+  }
+  return settings.checkPublishAnalyzeSetup();
+});
+
+const marketIntelSetupIssues = computed(() => settings.checkMarketIntelSetup());
+
+function openSettings(): void {
+  showPanel?.('settings');
+}
 
 // ── Checkbox logic ────────────────────────────────────────────────────────────
 
@@ -428,6 +444,21 @@ function onStop(): void {
       >Publish</button>
     </div>
 
+    <div v-if="setupIssues.length > 0" class="setup-warning">
+      <div class="setup-warning-title">Setup required before running reports</div>
+      <ul class="setup-warning-list">
+        <li v-for="issue in setupIssues" :key="issue.id">{{ issue.message }}</li>
+      </ul>
+      <button type="button" class="btn btn-sm" @click="openSettings">Open Settings</button>
+    </div>
+
+    <div v-if="platformCtx.isKdp.value && marketIntelSetupIssues.length > 0" class="setup-warning setup-warning-muted">
+      <div class="setup-warning-title">Market Intel also needs</div>
+      <ul class="setup-warning-list">
+        <li v-for="issue in marketIntelSetupIssues" :key="`mi-${issue.id}`">{{ issue.message }}</li>
+      </ul>
+    </div>
+
     <!-- Actions (top) -->
     <div class="analyzer-actions">
       <button
@@ -444,7 +475,7 @@ function onStop(): void {
         v-if="platformCtx.isKdp.value"
         class="btn btn-secondary"
         title="Run market intelligence via Canopy API"
-        :disabled="analysisCtx.isWorking.value || !analysisCtx.analysisState.value?.has_search_terms"
+        :disabled="analysisCtx.isWorking.value || !analysisCtx.analysisState.value?.has_search_terms || marketIntelSetupIssues.length > 0"
         @click="onMarketIntel"
       >Market Intel</button>
 
@@ -954,5 +985,33 @@ function onStop(): void {
 
 .activity-text {
   font-weight: 500;
+}
+
+.setup-warning {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(232, 97, 44, 0.35);
+  border-radius: var(--radius);
+  background: rgba(232, 97, 44, 0.08);
+  color: var(--text);
+}
+
+.setup-warning-muted {
+  border-color: var(--border);
+  background: var(--surface2);
+}
+
+.setup-warning-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.setup-warning-list {
+  margin: 0 0 10px 18px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-muted);
 }
 </style>

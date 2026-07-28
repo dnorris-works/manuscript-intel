@@ -44,12 +44,18 @@ interface UiSettingsRow {
   theme: string;
   provider: string;
   api_key: string;
+  tokenmix_api_key: string;
   model_assignments: string;
   local_default_model: string;
   local_model_assignments: string;
   canopy_api_key: string;
   dataforseo_login: string;
   dataforseo_password: string;
+}
+
+export interface SetupIssue {
+  id: string;
+  message: string;
 }
 
 const DEFAULT_FOLDER_STRUCTURE: FolderStructure = {
@@ -123,6 +129,7 @@ function setTheme(mode: ThemeMode): void {
 
 const provider = ref('local');
 const apiKey = ref('');
+const tokenmixApiKey = ref('');
 const modelAssignments = ref<ModelAssignments>(loadAssignments());
 const localDefaultModel = ref(DEFAULT_LOCAL_MODEL);
 const localModelAssignments = ref<ModelAssignments>(loadAssignments());
@@ -130,6 +137,7 @@ const canopyApiKey = ref('');
 const dataforseoLogin = ref('');
 const dataforseoPassword = ref('');
 const models = ref<ModelInfo[]>([]);
+const tokenmixModels = ref<ModelInfo[]>([]);
 const folderStructure = ref<FolderStructure>(cloneStructure(DEFAULT_FOLDER_STRUCTURE));
 const localAiStatus = ref<LocalAiStatus | null>(null);
 let modelsAutoLoadStarted = false;
@@ -144,6 +152,106 @@ function normalizeProvider(value: string | null | undefined): string {
 const activeModelAssignments = computed(() =>
   provider.value === 'local' ? localModelAssignments.value : modelAssignments.value
 );
+
+/** TokenMix key used for genre/niche work when Local AI is the active provider. */
+function effectiveTokenmixApiKey(): string {
+  if (provider.value === 'tokenmix') {
+    return apiKey.value.trim();
+  }
+  return tokenmixApiKey.value.trim();
+}
+
+function localAiReady(): boolean {
+  return localAiStatus.value?.ready === true;
+}
+
+function checkLocalAiSetup(): SetupIssue[] {
+  const issues: SetupIssue[] = [];
+  if (!localAiReady()) {
+    issues.push({
+      id: 'local-ai',
+      message: 'Local AI is not ready. Open Settings → AI Models and wait for the bundled model to start.',
+    });
+  }
+  return issues;
+}
+
+function checkTokenmixGenreSetup(): SetupIssue[] {
+  const issues: SetupIssue[] = [];
+  if (!effectiveTokenmixApiKey()) {
+    issues.push({
+      id: 'tokenmix-key',
+      message: 'TokenMix API key required for genre and niche classification. Add it in Settings → AI Models.',
+    });
+  }
+  const genre = provider.value === 'local'
+    ? activeModelAssignments.value.genre
+    : modelFor('genre');
+  if (!genre.trim()) {
+    issues.push({
+      id: 'genre-model',
+      message: 'Assign a TokenMix model to Genre Analysis in Settings → AI Models.',
+    });
+  } else if (provider.value === 'local' && tokenmixModels.value.length > 0) {
+    const known = tokenmixModels.value.some(m => m.id === genre);
+    if (!known) {
+      issues.push({
+        id: 'genre-model-unknown',
+        message: 'Genre Analysis model must be a TokenMix model. Fetch TokenMix models in Settings and pick one.',
+      });
+    }
+  }
+  return issues;
+}
+
+function checkCloudProviderSetup(): SetupIssue[] {
+  const issues: SetupIssue[] = [];
+  if (!apiKey.value.trim()) {
+    issues.push({
+      id: 'api-key',
+      message: 'TokenMix API key required. Add it in Settings → AI Models.',
+    });
+  }
+  if (!model.value.trim()) {
+    issues.push({
+      id: 'default-model',
+      message: 'Select a default model in Settings → AI Models (fetch models first).',
+    });
+  }
+  return issues;
+}
+
+/** KDP / Wide analyze — fingerprints are local; genre step uses TokenMix when provider is local. */
+function checkPublishAnalyzeSetup(): SetupIssue[] {
+  if (provider.value === 'local') {
+    return [...checkLocalAiSetup(), ...checkTokenmixGenreSetup()];
+  }
+  return checkCloudProviderSetup();
+}
+
+/** Craft / Publish audits — local or cloud only; no TokenMix genre routing. */
+function checkCraftAnalyzeSetup(): SetupIssue[] {
+  if (provider.value === 'local') {
+    return checkLocalAiSetup();
+  }
+  return checkCloudProviderSetup();
+}
+
+function checkMarketIntelSetup(): SetupIssue[] {
+  const issues: SetupIssue[] = [];
+  if (!canopyApiKey.value.trim()) {
+    issues.push({
+      id: 'canopy-key',
+      message: 'Canopy API key required for Market Intel. Add it in Settings → Canopy.',
+    });
+  }
+  if (provider.value === 'local') {
+    issues.push(...checkLocalAiSetup());
+  } else {
+    issues.push(...checkCloudProviderSetup());
+  }
+  return issues;
+}
 
 watch([provider, apiKey], () => {
   provider.value = normalizeProvider(provider.value);
@@ -203,6 +311,26 @@ async function testLocalAi(): Promise<{ success: boolean; error: string; reply?:
   }
 }
 
+async function fetchTokenmixModels(): Promise<{ success: boolean; error: string }> {
+  const key = effectiveTokenmixApiKey();
+  if (!key) {
+    return { success: false, error: 'Enter your TokenMix API key first.' };
+  }
+  try {
+    const result = await invoke<ModelsResult>('list_models', {
+      provider: 'tokenmix',
+      apiKey: key,
+    });
+    if (result.success && result.models.length > 0) {
+      tokenmixModels.value = result.models;
+      return { success: true, error: '' };
+    }
+    return { success: false, error: result.error || 'No TokenMix models returned.' };
+  } catch (e) {
+    return { success: false, error: 'Error: ' + String(e) };
+  }
+}
+
 async function fetchModels(): Promise<{ success: boolean; error: string }> {
   if (provider.value === 'tokenmix' && !apiKey.value.trim()) {
     return { success: false, error: 'Enter a TokenMix API key first.' };
@@ -234,6 +362,9 @@ async function autoLoadModelsIfConfigured(): Promise<void> {
   if (provider.value === 'local') {
     const status = localAiStatus.value || await refreshLocalAiStatus();
     if (!status.ready) return;
+    if (effectiveTokenmixApiKey()) {
+      void fetchTokenmixModels();
+    }
   }
   modelsAutoLoadStarted = true;
   try {
@@ -265,6 +396,7 @@ function currentUiSettingsPayload(): UiSettingsRow {
     theme: theme.value,
     provider: provider.value,
     api_key: apiKey.value.trim(),
+    tokenmix_api_key: tokenmixApiKey.value.trim(),
     model_assignments: JSON.stringify(modelAssignments.value),
     local_default_model: localDefaultModel.value.trim() || DEFAULT_LOCAL_MODEL,
     local_model_assignments: JSON.stringify(localModelAssignments.value),
@@ -322,6 +454,7 @@ async function hydrateSettings(): Promise<void> {
     applyTheme(theme.value);
     provider.value = normalizeProvider(loaded.provider || 'local');
     apiKey.value = loaded.api_key || '';
+    tokenmixApiKey.value = loaded.tokenmix_api_key || '';
     localDefaultModel.value = loaded.local_default_model || DEFAULT_LOCAL_MODEL;
     canopyApiKey.value = loaded.canopy_api_key || '';
     dataforseoLogin.value = loaded.dataforseo_login || '';
@@ -356,7 +489,7 @@ void listen('local-ai:ready', () => {
   void refreshLocalAiStatus().then(() => autoLoadModelsIfConfigured());
 });
 
-watch([theme, provider, apiKey, modelAssignments, localModelAssignments, localDefaultModel, canopyApiKey, dataforseoLogin, dataforseoPassword], () => {
+watch([theme, provider, apiKey, tokenmixApiKey, modelAssignments, localModelAssignments, localDefaultModel, canopyApiKey, dataforseoLogin, dataforseoPassword], () => {
   if (!settingsHydrated) return;
   scheduleUiSettingsSave();
 }, { deep: true });
@@ -365,6 +498,13 @@ watch(folderStructure, () => {
   if (!settingsHydrated) return;
   scheduleFolderStructureSave();
 }, { deep: true });
+
+watch(tokenmixApiKey, () => {
+  if (!settingsHydrated) return;
+  if (provider.value === 'local' && tokenmixApiKey.value.trim()) {
+    void fetchTokenmixModels();
+  }
+});
 
 watch(provider, () => {
   if (!settingsHydrated) return;
@@ -405,6 +545,8 @@ export function useSettings() {
     setTheme,
     provider,
     apiKey,
+    tokenmixApiKey,
+    effectiveTokenmixApiKey,
     model,
     proseModel,
     modelAssignments,
@@ -416,11 +558,16 @@ export function useSettings() {
     dataforseoLogin,
     dataforseoPassword,
     models,
+    tokenmixModels,
     folderStructure,
     localAiStatus,
     fetchModels,
+    fetchTokenmixModels,
     refreshLocalAiStatus,
     testLocalAi,
+    checkPublishAnalyzeSetup,
+    checkCraftAnalyzeSetup,
+    checkMarketIntelSetup,
     loadFolderStructure,
     addFolderEntry,
     removeFolderEntry,

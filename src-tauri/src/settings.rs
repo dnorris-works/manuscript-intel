@@ -11,6 +11,8 @@ pub struct UiSettings {
     pub theme: String,
     pub provider: String,
     pub api_key: String,
+    #[serde(default)]
+    pub tokenmix_api_key: String,
     pub model_assignments: String,
     pub local_default_model: String,
     pub local_model_assignments: String,
@@ -31,6 +33,7 @@ impl Default for UiSettings {
             theme: "dark".to_string(),
             provider: "local".to_string(),
             api_key: String::new(),
+            tokenmix_api_key: String::new(),
             model_assignments: "{}".to_string(),
             local_default_model: DEFAULT_LOCAL_MODEL.to_string(),
             local_model_assignments: "{}".to_string(),
@@ -81,6 +84,7 @@ pub async fn load_ui_settings(db: tauri::State<'_, Db>) -> Result<UiSettings, St
         theme: load_key_value(&conn, "theme"),
         provider,
         api_key: load_key_value(&conn, "api_key"),
+        tokenmix_api_key: load_key_value(&conn, "tokenmix_api_key"),
         model_assignments: load_key_value(&conn, "model_assignments"),
         local_default_model: if local_default.is_empty() {
             DEFAULT_LOCAL_MODEL.to_string()
@@ -118,6 +122,7 @@ pub async fn save_ui_settings(
         ("theme", settings.theme.as_str()),
         ("provider", settings.provider.as_str()),
         ("api_key", settings.api_key.as_str()),
+        ("tokenmix_api_key", settings.tokenmix_api_key.as_str()),
         ("model_assignments", settings.model_assignments.as_str()),
         ("local_default_model", settings.local_default_model.as_str()),
         ("local_model_assignments", settings.local_model_assignments.as_str()),
