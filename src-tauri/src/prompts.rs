@@ -245,10 +245,16 @@ pub async fn execute_prompt(
     let system_prompt = fill_template(&template.system_prompt, &vars);
     let user_content = fill_template(&template.user_template, &vars);
 
-    if template.json_mode {
-        call_llm_json(provider, api_key, model, &system_prompt, &user_content, template.max_tokens).await
+    let max_tokens = if provider == "local" && template_id == "chapter_summary" {
+        template.max_tokens.min(400)
     } else {
-        call_llm(provider, api_key, model, &system_prompt, &user_content, template.max_tokens).await
+        template.max_tokens
+    };
+
+    if template.json_mode {
+        call_llm_json(provider, api_key, model, &system_prompt, &user_content, max_tokens).await
+    } else {
+        call_llm(provider, api_key, model, &system_prompt, &user_content, max_tokens).await
     }
 }
 

@@ -624,19 +624,40 @@ function renderKdpPaste(data: any): string {
 
 // ── Chapter Summaries Report ──────────────────────────────────────────────────
 
+function formatChapterSignals(signals: string): string {
+  if (!signals) return '';
+  try {
+    const parsed = JSON.parse(signals);
+    if (parsed?.schema === 'chapter_fingerprint_v1') {
+      const lex = parsed.lexicon && typeof parsed.lexicon === 'object'
+        ? Object.entries(parsed.lexicon as Record<string, number>)
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, v]) => `${k} (${v})`)
+            .join(', ')
+        : '';
+      const base = `${parsed.pov || '?'} · ${parsed.tense || '?'} · ${parsed.dialogue_pct ?? 0}% dialogue`;
+      return lex ? `${base} · ${lex}` : base;
+    }
+  } catch {
+    // legacy prose blob
+  }
+  return signals;
+}
+
 function renderChapterSummaries(data: any): string {
   const chapters: any[] = data.chapters || [];
-  if (!chapters.length) return '<p class="muted">No chapter summaries available.</p>';
+  if (!chapters.length) return '<p class="muted">No chapter fingerprints available.</p>';
 
   const totalWords = data.total_words || chapters.reduce((sum: number, c: any) => sum + (c.word_count || 0), 0);
-  let html = `<p class="report-hint">${chapters.length} chapters, ${totalWords.toLocaleString()} total words</p>`;
-  html += `<table class="report-table"><thead><tr><th>#</th><th>Chapter</th><th>Words</th><th>Genre Signals</th></tr></thead><tbody>`;
+  let html = `<p class="report-hint">${chapters.length} chapters scanned (deterministic), ${totalWords.toLocaleString()} total words</p>`;
+  html += `<table class="report-table"><thead><tr><th>#</th><th>Chapter</th><th>Words</th><th>Fingerprint</th></tr></thead><tbody>`;
   chapters.forEach((ch, i) => {
+    const summary = formatChapterSignals(ch.signals || '');
     html += `<tr>
       <td>${i + 1}</td>
       <td><strong>${esc(ch.title || ch.file)}</strong></td>
       <td>${(ch.word_count || 0).toLocaleString()}</td>
-      <td>${esc(ch.signals || '').substring(0, 200)}${(ch.signals || '').length > 200 ? '...' : ''}</td>
+      <td>${esc(summary).substring(0, 280)}${summary.length > 280 ? '...' : ''}</td>
     </tr>`;
   });
   html += `</tbody></table>`;

@@ -97,6 +97,7 @@ function getSettings() {
     provider: s.provider.value,
     apiKey: s.apiKey.value,
     model: s.model.value,
+    genreModel: s.modelFor('genre'),
     canopyApiKey: s.canopyApiKey.value,
     dataforseoLogin: s.dataforseoLogin.value,
     dataforseoPassword: s.dataforseoPassword.value,
@@ -105,7 +106,7 @@ function getSettings() {
 
 async function runAnalyze(folder: string, forceResummarize: boolean, platform: string): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
-  const { provider, apiKey, model, canopyApiKey, dataforseoLogin, dataforseoPassword } = getSettings();
+  const { provider, apiKey, model, genreModel, canopyApiKey, dataforseoLogin, dataforseoPassword } = getSettings();
 
   clearLog();
   isWorking.value = true;
@@ -116,6 +117,8 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
     const result = await invoke<GenreResult>('analyze_story', {
       request: {
         folder, api_key: apiKey, model, provider,
+        tokenmix_api_key: apiKey,
+        genre_model: genreModel,
         force_resummarize: forceResummarize,
         canopy_api_key: canopyApiKey,
         platform,
@@ -201,9 +204,7 @@ async function runMarketIntel(folder: string): Promise<void> {
 
 async function runSummaries(folder: string): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
-  const s = useSettings();
   const { provider, apiKey } = getSettings();
-  const model = s.modelFor('summaries');
 
   clearLog();
   isWorking.value = true;
@@ -216,13 +217,13 @@ async function runSummaries(folder: string): Promise<void> {
         folder,
         provider,
         api_key: apiKey,
-        model,
+        model: '',
       },
     });
     if (!result.success) {
       appendLog('✗ ' + result.error);
     } else {
-      appendLog(result.report || '✓ Chapter summaries refreshed.');
+      appendLog(result.report || '✓ Chapter fingerprints refreshed.');
     }
   } catch (e) {
     appendLog('✗ ' + String(e));

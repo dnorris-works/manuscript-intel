@@ -1,17 +1,16 @@
-// analysis/chapters.rs — Phase 1: chapter-by-chapter summarization
+// analysis/chapters.rs — Phase 1: chapter-by-chapter manuscript fingerprinting
 //
-// Collects .md files from a manuscript folder, sends each to an LLM for
-// genre-signal extraction, and persists the results to SQLite.
+// Scans every chapter with deterministic Rust heuristics (no per-chapter AI).
+// Fingerprints are stored as JSON and aggregated for book-level genre analysis.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::{emit, err, GenreResult, FolderRequest};
+use super::chapter_stats::{aggregate_lexicon, ChapterFingerprint};
 use crate::db;
-use crate::prompts;
 
 // ── Tauri command ────────────────────────────────────────────────────────────
 
@@ -24,14 +23,17 @@ pub async fn generate_summaries(app: AppHandle, request: FolderRequest) -> Genre
     let chapters = collect_chapters(&folder);
     if chapters.is_empty() { return err("No .md files found."); }
 
-    emit(&app, &format!("Found {} chapter file(s). Starting summaries...", chapters.len()));
+    emit(&app, &format!(
+        "Found {} chapter file(s). Scanning fingerprints (no AI)...",
+        chapters.len()
+    ));
 
     let database = app.state::<db::Db>();
-    let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model).await;
+    let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
 
     GenreResult {
         success: true,
-        report:  format!("\u{2713} {} summarized, {} already done.", done, skipped),
+        report:  format!("\u{2713} {} scanned, {} already up to date.", done, skipped),
         error:   String::new(),
         run_ts:  String::new(),
     }
@@ -44,9 +46,6 @@ pub(crate) async fn phase1_summaries(
     database: &db::Db,
     chapters: &[PathBuf],
     story_folder: &str,
-    provider: &str,
-    api_key: &str,
-    model: &str,
 ) -> (usize, usize) {
     let mut done = 0usize;
     let mut skipped = 0usize;
@@ -58,7 +57,7 @@ pub(crate) async fn phase1_summaries(
     for (i, chapter_path) in chapters.iter().enumerate() {
         let fname = chapter_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-        emit(app, &format!("  [{}/{}] Summarizing: {}", i + 1, chapters.len(), fname));
+        emit(app, &format!("  [{}/{}] Scanning: {}", i + 1, chapters.len(), fname));
         emit_summary_progress(app, &fname, "started");
 
         let content = match fs::read_to_string(chapter_path) {
@@ -90,26 +89,33 @@ pub(crate) async fn phase1_summaries(
             continue;
         }
 
-        let word_count = cleaned_source.split_whitespace().count();
-        emit(app, &format!("    {} words", word_count));
+        let title = extract_title(&content)
+            .or_else(|| extract_title(&cleaned_source))
+            .unwrap_or_else(|| fname.clone());
+        let fingerprint = super::chapter_stats::compute_chapter_fingerprint(&title, &cleaned_source);
+        let word_count = fingerprint.word_count;
 
-        match summarize_chapter(database, provider, api_key, model, story_folder, &fname, &truncate_words(&cleaned_source, 8000)).await {
-            Ok(signals) => {
-                let title = extract_title(&content).unwrap_or_else(|| fname.clone());
-                let compact_signals = clean_for_ai(&signals);
-                let conn = database.0.lock().unwrap();
-                let _ = db::save_chapter_summary(&conn, story_folder, &fname, &title, &compact_signals, &source_hash, word_count as i64);
-                emit(app, &format!("    \u{2713} Done ({} signal chars)", compact_signals.len()));
-                emit_summary_progress(app, &fname, "done");
-                done += 1;
-            }
-            Err(e) => emit(app, &format!("    \u{26a0} AI error: {}", e)),
-        }
+        emit(app, &format!("    {} words — {}", word_count, fingerprint.to_display_summary()));
+
+        let signals_json = fingerprint.to_storage_json();
+        let conn = database.0.lock().unwrap();
+        let _ = db::save_chapter_summary(
+            &conn,
+            story_folder,
+            &fname,
+            &title,
+            &signals_json,
+            &source_hash,
+            word_count as i64,
+        );
+        emit(app, "    \u{2713} Fingerprint saved");
+        emit_summary_progress(app, &fname, "done");
+        done += 1;
 
         if crate::is_cancelled() { emit(app, "\u{26a0} Cancelled."); break; }
     }
 
-    emit(app, &format!("Phase 1 complete \u{2014} {} new, {} skipped.", done, skipped));
+    emit(app, &format!("Phase 1 complete \u{2014} {} scanned, {} skipped.", done, skipped));
     (done, skipped)
 }
 
@@ -135,9 +141,11 @@ pub(crate) fn clean_for_ai(text: &str) -> String {
     let mut cleaned = String::with_capacity(text.len());
     for c in text.chars() {
         if is_non_visible(c) {
+            cleaned.push(' ');
             continue;
         }
         if c.is_control() && !matches!(c, '\n' | '\r' | '\t') {
+            cleaned.push(' ');
             continue;
         }
         cleaned.push(c);
@@ -163,32 +171,9 @@ pub(crate) fn chapter_source_hash(cleaned_text: &str) -> String {
     out
 }
 
-// ── AI call ──────────────────────────────────────────────────────────────────
-
-pub(crate) async fn summarize_chapter(
-    db: &db::Db,
-    provider: &str,
-    api_key: &str,
-    model: &str,
-    story_folder: &str,
-    filename: &str,
-    content: &str,
-) -> Result<String, String> {
-    let bible = prompts::discover_bible(story_folder);
-    let title = extract_title(content).unwrap_or_else(|| filename.to_string());
-
-    let mut vars = HashMap::new();
-    vars.insert("chapter_title", title.as_str());
-    vars.insert("chapter_text", content);
-    vars.insert("bible", bible.as_str());
-
-    prompts::execute_prompt(db, "chapter_summary", provider, api_key, model, vars).await
-}
-
 // ── File helpers (manuscript source files only — these stay on disk) ──────────
 
 /// Collect chapter `.md` files from the configured manuscript folder only.
-/// Other story folders (bible, characters, publishing, etc.) are ignored.
 pub(crate) fn collect_chapters(folder: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let structure = crate::folder_structure::current();
@@ -249,8 +234,87 @@ pub(crate) fn truncate_words(text: &str, max: usize) -> String {
     words[..max].join(" ") + "\n\n[Truncated]"
 }
 
+/// Format stored signals (JSON fingerprint or legacy prose) for one dossier entry.
+pub fn format_chapter_for_dossier(signals: &str) -> String {
+    if let Some(fp) = ChapterFingerprint::from_storage(signals) {
+        return fp.to_dossier_line();
+    }
+    signals.trim().to_string()
+}
+
+/// Book-level dossier from all chapter fingerprints for genre analysis (TokenMix).
 pub(crate) fn build_combined_context(summaries: &[db::ChapterSummaryRow]) -> String {
-    summaries.iter().enumerate().map(|(i, s)| {
-        format!("--- Chapter {} ({}, ~{} words) ---\n{}\n\n", i + 1, s.title, s.word_count, s.signals)
-    }).collect()
+    let mut fingerprints: Vec<ChapterFingerprint> = Vec::new();
+    let mut out = String::from(
+        "Structured manuscript fingerprint (deterministic scan of every chapter).\n\
+         Infer the true genre niche, subgenre, tone, and category fit from these signals.\n\n",
+    );
+
+    for (i, s) in summaries.iter().enumerate() {
+        let body = format_chapter_for_dossier(&s.signals);
+        out.push_str(&format!(
+            "--- Chapter {} — {} (~{} words) ---\n{}\n\n",
+            i + 1,
+            s.title,
+            s.word_count,
+            body
+        ));
+        if let Some(fp) = ChapterFingerprint::from_storage(&s.signals) {
+            fingerprints.push(fp);
+        }
+    }
+
+    if !fingerprints.is_empty() {
+        let totals = aggregate_lexicon(&fingerprints);
+        if !totals.is_empty() {
+            let mut pairs: Vec<(String, u32)> = totals.into_iter().collect();
+            pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let lex_line: String = pairs
+                .iter()
+                .map(|(k, v)| format!("{k} ({v})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str("--- Book-level lexicon totals (all chapters) ---\n");
+            out.push_str(&lex_line);
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_for_ai_strips_non_visible_chars() {
+        let raw = "Hello\u{200B}world\u{FEFF}";
+        let cleaned = clean_for_ai(raw);
+        assert_eq!(cleaned, "Hello world");
+    }
+
+    #[test]
+    fn hash_ignores_non_visible_char_differences() {
+        let a = clean_for_ai("The night\u{200B}was cold.");
+        let b = clean_for_ai("The night was cold.");
+        assert_eq!(chapter_source_hash(&a), chapter_source_hash(&b));
+    }
+
+    #[test]
+    fn build_combined_context_includes_lexicon_totals() {
+        let fp = super::super::chapter_stats::compute_chapter_fingerprint(
+            "Ch1",
+            "She prayed in church and fell in love.",
+        );
+        let row = db::ChapterSummaryRow {
+            file: "01.md".into(),
+            title: "Ch1".into(),
+            signals: fp.to_storage_json(),
+            word_count: 8,
+        };
+        let combined = build_combined_context(&[row]);
+        assert!(combined.contains("faith"));
+        assert!(combined.contains("Book-level lexicon totals"));
+    }
 }

@@ -70,6 +70,27 @@ async fn wait_until_ready(base: &str, max_secs: u64) -> bool {
     false
 }
 
+async fn preload_default_model(base: &str) {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let url = format!("{}/api/chat", base.trim_end_matches('/'));
+    let _ = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "model": DEFAULT_LOCAL_MODEL,
+            "messages": [{"role": "user", "content": "ok"}],
+            "stream": false,
+            "options": { "num_predict": 1 }
+        }))
+        .send()
+        .await;
+}
+
 pub async fn fetch_installed_models(base: &str) -> Vec<String> {
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -249,6 +270,7 @@ pub fn start_local_ai(app: &AppHandle) -> Result<(), String> {
         .env("OLLAMA_HOST", &host)
         .env("OLLAMA_MODELS", models_dir.to_string_lossy().as_ref())
         .env("OLLAMA_LIBRARY_PATH", library_path.to_string_lossy().as_ref())
+        .env("OLLAMA_KEEP_ALIVE", "-1")
         .spawn()
         .map_err(|e| format!("Failed to start Ollama: {}", e))?;
 
@@ -273,6 +295,7 @@ pub fn start_local_ai(app: &AppHandle) -> Result<(), String> {
     let app_wait = app.clone();
     tauri::async_runtime::spawn(async move {
         if wait_until_ready(&base, 45).await {
+            preload_default_model(&base).await;
             let _ = app_wait.emit("local-ai:ready", ());
         } else {
             let _ = app_wait.emit(

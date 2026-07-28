@@ -76,23 +76,23 @@ const visibleReports = computed(() => {
 const summaryStatus = computed(() => {
   const s = analysisCtx.analysisState.value;
   if (!s || !storiesCtx.activeFolder.value) {
-    return { needsRefresh: false, text: 'Select a story to manage chapter summaries.' };
+    return { needsRefresh: false, text: 'Select a story to manage chapter fingerprints.' };
   }
   if (s.summary_chapter_count === 0) {
     return { needsRefresh: false, text: 'No manuscript chapters found yet.' };
   }
   if (s.summary_missing_count > 0 || s.summary_stale_count > 0) {
     const parts: string[] = [];
-    if (s.summary_missing_count > 0) parts.push(`${s.summary_missing_count} new/un-summarized`);
-    if (s.summary_stale_count > 0) parts.push(`${s.summary_stale_count} changed since summary`);
+    if (s.summary_missing_count > 0) parts.push(`${s.summary_missing_count} new/unscanned`);
+    if (s.summary_stale_count > 0) parts.push(`${s.summary_stale_count} changed since last scan`);
     return {
       needsRefresh: true,
-      text: `Chapter summaries need refresh: ${parts.join(', ')}.`
+      text: `Chapter fingerprints need refresh: ${parts.join(', ')}.`
     };
   }
   return {
     needsRefresh: false,
-    text: `Chapter summaries are up to date (${s.summary_count}/${s.summary_chapter_count}).`
+    text: `Chapter fingerprints are up to date (${s.summary_count}/${s.summary_chapter_count}).`
   };
 });
 
@@ -255,71 +255,41 @@ function reportCardDescription(report: { id: string; description: string }): str
   return `${report.description}${costText}`;
 }
 
-function summaryModelPrice(): { modelId: string; inputPrice: number | null; outputPrice: number | null } {
-  const modelId = settings.modelFor('summaries') || settings.modelFor('default') || estimateReportModel('chapter_summaries');
-  const modelInfo = settings.models.value.find(m => m.id === modelId);
-  const fallback = fallbackModelPrice(modelId) || fallbackModelPrice(estimateReportModel('chapter_summaries'));
-  return {
-    modelId,
-    inputPrice: modelInfo?.input_price ?? fallback?.input_price ?? null,
-    outputPrice: modelInfo?.output_price ?? fallback?.output_price ?? null,
-  };
-}
-
 async function maybeRefreshSummariesBeforeRun(folder: string): Promise<boolean> {
   if (!selectionNeedsSummaries() || !summaryStatus.value.needsRefresh) {
     return true;
   }
 
-  const price = summaryModelPrice();
   try {
     const estimate = await invoke<{
       success: boolean;
-      files: string[];
       chapter_count: number;
-      input_tokens: number;
-      output_tokens: number;
-      estimated_cost: number | null;
       error: string;
     }>('estimate_summary_refresh_cost', {
-      request: {
-        folder,
-        input_price: price.inputPrice,
-        output_price: price.outputPrice,
-      },
+      request: { folder },
     });
 
-    if (!estimate.success) {
-      const proceedNoEstimate = confirm(`Chapter summaries need refresh before running reports.\n\nCould not estimate cost: ${estimate.error || 'unknown error'}\n\nRefresh summaries now?`);
-      if (!proceedNoEstimate) return false;
-    } else {
-      const costText = estimate.estimated_cost == null
-        ? 'Estimated cost: N/A (model pricing unavailable).'
-        : `Estimated cost: ${formatCost(estimate.estimated_cost)} total.`;
-      const msg = [
-        'Chapter summaries must be refreshed before these reports can run.',
-        '',
-        `Model: ${price.modelId}`,
-        `Chapters to summarize: ${estimate.chapter_count}`,
-        `Estimated input tokens: ${estimate.input_tokens}`,
-        `Estimated output tokens: ${estimate.output_tokens}`,
-        costText,
-        '',
-        'Refresh summaries now?'
-      ].join('\n');
-      const proceed = confirm(msg);
-      if (!proceed) return false;
+    const count = estimate.success ? estimate.chapter_count : 0;
+    const msg = [
+      'Some chapters need a fingerprint refresh before these reports can run.',
+      '',
+      count > 0 ? `Chapters to scan: ${count}` : summaryStatus.value.text,
+      'This is instant and uses no AI.',
+      '',
+      'Refresh fingerprints now?',
+    ].join('\n');
+    if (!confirm(msg)) return false;
+  } catch {
+    if (!confirm('Chapter fingerprints need refresh before running reports.\n\nRefresh now?')) {
+      return false;
     }
-  } catch (e) {
-    const proceedAfterError = confirm(`Chapter summaries need refresh before running reports.\n\nFailed to estimate refresh cost: ${String(e)}\n\nRefresh summaries now anyway?`);
-    if (!proceedAfterError) return false;
   }
 
   await analysisCtx.runSummaries(folder);
 
   const s = analysisCtx.analysisState.value;
   if (s && (s.summary_missing_count > 0 || s.summary_stale_count > 0)) {
-    alert('Summaries are still not up to date after refresh. Please resolve chapter read errors and try again.');
+    alert('Fingerprints are still not up to date after refresh. Please resolve chapter read errors and try again.');
     return false;
   }
   return true;
@@ -486,7 +456,7 @@ function onStop(): void {
 
       <label v-if="platformCtx.platform.value !== 'craft' && platformCtx.platform.value !== 'publish'" class="force-resummarize-label">
         <input v-model="forceResummarize" type="checkbox" />
-        Force re-summarize
+        Force re-scan
       </label>
     </div>
 
@@ -496,12 +466,12 @@ function onStop(): void {
         class="btn btn-secondary btn-sm"
         :disabled="analysisCtx.isWorking.value || !storiesCtx.activeFolder.value"
         @click="onRefreshSummaries"
-      >Refresh Summaries</button>
+      >Refresh Fingerprints</button>
     </div>
 
     <div v-if="summaryStatus.needsRefresh" class="summary-issues">
       <div v-if="summaryIssueFiles.missing.length > 0" class="summary-issue-block">
-        <div class="summary-issue-title">Missing summaries:</div>
+        <div class="summary-issue-title">Missing fingerprints:</div>
         <ul class="summary-file-list">
           <li
             v-for="f in summaryIssueFiles.missing"
@@ -518,7 +488,7 @@ function onStop(): void {
         </ul>
       </div>
       <div v-if="summaryIssueFiles.stale.length > 0" class="summary-issue-block">
-        <div class="summary-issue-title">Changed since summarized:</div>
+        <div class="summary-issue-title">Changed since last scan:</div>
         <ul class="summary-file-list">
           <li
             v-for="f in summaryIssueFiles.stale"

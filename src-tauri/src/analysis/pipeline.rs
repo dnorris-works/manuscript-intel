@@ -155,7 +155,7 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
         emit(&app, "Step 1: No summaries found — generating now...");
         let chapters = collect_chapters(&folder);
         if chapters.is_empty() { return err("No .md chapter files found."); }
-        phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model).await;
+        phase1_summaries(&app, &database, &chapters, &request.folder).await;
         let conn = database.0.lock().unwrap();
         summaries = db::load_chapter_summaries(&conn, &request.folder);
         if summaries.is_empty() { return err("Could not produce chapter summaries."); }
@@ -166,7 +166,11 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
 
     // ── Step 2: Genre analysis ─────────────────────────────────────────────
     emit(&app, "Step 2: Running genre analysis...");
-    let genre_result = phase2_analyze(&app, &database, &request.folder, &summaries, &request.provider, &request.api_key, &request.model).await;
+    let genre_result = phase2_analyze(
+        &app, &database, &request.folder, &summaries,
+        &request.provider, &request.api_key, &request.model,
+        &request.tokenmix_api_key, &request.genre_model,
+    ).await;
     if !genre_result.success { return genre_result; }
     if crate::is_cancelled() { return err("Cancelled."); }
 
@@ -231,7 +235,7 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
         emit(&app, "Phase 1: Generating chapter summaries...");
         let chapters = collect_chapters(&folder);
         if chapters.is_empty() { return err("No .md files found."); }
-        phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model).await;
+        phase1_summaries(&app, &database, &chapters, &request.folder).await;
         let conn = database.0.lock().unwrap();
         summaries = db::load_chapter_summaries(&conn, &request.folder);
     } else {
@@ -246,7 +250,11 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
         d
     } else {
         emit(&app, "Phase 2: Running genre analysis...");
-        let r = phase2_analyze(&app, &database, &request.folder, &summaries, &request.provider, &request.api_key, &request.model).await;
+        let r = phase2_analyze(
+        &app, &database, &request.folder, &summaries,
+        &request.provider, &request.api_key, &request.model,
+        &request.tokenmix_api_key, &request.genre_model,
+    ).await;
         if !r.success { return r; }
         let conn = database.0.lock().unwrap();
         match db::load_genre_data(&conn, &request.folder) {
@@ -293,13 +301,17 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
         if summaries.is_empty() {
             let chapters = collect_chapters(&folder_path);
             if chapters.is_empty() { return err("No .md chapter files found."); }
-            phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model).await;
+            phase1_summaries(&app, &database, &chapters, &request.folder).await;
             let conn = database.0.lock().unwrap();
             summaries = db::load_chapter_summaries(&conn, &request.folder);
         }
         if summaries.is_empty() { return err("Could not produce chapter summaries."); }
 
-        let r = phase2_analyze(&app, &database, &request.folder, &summaries, &request.provider, &request.api_key, &request.model).await;
+        let r = phase2_analyze(
+        &app, &database, &request.folder, &summaries,
+        &request.provider, &request.api_key, &request.model,
+        &request.tokenmix_api_key, &request.genre_model,
+    ).await;
         if !r.success { return err(&r.error); }
         genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
     }
@@ -325,7 +337,16 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
             genre_data.industry_ebook, genre_data.kdp_ebook.join("; "), genre_data.genre_signals
         );
 
-        let ai_ranked = match ai_rank_genres(&database, &request.provider, &request.api_key, &request.model, &description, &master_list).await {
+        let ai_ranked = match ai_rank_genres(
+            &database,
+            &request.provider,
+            &request.api_key,
+            &request.model,
+            &request.tokenmix_api_key,
+            &request.genre_model,
+            &description,
+            &master_list,
+        ).await {
             Ok(r) => r,
             Err(e) => return err(&format!("Genre ranking failed: {}", e)),
         };
@@ -548,15 +569,25 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
 }
 
 async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> GenreResult {
-    if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
+    if request.provider == "local" {
+        if let Err(e) = crate::ai::route_for_genre_work(
+            &request.provider,
+            &request.api_key,
+            &request.model,
+            &request.tokenmix_api_key,
+            &request.genre_model,
+        ) {
+            return err(&e);
+        }
+    } else if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
         return err(&msg);
     }
 
     let database = app.state::<db::Db>();
     let run_ts = if request.run_time.is_empty() { chrono::Utc::now().to_rfc3339() } else { request.run_time.clone() };
 
-    // ── Step 1: Summaries ──────────────────────────────────────────────────
-    emit(&app, "Step 1: Chapter summaries...");
+    // ── Step 1: Chapter fingerprints (Rust scan) ───────────────────────────
+    emit(&app, "Step 1: Scanning chapter fingerprints...");
     {
         let folder_path = PathBuf::from(&request.folder);
         if !folder_path.exists() { return err("Folder does not exist."); }
@@ -564,7 +595,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         crate::reset_cancel();
 
         if request.force_resummarize {
-            emit(&app, "  Force re-summarize — deleting existing summaries...");
+            emit(&app, "  Force re-scan — deleting existing fingerprints...");
             let conn = database.0.lock().unwrap();
             let _ = db::delete_chapter_summaries(&conn, &request.folder);
         }
@@ -572,8 +603,8 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         let chapters = collect_chapters(&folder_path);
         if chapters.is_empty() { return err("No .md chapter files found."); }
 
-        let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model).await;
-        emit(&app, &format!("  ✓ {} summarized, {} skipped.", done, skipped));
+        let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
+        emit(&app, &format!("  ✓ {} scanned, {} skipped.", done, skipped));
     }
     // Save chapter summaries as a standalone report
     {
@@ -598,7 +629,11 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
     if genre_data_existing.is_none() {
         let summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
         if summaries.is_empty() { return err("No chapter summaries available."); }
-        let r = phase2_analyze(&app, &database, &request.folder, &summaries, &request.provider, &request.api_key, &request.model).await;
+        let r = phase2_analyze(
+        &app, &database, &request.folder, &summaries,
+        &request.provider, &request.api_key, &request.model,
+        &request.tokenmix_api_key, &request.genre_model,
+    ).await;
         if !r.success { return err(&r.error); }
     } else {
         emit(&app, "  Genre data exists — skipping.");
@@ -626,7 +661,16 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
             genre_data.industry_ebook, genre_data.kdp_ebook.join("; "), genre_data.genre_signals
         );
 
-        let ai_ranked = match ai_rank_genres(&database, &request.provider, &request.api_key, &request.model, &description, &master_list).await {
+        let ai_ranked = match ai_rank_genres(
+            &database,
+            &request.provider,
+            &request.api_key,
+            &request.model,
+            &request.tokenmix_api_key,
+            &request.genre_model,
+            &description,
+            &master_list,
+        ).await {
             Ok(r) => r,
             Err(e) => return err(&format!("Genre ranking failed: {}", e)),
         };
@@ -1021,7 +1065,6 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
     if !folder.exists() { return err("Folder does not exist."); }
 
     // Resolve per-function models (fall back to default)
-    let model_summaries = if request.model_summaries.is_empty() { &request.model } else { &request.model_summaries };
     let model_continuity = if request.model_continuity.is_empty() { &request.model } else { &request.model_continuity };
     let model_sdt = if request.model_sdt.is_empty() { &request.model } else { &request.model_sdt };
     let model_ai_isms = if request.model_ai_isms.is_empty() { &request.model } else { &request.model_ai_isms };
@@ -1030,8 +1073,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
     let database = app.state::<db::Db>();
     let run_ts = chrono::Utc::now().to_rfc3339();
     let needs_ai = request.selected.iter().any(|s| {
-        s == "chapter_summaries"
-            || s == "continuity_check"
+        s == "continuity_check"
             || s == "show_dont_tell"
             || s == "ai_isms"
             || super::craft_audits::is_craft_audit(s)
@@ -1046,15 +1088,12 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
 
     // ── Chapter Summaries ─────────────────────────────────────────────────
     if request.selected.contains(&"chapter_summaries".to_string()) {
-        emit(&app, &format!("Generating chapter summaries... [{}: {}]", request.provider, model_summaries));
+        emit(&app, "Scanning chapter fingerprints (deterministic — no AI)...");
         let chapters = collect_chapters(&folder);
         if chapters.is_empty() { return err("No .md chapter files found."); }
 
-        let (done, skipped) = phase1_summaries(
-            &app, &database, &chapters, &request.folder,
-            &request.provider, &request.api_key, model_summaries,
-        ).await;
-        emit(&app, &format!("✓ Chapter summaries complete ({} new, {} skipped).", done, skipped));
+        let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
+        emit(&app, &format!("✓ Chapter fingerprints complete ({} new, {} skipped).", done, skipped));
 
         // Save as report
         let conn = database.0.lock().unwrap();

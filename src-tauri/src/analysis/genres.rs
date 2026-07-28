@@ -59,7 +59,18 @@ pub async fn rank_genres_for_story(app: AppHandle, request: FolderRequest) -> Ge
     };
     emit(&app, &format!("  Scoring against {} known genres.", master_list.len()));
 
-    match ai_rank_genres(&database, &request.provider, &request.api_key, &request.model, &description, &master_list).await {
+    match ai_rank_genres(
+        &database,
+        &request.provider,
+        &request.api_key,
+        &request.model,
+        &request.tokenmix_api_key,
+        &request.genre_model,
+        &description,
+        &master_list,
+    )
+    .await
+    {
         Err(e) => err(&e),
         Ok(ai_ranked) => {
             let mut ranked: Vec<RankedGenre> = ai_ranked.into_iter().map(|r| {
@@ -129,15 +140,26 @@ pub async fn analyze_genre(app: AppHandle, request: FolderRequest) -> GenreResul
         emit(&app, "No summaries found \u{2014} running Phase 1 first...");
         let chapters = collect_chapters(&folder);
         if chapters.is_empty() { return err("No .md files found."); }
-        phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model).await;
+        phase1_summaries(&app, &database, &chapters, &request.folder).await;
         let conn = database.0.lock().unwrap();
         summaries = db::load_chapter_summaries(&conn, &request.folder);
     }
 
-    if summaries.is_empty() { return err("Could not produce any chapter summaries."); }
+    if summaries.is_empty() { return err("Could not produce any chapter fingerprints."); }
 
-    emit(&app, &format!("Phase 2: Analyzing {} chapter summaries...", summaries.len()));
-    phase2_analyze(&app, &database, &request.folder, &summaries, &request.provider, &request.api_key, &request.model).await
+    emit(&app, &format!("Phase 2: Analyzing {} chapter fingerprints...", summaries.len()));
+    phase2_analyze(
+        &app,
+        &database,
+        &request.folder,
+        &summaries,
+        &request.provider,
+        &request.api_key,
+        &request.model,
+        &request.tokenmix_api_key,
+        &request.genre_model,
+    )
+    .await
 }
 
 // ── Phase 2 implementation ───────────────────────────────────────────────────
@@ -150,15 +172,51 @@ pub(crate) async fn phase2_analyze(
     provider: &str,
     api_key: &str,
     model: &str,
+    tokenmix_api_key: &str,
+    genre_model: &str,
 ) -> GenreResult {
     let combined = build_combined_context(summaries);
 
-    emit(app, &format!(
-        "  Sending {} summaries ({} chars) to {}...",
-        summaries.len(), combined.len(), model
-    ));
+    let route = match crate::ai::route_for_genre_work(
+        provider,
+        api_key,
+        model,
+        tokenmix_api_key,
+        genre_model,
+    ) {
+        Ok(r) => r,
+        Err(e) => return err(&e),
+    };
 
-    match call_ai_genre_analysis(database, provider, api_key, model, &combined).await {
+    if provider == "local" && route.provider == "tokenmix" {
+        emit(
+            app,
+            &format!(
+                "  Genre analysis via TokenMix [{}] (local AI not used for niche classification)",
+                route.model
+            ),
+        );
+    }
+
+    emit(
+        app,
+        &format!(
+            "  Sending {} chapter fingerprints ({} chars) to {}...",
+            summaries.len(),
+            combined.len(),
+            route.model
+        ),
+    );
+
+    match call_ai_genre_analysis(
+        database,
+        &route.provider,
+        &route.api_key,
+        &route.model,
+        &combined,
+    )
+    .await
+    {
         Err(e) => err(&format!("Phase 2 AI error: {}", e)),
         Ok(g) => {
             let conn = database.0.lock().unwrap();
@@ -183,10 +241,21 @@ pub(crate) async fn ai_rank_genres(
     provider: &str,
     api_key: &str,
     model: &str,
+    tokenmix_api_key: &str,
+    genre_model: &str,
     description: &str,
     master_list: &[db::GenreRow],
 ) -> Result<Vec<AiGenreRank>, String> {
-    let genre_list = master_list.iter()
+    let route = crate::ai::route_for_genre_work(
+        provider,
+        api_key,
+        model,
+        tokenmix_api_key,
+        genre_model,
+    )?;
+
+    let genre_list = master_list
+        .iter()
         .map(|g| format!("- {}: {}", g.name, g.description))
         .collect::<Vec<_>>()
         .join("\n");
@@ -195,7 +264,15 @@ pub(crate) async fn ai_rank_genres(
     vars.insert("genre_list", genre_list.as_str());
     vars.insert("description", description);
 
-    let raw = prompts::execute_prompt(database, "genre_ranking", provider, api_key, model, vars).await?;
+    let raw = prompts::execute_prompt(
+        database,
+        "genre_ranking",
+        &route.provider,
+        &route.api_key,
+        &route.model,
+        vars,
+    )
+    .await?;
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();

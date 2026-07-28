@@ -668,7 +668,7 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
     // (id, label, description, platforms, depends_on,
     //  cost_truncation, cost_output_max, cost_per_chapter, cost_fixed_calls, model_slot, min_tier)
     let rows: &[(&str, &str, &str, &str, &str, i64, i64, i64, i64, &str, &str)] = &[
-        ("chapter_summaries", "Chapter Summaries", "Extract genre signals from each chapter of the manuscript.", "kdp,wide", "", 8000, 600, 1, 0, "summaries", "basic"),
+        ("chapter_summaries", "Chapter Fingerprints", "Deterministic genre signal scan of every manuscript chapter (no AI).", "kdp,wide", "", 0, 0, 1, 0, "summaries", "basic"),
         ("genre_analysis", "Genre Analysis", "Industry genre classification, KDP paths, comps, and reader demographic.", "kdp,wide", "chapter_summaries", 0, 1200, 0, 1, "genre", "capable"),
         ("genre_ranking", "Genre Ranking", "Score the manuscript against all known genres independently.", "kdp,wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "genre", "capable"),
         ("kdp_categories", "KDP Categories", "Find the best-fit Amazon categories with discoverability stats.", "kdp", "chapter_summaries,genre_analysis,genre_ranking", 0, 1200, 0, 2, "keywords", "basic"),

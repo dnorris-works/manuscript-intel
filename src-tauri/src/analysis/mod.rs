@@ -11,6 +11,7 @@
 //   continuity — Continuity checker (Craft platform, AI-assisted, manuscript or series scope)
 
 pub mod chapters;
+pub mod chapter_stats;
 pub mod genres;
 pub mod categories;
 pub mod keywords;
@@ -45,6 +46,11 @@ pub struct FolderRequest {
     pub provider: String,
     #[serde(default)]
     pub canopy_api_key: String,
+    /// TokenMix key when provider is local (genre work routes to cloud).
+    #[serde(default)]
+    pub tokenmix_api_key: String,
+    #[serde(default)]
+    pub genre_model: String,
 }
 
 #[derive(Deserialize)]
@@ -64,6 +70,10 @@ pub struct AnalyzeStoryRequest {
     pub dataforseo_password: String,
     #[serde(default)]
     pub run_time:          String,  // local datetime from when user clicked the button
+    #[serde(default)]
+    pub tokenmix_api_key:  String,
+    #[serde(default)]
+    pub genre_model:       String,
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────────────

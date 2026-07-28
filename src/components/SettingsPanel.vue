@@ -388,21 +388,17 @@ async function onRemoveStale(): Promise<void> {
             No models match the current filters. Disable filters to see all models.
           </div>
 
-          <div class="model-assign-row">
+          <div class="model-assign-row model-assign-note">
             <div class="model-assign-label">
-              <strong>Chapter Summaries</strong>
-              <span class="model-recommend">Fast model. Structured extraction — accuracy matters more than creativity. A smaller, cheaper model works well.</span>
+              <strong>Chapter Fingerprints</strong>
+              <span class="model-recommend">Instant deterministic scan in Rust — no AI model used.</span>
             </div>
-            <select v-model="settingsCtx.activeModelAssignments.value.summaries">
-              <option value="">(Use default)</option>
-              <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'summaries') }}</option>
-            </select>
           </div>
 
           <div class="model-assign-row">
             <div class="model-assign-label">
               <strong>Genre Analysis</strong>
-              <span class="model-recommend">Classification task. Needs broad book-market knowledge. Mid-tier model is sufficient.</span>
+              <span class="model-recommend">Classification task. Uses TokenMix when Local AI is your provider. Mid-tier model is sufficient.</span>
             </div>
             <select v-model="settingsCtx.activeModelAssignments.value.genre">
               <option value="">(Use default)</option>

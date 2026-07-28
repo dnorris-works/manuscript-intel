@@ -117,10 +117,15 @@ async fn call_local_ollama(
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
+        "keep_alive": "24h",
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}
-        ]
+        ],
+        "options": {
+            "temperature": 0.3,
+            "top_p": 0.9
+        }
     });
     if json_mode {
         body["format"] = json!("json");
@@ -755,8 +760,6 @@ pub struct ReportCostEstimate {
 #[derive(Deserialize)]
 pub struct SummaryRefreshEstimateRequest {
     pub folder: String,
-    pub input_price: Option<f64>,   // per 1K tokens
-    pub output_price: Option<f64>,  // per 1K tokens
 }
 
 #[derive(Serialize)]
@@ -892,7 +895,6 @@ pub async fn estimate_summary_refresh_cost(
     };
 
     let mut files_to_refresh: Vec<String> = Vec::new();
-    let mut word_counts: Vec<usize> = Vec::new();
 
     for chapter in &chapters {
         let Some(file) = chapter.file_name().map(|f| f.to_string_lossy().to_string()) else {
@@ -909,41 +911,16 @@ pub async fn estimate_summary_refresh_cost(
         let changed = summary_hashes.get(&file).map(|h| h != &hash).unwrap_or(true);
         if changed {
             files_to_refresh.push(file);
-            word_counts.push(cleaned.split_whitespace().count());
         }
     }
-
-    let params = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        crate::db::load_report_cost_params(&conn, "chapter_summaries")
-    };
-
-    const WORDS_TO_TOKENS: f64 = 1.3;
-    const SYSTEM_PROMPT_TOKENS: usize = 400;
-
-    let input_tokens: usize = word_counts.iter().map(|&wc| {
-        let truncated = if params.truncation > 0 { wc.min(params.truncation) } else { wc };
-        (truncated as f64 * WORDS_TO_TOKENS) as usize + SYSTEM_PROMPT_TOKENS
-    }).sum();
-
-    let output_tokens: usize = files_to_refresh.len() * params.output_max;
-
-    let estimated_cost = match (request.input_price, request.output_price) {
-        (Some(in_p), Some(out_p)) => {
-            let cost = (input_tokens as f64 / 1000.0 * in_p)
-                + (output_tokens as f64 / 1000.0 * out_p);
-            Some((cost * 1000.0).round() / 1000.0)
-        }
-        _ => None,
-    };
 
     Ok(SummaryRefreshEstimateResult {
         success: true,
         files: files_to_refresh.clone(),
         chapter_count: files_to_refresh.len(),
-        input_tokens,
-        output_tokens,
-        estimated_cost,
+        input_tokens: 0,
+        output_tokens: 0,
+        estimated_cost: Some(0.0),
         error: String::new(),
     })
 }
