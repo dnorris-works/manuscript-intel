@@ -54,8 +54,8 @@ pub async fn check_show_dont_tell(app: AppHandle, request: ShowDontTellRequest) 
 async fn check_inner(app: AppHandle, request: ShowDontTellRequest) -> GenreResult {
     let folder = PathBuf::from(&request.folder);
     if !folder.exists() { return err("Folder does not exist."); }
-    if request.api_key.is_empty() || request.model.is_empty() {
-        return err("Show Don't Tell requires an API key and model. Set them in Settings.");
+    if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
+        return err(&msg);
     }
 
     crate::reset_cancel();

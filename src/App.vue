@@ -28,6 +28,7 @@ import CampaignsPanel from './components/marketing/CampaignsPanel.vue';
 import CampaignForm from './components/marketing/CampaignForm.vue';
 import CampaignDetailPanel from './components/marketing/CampaignDetailPanel.vue';
 import PlatformAccountsPanel from './components/marketing/PlatformAccountsPanel.vue';
+import LocalAiSetup from './components/LocalAiSetup.vue';
 
 // ── Composables ───────────────────────────────────────────────────────────────
 
@@ -38,6 +39,23 @@ const settingsCtx = useSettings();
 const reportsCtx = useReports();
 const seriesCtx = useSeries();
 const campaignsCtx = useCampaigns();
+
+const showLocalAiSetup = ref(false);
+const localAiSetupDismissed = ref(false);
+
+async function checkLocalAiSetup(): Promise<void> {
+  if (localAiSetupDismissed.value) return;
+  if (settingsCtx.provider.value !== 'local') return;
+  const status = await settingsCtx.refreshLocalAiStatus();
+  if (status.ready && !status.default_model_installed) {
+    showLocalAiSetup.value = true;
+  }
+}
+
+function onLocalAiSetupDone(): void {
+  showLocalAiSetup.value = false;
+  localAiSetupDismissed.value = true;
+}
 
 provide(storiesKey, storiesCtx);
 provide(analysisKey, analysisCtx);
@@ -288,11 +306,17 @@ onMounted(() => {
   });
   seriesCtx.loadSeries();
   void campaignsCtx.loadPlatformAccounts();
+  void checkLocalAiSetup();
+});
+
+watch(() => settingsCtx.provider.value, () => {
+  void checkLocalAiSetup();
 });
 </script>
 
 <template>
   <div id="app-root">
+    <LocalAiSetup v-if="showLocalAiSetup" @done="onLocalAiSetupDone" />
     <TitleBar />
     <Sidebar
       @open-story-form="openStoryForm"

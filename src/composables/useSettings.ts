@@ -1,5 +1,6 @@
 import { ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type { ModelInfo, ModelsResult } from '../types';
 
 // ── AI function model assignments ─────────────────────────────────────────────
@@ -14,6 +15,14 @@ export interface ModelAssignments {
   showDontTell:  string;  // Show Don't Tell analysis
   aiIsms:        string;  // AI-isms check
   prose:         string;  // Creative suggestions / rewrites
+}
+
+export interface LocalAiStatus {
+  running: boolean;
+  ready: boolean;
+  base_url: string;
+  models: string[];
+  default_model_installed: boolean;
 }
 
 export interface FolderStructure {
@@ -36,6 +45,8 @@ interface UiSettingsRow {
   provider: string;
   api_key: string;
   model_assignments: string;
+  local_default_model: string;
+  local_model_assignments: string;
   canopy_api_key: string;
   dataforseo_login: string;
   dataforseo_password: string;
@@ -49,6 +60,8 @@ const DEFAULT_FOLDER_STRUCTURE: FolderStructure = {
   acts: ['Act-1', 'Act-2', 'Act-3'],
   extra: ['Publishing/Cover', 'Research'],
 };
+
+export const DEFAULT_LOCAL_MODEL = 'phi4-mini';
 
 export function manuscriptActPaths(structure?: FolderStructure): string[] {
   const s = structure || DEFAULT_FOLDER_STRUCTURE;
@@ -68,7 +81,6 @@ function cloneStructure(s: FolderStructure): FolderStructure {
     ? [...s.acts]
     : [...DEFAULT_FOLDER_STRUCTURE.acts];
   const rawExtra = Array.isArray(s.extra) ? [...s.extra] : [...DEFAULT_FOLDER_STRUCTURE.extra];
-  // Strip Act paths if they were previously stored as extras
   const actSet = new Set(
     manuscriptActPaths({ ...DEFAULT_FOLDER_STRUCTURE, manuscript, acts }).map(p => p.toLowerCase())
   );
@@ -109,26 +121,36 @@ function setTheme(mode: ThemeMode): void {
   scheduleUiSettingsSave();
 }
 
-const provider = ref('tokenmix');
+const provider = ref('local');
 const apiKey = ref('');
 const modelAssignments = ref<ModelAssignments>(loadAssignments());
+const localDefaultModel = ref(DEFAULT_LOCAL_MODEL);
+const localModelAssignments = ref<ModelAssignments>(loadAssignments());
 const canopyApiKey = ref('');
 const dataforseoLogin = ref('');
 const dataforseoPassword = ref('');
 const models = ref<ModelInfo[]>([]);
 const folderStructure = ref<FolderStructure>(cloneStructure(DEFAULT_FOLDER_STRUCTURE));
+const localAiStatus = ref<LocalAiStatus | null>(null);
+const localAiProgress = ref('');
 let modelsAutoLoadStarted = false;
 let settingsHydrated = false;
 let uiSettingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let folderStructureSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function normalizeProvider(value: string | null | undefined): string {
-  return value === 'tokenmix' ? 'tokenmix' : 'tokenmix';
+  return value === 'tokenmix' ? 'tokenmix' : 'local';
 }
+
+const activeModelAssignments = computed(() =>
+  provider.value === 'local' ? localModelAssignments.value : modelAssignments.value
+);
 
 watch([provider, apiKey], () => {
   provider.value = normalizeProvider(provider.value);
   if (provider.value === 'tokenmix' && apiKey.value.trim()) {
+    void autoLoadModelsIfConfigured();
+  } else if (provider.value === 'local') {
     void autoLoadModelsIfConfigured();
   }
 });
@@ -137,18 +159,69 @@ watch([provider, apiKey], () => {
 
 /** Resolve the model for a given function. Falls back to default if unset. */
 function modelFor(fn: keyof ModelAssignments): string {
-  return modelAssignments.value[fn] || modelAssignments.value.default;
+  const assignments = activeModelAssignments.value;
+  return assignments[fn] || assignments.default;
 }
 
-// Legacy compatibility: 'model' returns default, 'proseModel' returns prose
-const model = computed(() => modelAssignments.value.default);
-const proseModel = computed(() => modelAssignments.value.prose || modelAssignments.value.default);
+const model = computed(() => activeModelAssignments.value.default);
+const proseModel = computed(() => activeModelAssignments.value.prose || activeModelAssignments.value.default);
 
 // ── Actions ──────────────────────────────────────────────────────────────────
+
+async function refreshLocalAiStatus(): Promise<LocalAiStatus> {
+  try {
+    const status = await invoke<LocalAiStatus>('local_ai_status');
+    localAiStatus.value = status;
+    return status;
+  } catch {
+    const fallback: LocalAiStatus = {
+      running: false,
+      ready: false,
+      base_url: '',
+      models: [],
+      default_model_installed: false,
+    };
+    localAiStatus.value = fallback;
+    return fallback;
+  }
+}
+
+async function pullLocalModel(name?: string): Promise<{ success: boolean; error: string }> {
+  const modelName = (name || localDefaultModel.value || DEFAULT_LOCAL_MODEL).trim();
+  if (!modelName) {
+    return { success: false, error: 'No model name specified.' };
+  }
+  localAiProgress.value = 'Starting download...';
+  try {
+    await invoke('pull_local_model', { name: modelName });
+    await refreshLocalAiStatus();
+    await fetchModels();
+    localAiProgress.value = '';
+    return { success: true, error: '' };
+  } catch (e) {
+    localAiProgress.value = '';
+    return { success: false, error: String(e) };
+  }
+}
+
+async function testLocalAi(): Promise<{ success: boolean; error: string; reply?: string }> {
+  try {
+    const reply = await invoke<string>('test_local_ai_connection');
+    return { success: true, error: '', reply };
+  } catch (e) {
+    return { success: false, error: String(e) };
+  }
+}
 
 async function fetchModels(): Promise<{ success: boolean; error: string }> {
   if (provider.value === 'tokenmix' && !apiKey.value.trim()) {
     return { success: false, error: 'Enter a TokenMix API key first.' };
+  }
+  if (provider.value === 'local') {
+    const status = await refreshLocalAiStatus();
+    if (!status.ready) {
+      return { success: false, error: 'Local AI is not ready yet.' };
+    }
   }
   try {
     const result = await invoke<ModelsResult>('list_models', {
@@ -168,6 +241,10 @@ async function fetchModels(): Promise<{ success: boolean; error: string }> {
 async function autoLoadModelsIfConfigured(): Promise<void> {
   if (modelsAutoLoadStarted) return;
   if (provider.value === 'tokenmix' && !apiKey.value.trim()) return;
+  if (provider.value === 'local') {
+    const status = localAiStatus.value || await refreshLocalAiStatus();
+    if (!status.ready) return;
+  }
   modelsAutoLoadStarted = true;
   try {
     await fetchModels();
@@ -199,6 +276,8 @@ function currentUiSettingsPayload(): UiSettingsRow {
     provider: provider.value,
     api_key: apiKey.value.trim(),
     model_assignments: JSON.stringify(modelAssignments.value),
+    local_default_model: localDefaultModel.value.trim() || DEFAULT_LOCAL_MODEL,
+    local_model_assignments: JSON.stringify(localModelAssignments.value),
     canopy_api_key: canopyApiKey.value.trim(),
     dataforseo_login: dataforseoLogin.value.trim(),
     dataforseo_password: dataforseoPassword.value.trim(),
@@ -236,7 +315,6 @@ function scheduleFolderStructureSave(): void {
 }
 
 async function saveSettings(): Promise<void> {
-  provider.value = 'tokenmix';
   const saved = await invoke<FolderStructure>('save_folder_structure', {
     structure: folderStructure.value,
   });
@@ -252,8 +330,9 @@ async function hydrateSettings(): Promise<void> {
     const loaded = await invoke<UiSettingsRow>('load_ui_settings');
     theme.value = (loaded.theme as ThemeMode) === 'light' ? 'light' : 'dark';
     applyTheme(theme.value);
-    provider.value = normalizeProvider(loaded.provider || 'tokenmix');
+    provider.value = normalizeProvider(loaded.provider || 'local');
     apiKey.value = loaded.api_key || '';
+    localDefaultModel.value = loaded.local_default_model || DEFAULT_LOCAL_MODEL;
     canopyApiKey.value = loaded.canopy_api_key || '';
     dataforseoLogin.value = loaded.dataforseo_login || '';
     dataforseoPassword.value = loaded.dataforseo_password || '';
@@ -264,17 +343,32 @@ async function hydrateSettings(): Promise<void> {
         modelAssignments.value = defaultModelAssignments();
       }
     }
+    if (loaded.local_model_assignments) {
+      try {
+        localModelAssignments.value = { ...defaultModelAssignments(), ...JSON.parse(loaded.local_model_assignments) };
+      } catch {
+        localModelAssignments.value = defaultModelAssignments();
+      }
+    }
   } finally {
     settingsHydrated = true;
+    void refreshLocalAiStatus();
     void autoLoadModelsIfConfigured();
   }
 }
 
 void hydrateSettings();
 
-watch([theme, provider, apiKey, modelAssignments, canopyApiKey, dataforseoLogin, dataforseoPassword], () => {
+void listen<string>('local-ai:progress', (event) => {
+  localAiProgress.value = event.payload || '';
+});
+
+void listen('local-ai:ready', () => {
+  void refreshLocalAiStatus().then(() => autoLoadModelsIfConfigured());
+});
+
+watch([theme, provider, apiKey, modelAssignments, localModelAssignments, localDefaultModel, canopyApiKey, dataforseoLogin, dataforseoPassword], () => {
   if (!settingsHydrated) return;
-  provider.value = 'tokenmix';
   scheduleUiSettingsSave();
 }, { deep: true });
 
@@ -283,11 +377,10 @@ watch(folderStructure, () => {
   scheduleFolderStructureSave();
 }, { deep: true });
 
-watch([provider, apiKey], () => {
+watch(provider, () => {
   if (!settingsHydrated) return;
-  if (provider.value === 'tokenmix' && apiKey.value.trim()) {
-    void autoLoadModelsIfConfigured();
-  }
+  models.value = [];
+  void autoLoadModelsIfConfigured();
 });
 
 async function testCanopy(): Promise<{ success: boolean; error: string }> {
@@ -326,13 +419,21 @@ export function useSettings() {
     model,
     proseModel,
     modelAssignments,
+    localDefaultModel,
+    localModelAssignments,
+    activeModelAssignments,
     modelFor,
     canopyApiKey,
     dataforseoLogin,
     dataforseoPassword,
     models,
     folderStructure,
+    localAiStatus,
+    localAiProgress,
     fetchModels,
+    refreshLocalAiStatus,
+    pullLocalModel,
+    testLocalAi,
     loadFolderStructure,
     addFolderEntry,
     removeFolderEntry,

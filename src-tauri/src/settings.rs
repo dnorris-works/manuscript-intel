@@ -4,6 +4,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::db::Db;
+use crate::local_ai::DEFAULT_LOCAL_MODEL;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiSettings {
@@ -11,6 +12,8 @@ pub struct UiSettings {
     pub provider: String,
     pub api_key: String,
     pub model_assignments: String,
+    pub local_default_model: String,
+    pub local_model_assignments: String,
     pub canopy_api_key: String,
     pub dataforseo_login: String,
     pub dataforseo_password: String,
@@ -26,9 +29,11 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             theme: "dark".to_string(),
-            provider: "tokenmix".to_string(),
+            provider: "local".to_string(),
             api_key: String::new(),
             model_assignments: "{}".to_string(),
+            local_default_model: DEFAULT_LOCAL_MODEL.to_string(),
+            local_model_assignments: "{}".to_string(),
             canopy_api_key: String::new(),
             dataforseo_login: String::new(),
             dataforseo_password: String::new(),
@@ -55,17 +60,34 @@ fn load_key_value(conn: &Connection, key: &str) -> String {
 }
 
 fn normalize_provider(value: &str) -> String {
-    if value == "tokenmix" { "tokenmix".to_string() } else { "tokenmix".to_string() }
+    if value == "tokenmix" {
+        "tokenmix".to_string()
+    } else {
+        "local".to_string()
+    }
 }
 
 #[tauri::command]
 pub async fn load_ui_settings(db: tauri::State<'_, Db>) -> Result<UiSettings, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let provider_raw = load_key_value(&conn, "provider");
+    let provider = if provider_raw.is_empty() {
+        "local".to_string()
+    } else {
+        normalize_provider(&provider_raw)
+    };
+    let local_default = load_key_value(&conn, "local_default_model");
     Ok(UiSettings {
         theme: load_key_value(&conn, "theme"),
-        provider: normalize_provider(&load_key_value(&conn, "provider")),
+        provider,
         api_key: load_key_value(&conn, "api_key"),
         model_assignments: load_key_value(&conn, "model_assignments"),
+        local_default_model: if local_default.is_empty() {
+            DEFAULT_LOCAL_MODEL.to_string()
+        } else {
+            local_default
+        },
+        local_model_assignments: load_key_value(&conn, "local_model_assignments"),
         canopy_api_key: load_key_value(&conn, "canopy_api_key"),
         dataforseo_login: load_key_value(&conn, "dataforseo_login"),
         dataforseo_password: load_key_value(&conn, "dataforseo_password"),
@@ -87,6 +109,9 @@ pub async fn save_ui_settings(
     mut settings: UiSettings,
 ) -> Result<UiSettings, String> {
     settings.provider = normalize_provider(&settings.provider);
+    if settings.local_default_model.trim().is_empty() {
+        settings.local_default_model = DEFAULT_LOCAL_MODEL.to_string();
+    }
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     for (key, value) in [
@@ -94,6 +119,8 @@ pub async fn save_ui_settings(
         ("provider", settings.provider.as_str()),
         ("api_key", settings.api_key.as_str()),
         ("model_assignments", settings.model_assignments.as_str()),
+        ("local_default_model", settings.local_default_model.as_str()),
+        ("local_model_assignments", settings.local_model_assignments.as_str()),
         ("canopy_api_key", settings.canopy_api_key.as_str()),
         ("dataforseo_login", settings.dataforseo_login.as_str()),
         ("dataforseo_password", settings.dataforseo_password.as_str()),

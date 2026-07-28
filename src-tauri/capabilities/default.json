@@ -9,6 +9,16 @@
     "core:webview:allow-set-webview-focus",
     "clipboard-manager:allow-write-text",
     "shell:allow-execute",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/ollama",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
     "shell:allow-open",
     "dialog:allow-open",
     "fs:allow-read-file",

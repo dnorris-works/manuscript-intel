@@ -124,8 +124,8 @@ pub async fn run_manuscript_craft_audit(
     if !path.exists() {
         return err("Folder does not exist.");
     }
-    if api_key.is_empty() || model.is_empty() {
-        return err("This audit requires an API key and model. Set them in Settings.");
+    if let Err(msg) = crate::ai::ai_ready(provider, api_key, model) {
+        return err(&msg);
     }
 
     let bible = prompts::load_bible_for_story(folder, bible_path);
@@ -171,8 +171,8 @@ pub async fn run_series_craft_audit(
     if series_id <= 0 {
         return err("Select a series for this audit.");
     }
-    if api_key.is_empty() || model.is_empty() {
-        return err("This audit requires an API key and model. Set them in Settings.");
+    if let Err(msg) = crate::ai::ai_ready(provider, api_key, model) {
+        return err(&msg);
     }
 
     let books = {

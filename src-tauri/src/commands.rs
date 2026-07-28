@@ -73,10 +73,11 @@ pub async fn call_llm(
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    if provider != "tokenmix" {
-        return Err(format!("Unsupported provider '{}'. TokenMix is the only supported provider.", provider));
+    match provider {
+        "local" => call_local_ollama(model, system, user, max_tokens, false).await,
+        "tokenmix" => call_tokenmix(api_key, model, system, user, max_tokens, false).await,
+        _ => Err(format!("Unsupported provider '{}'.", provider)),
     }
-    call_tokenmix(api_key, model, system, user, max_tokens, false).await
 }
 
 /// Same as call_llm but forces JSON mode (valid JSON guaranteed in response).
@@ -88,10 +89,66 @@ pub async fn call_llm_json(
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    if provider != "tokenmix" {
-        return Err(format!("Unsupported provider '{}'. TokenMix is the only supported provider.", provider));
+    match provider {
+        "local" => call_local_ollama(model, system, user, max_tokens, true).await,
+        "tokenmix" => call_tokenmix(api_key, model, system, user, max_tokens, true).await,
+        _ => Err(format!("Unsupported provider '{}'.", provider)),
     }
-    call_tokenmix(api_key, model, system, user, max_tokens, true).await
+}
+
+async fn call_local_ollama(
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    json_mode: bool,
+) -> Result<String, String> {
+    let base = crate::local_ai::base_url()
+        .ok_or_else(|| "Local AI is not running.".to_string())?;
+    if !crate::local_ai::is_ready() {
+        return Err("Local AI is not ready.".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(900))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let mut body = json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+        ]
+    });
+    if json_mode {
+        body["format"] = json!("json");
+    }
+
+    let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
+    let resp = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Local AI request failed: {}", e))?;
+
+    let json: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Local AI response parse failed: {}", e))?;
+
+    if let Some(err) = json.get("error") {
+        let msg = err["message"].as_str().unwrap_or("unknown error");
+        return Err(format!("Local AI error: {}", msg));
+    }
+
+    if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
+        return Ok(content.to_string());
+    }
+    Err("Local AI: empty response".to_string())
 }
 
 async fn call_tokenmix(
@@ -224,11 +281,47 @@ pub async fn list_models(
 ) -> Result<ModelsResult, String> {
     Ok(match provider.as_str() {
         "tokenmix" => fetch_tokenmix_models(&db, &api_key).await,
+        "local" => fetch_local_models().await,
         _ => ModelsResult {
             success: false, models: Vec::new(),
             error: format!("Unknown provider: {}", provider),
         },
     })
+}
+
+async fn fetch_local_models() -> ModelsResult {
+    let base = match crate::local_ai::base_url() {
+        Some(b) => b.to_string(),
+        None => {
+            return ModelsResult {
+                success: false,
+                models: Vec::new(),
+                error: "Local AI is not running.".to_string(),
+            };
+        }
+    };
+    if !crate::local_ai::is_ready() {
+        return ModelsResult {
+            success: false,
+            models: Vec::new(),
+            error: "Local AI is not ready yet.".to_string(),
+        };
+    }
+    let names = crate::local_ai::fetch_installed_models(&base).await;
+    let models = names
+        .into_iter()
+        .map(|id| ModelInfo {
+            id,
+            owned_by: "local".to_string(),
+            input_price: Some(0.0),
+            output_price: Some(0.0),
+        })
+        .collect();
+    ModelsResult {
+        success: true,
+        models,
+        error: String::new(),
+    }
 }
 
 async fn fetch_tokenmix_models(db: &crate::db::Db, api_key: &str) -> ModelsResult {
@@ -889,16 +982,8 @@ pub async fn chat_with_context(
     db: tauri::State<'_, crate::db::Db>,
     request: ChatRequest,
 ) -> Result<ChatResponse, ()> {
-    if request.provider != "tokenmix" {
-        return Ok(ChatResponse {
-            success: false,
-            reply: String::new(),
-            error: format!("Unsupported provider '{}'. TokenMix is the only supported provider.", request.provider),
-        });
-    }
-
-    if request.api_key.is_empty() || request.model.is_empty() {
-        return Ok(ChatResponse { success: false, reply: String::new(), error: "Set an API key and model in Settings.".to_string() });
+    if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
+        return Ok(ChatResponse { success: false, reply: String::new(), error: msg });
     }
 
     let template = match {
@@ -941,20 +1026,38 @@ pub async fn chat_with_context(
         "messages": messages,
     });
 
+    let timeout_secs = if request.provider == "local" { 900 } else { 120 };
     let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()
     {
         Ok(c) => c,
         Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Client error: {}", e) }),
     };
 
-    // OpenAI-compatible (TokenMix)
-    let resp = match client.post("https://api.tokenmix.ai/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", request.api_key))
+    let url = match request.provider.as_str() {
+        "local" => {
+            let base = crate::local_ai::base_url().unwrap_or("");
+            format!("{}/v1/chat/completions", base.trim_end_matches('/'))
+        }
+        "tokenmix" => "https://api.tokenmix.ai/v1/chat/completions".to_string(),
+        other => {
+            return Ok(ChatResponse {
+                success: false,
+                reply: String::new(),
+                error: format!("Unsupported provider '{}'.", other),
+            });
+        }
+    };
+
+    let mut req = client.post(&url)
         .header("content-type", "application/json")
-        .json(&body)
-        .send().await
+        .json(&body);
+    if request.provider == "tokenmix" {
+        req = req.header("Authorization", format!("Bearer {}", request.api_key));
+    }
+
+    let resp = match req.send().await
     {
         Ok(r) => r,
         Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Request failed: {}", e) }),

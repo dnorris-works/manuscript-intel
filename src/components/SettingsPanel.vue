@@ -14,6 +14,20 @@ const savedMsg = ref('');
 const modelFetchStatus = ref('');
 const canopyTestStatus = ref('');
 const dataforseoTestStatus = ref('');
+const localTestStatus = ref('');
+const localPullStatus = ref('');
+
+const isLocalProvider = computed(() => settingsCtx.provider.value === 'local');
+const isTokenmixProvider = computed(() => settingsCtx.provider.value === 'tokenmix');
+
+const localStatusText = computed(() => {
+  const s = settingsCtx.localAiStatus.value;
+  if (!s) return 'Checking...';
+  if (!s.running) return 'Not running';
+  if (!s.ready) return 'Starting...';
+  if (s.default_model_installed) return 'Running — model installed';
+  return 'Running — model not installed';
+});
 
 // ── Sorted models: user-selectable sort order ─────────────────────────────────
 
@@ -156,6 +170,24 @@ async function onFetchModels(): Promise<void> {
   }
 }
 
+async function onPullLocalModel(): Promise<void> {
+  localPullStatus.value = 'Downloading...';
+  const result = await settingsCtx.pullLocalModel();
+  localPullStatus.value = result.success ? '✓ Download complete' : '✗ ' + result.error;
+}
+
+async function onTestLocalAi(): Promise<void> {
+  localTestStatus.value = 'Testing...';
+  const result = await settingsCtx.testLocalAi();
+  localTestStatus.value = result.success
+    ? `✓ ${result.reply || 'Connected'}`
+    : '✗ ' + result.error;
+}
+
+async function onRefreshLocalStatus(): Promise<void> {
+  await settingsCtx.refreshLocalAiStatus();
+}
+
 function onSave(): void {
   settingsCtx.saveSettings().then(() => {
     savedMsg.value = '✓ Saved';
@@ -260,33 +292,78 @@ async function onRemoveStale(): Promise<void> {
             Light
           </label>
         </div>
-
-        <label>Provider</label>
-        <div class="provider-options">
-          <label class="provider-option active">
-            <input type="radio" :checked="true" disabled />
-            TokenMix
-          </label>
-        </div>
       </div>
     </div>
 
     <!-- AI Models -->
     <div v-show="activeTab === 'ai'" class="settings-tab-panel">
       <div class="settings-form">
-        <label>API Key</label>
-        <input
-          type="password"
-          v-model="settingsCtx.apiKey.value"
-          placeholder="Enter your API key"
-        />
+        <label>AI Provider</label>
+        <div class="provider-options">
+          <label class="provider-option" :class="{ active: isLocalProvider }">
+            <input
+              type="radio"
+              name="ai-provider"
+              value="local"
+              :checked="isLocalProvider"
+              @change="settingsCtx.provider.value = 'local'"
+            />
+            Local (included)
+          </label>
+          <label class="provider-option" :class="{ active: isTokenmixProvider }">
+            <input
+              type="radio"
+              name="ai-provider"
+              value="tokenmix"
+              :checked="isTokenmixProvider"
+              @change="settingsCtx.provider.value = 'tokenmix'"
+            />
+            TokenMix (cloud)
+          </label>
+        </div>
+
+        <!-- Local AI panel -->
+        <template v-if="isLocalProvider">
+          <label>Local AI Status</label>
+          <div class="model-row">
+            <span class="local-status">{{ localStatusText }}</span>
+            <button class="btn btn-sm" @click="onRefreshLocalStatus">Refresh</button>
+          </div>
+          <p v-if="settingsCtx.localAiProgress.value" class="panel-desc">{{ settingsCtx.localAiProgress.value }}</p>
+
+          <label>Default Local Model</label>
+          <div class="model-row">
+            <input
+              type="text"
+              v-model="settingsCtx.localDefaultModel.value"
+              placeholder="phi4-mini"
+            />
+            <button class="btn btn-sm" @click="onPullLocalModel">Download</button>
+          </div>
+          <div class="model-fetch-status">{{ localPullStatus }}</div>
+
+          <div class="model-row">
+            <button class="btn btn-sm" @click="onTestLocalAi">Test connection</button>
+            <span class="model-fetch-status">{{ localTestStatus }}</span>
+          </div>
+        </template>
+
+        <!-- TokenMix panel -->
+        <template v-if="isTokenmixProvider">
+          <label>API Key</label>
+          <input
+            type="password"
+            v-model="settingsCtx.apiKey.value"
+            placeholder="Enter your API key"
+          />
+        </template>
 
         <label>
           Default Model
           <span class="model-hint">Fetch models first, then assign each function below.</span>
         </label>
         <div class="model-row">
-          <select v-model="settingsCtx.modelAssignments.value.default">
+          <select v-model="settingsCtx.activeModelAssignments.value.default">
             <option v-if="settingsCtx.models.value.length === 0" value="" disabled>
               No models loaded
             </option>
@@ -303,13 +380,13 @@ async function onRemoveStale(): Promise<void> {
         </div>
         <div class="model-fetch-status">{{ modelFetchStatus }}</div>
 
-        <div v-if="sortedModels.length > 0" class="model-sort-row">
+        <div v-if="isTokenmixProvider && sortedModels.length > 0" class="model-sort-row">
           <span class="model-sort-label">Sort:</span>
           <button class="model-sort-btn" :class="{ active: modelSort === 'price' }" @click="modelSort = 'price'">Price</button>
           <button class="model-sort-btn" :class="{ active: modelSort === 'provider' }" @click="modelSort = 'provider'">Provider</button>
         </div>
 
-        <div v-if="sortedModels.length > 0" class="model-filter-row">
+        <div v-if="isTokenmixProvider && sortedModels.length > 0" class="model-filter-row">
           <label class="model-filter-opt">
             <input type="checkbox" v-model="pricedOnly" :disabled="freeOnly" />
             Priced only
@@ -333,7 +410,7 @@ async function onRemoveStale(): Promise<void> {
               <strong>Chapter Summaries</strong>
               <span class="model-recommend">Fast model. Structured extraction — accuracy matters more than creativity. A smaller, cheaper model works well.</span>
             </div>
-            <select v-model="settingsCtx.modelAssignments.value.summaries">
+            <select v-model="settingsCtx.activeModelAssignments.value.summaries">
               <option value="">(Use default)</option>
               <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'summaries') }}</option>
             </select>
@@ -344,7 +421,7 @@ async function onRemoveStale(): Promise<void> {
               <strong>Genre Analysis</strong>
               <span class="model-recommend">Classification task. Needs broad book-market knowledge. Mid-tier model is sufficient.</span>
             </div>
-            <select v-model="settingsCtx.modelAssignments.value.genre">
+            <select v-model="settingsCtx.activeModelAssignments.value.genre">
               <option value="">(Use default)</option>
               <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'genre') }}</option>
             </select>
@@ -355,7 +432,7 @@ async function onRemoveStale(): Promise<void> {
               <strong>Keywords &amp; Categories</strong>
               <span class="model-recommend">Short structured output. Fast model works — speed over depth.</span>
             </div>
-            <select v-model="settingsCtx.modelAssignments.value.keywords">
+            <select v-model="settingsCtx.activeModelAssignments.value.keywords">
               <option value="">(Use default)</option>
               <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'keywords') }}</option>
             </select>
@@ -366,7 +443,7 @@ async function onRemoveStale(): Promise<void> {
               <strong>Continuity Check</strong>
               <span class="model-recommend">Needs reasoning ability to spot contradictions across chapters. Use a capable model (e.g. GPT-4o or another high-reasoning model).</span>
             </div>
-            <select v-model="settingsCtx.modelAssignments.value.continuity">
+            <select v-model="settingsCtx.activeModelAssignments.value.continuity">
               <option value="">(Use default)</option>
               <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'continuity') }}</option>
             </select>
@@ -377,7 +454,7 @@ async function onRemoveStale(): Promise<void> {
               <strong>Show Don't Tell</strong>
               <span class="model-recommend">Literary judgment — needs to understand prose craft. Use a strong model (e.g. GPT-4o or another high-reasoning model).</span>
             </div>
-            <select v-model="settingsCtx.modelAssignments.value.showDontTell">
+            <select v-model="settingsCtx.activeModelAssignments.value.showDontTell">
               <option value="">(Use default)</option>
               <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'showDontTell') }}</option>
             </select>
@@ -388,7 +465,7 @@ async function onRemoveStale(): Promise<void> {
               <strong>AI-isms</strong>
               <span class="model-recommend">Literary judgment — spots synthetic / template-sounding prose. Use a strong model (e.g. GPT-4o or another high-reasoning model).</span>
             </div>
-            <select v-model="settingsCtx.modelAssignments.value.aiIsms">
+            <select v-model="settingsCtx.activeModelAssignments.value.aiIsms">
               <option value="">(Use default)</option>
               <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'aiIsms') }}</option>
             </select>
@@ -399,7 +476,7 @@ async function onRemoveStale(): Promise<void> {
               <strong>Prose Suggestions</strong>
               <span class="model-recommend">Creative rewriting. Use the highest-quality model you have — this writes prose the author will paste into their manuscript.</span>
             </div>
-            <select v-model="settingsCtx.modelAssignments.value.prose">
+            <select v-model="settingsCtx.activeModelAssignments.value.prose">
               <option value="">(Use default)</option>
               <option v-for="m in filteredModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'prose') }}</option>
             </select>

@@ -84,8 +84,8 @@ pub async fn run_ai_beta_reader(
     model: &str,
     bible_path: &str,
 ) -> GenreResult {
-    if api_key.is_empty() || model.is_empty() {
-        return err("AI Beta Reader requires an API key and model.");
+    if let Err(msg) = crate::ai::ai_ready(provider, api_key, model) {
+        return err(&msg);
     }
     let bible = prompts::load_bible_for_story(folder, bible_path);
     emit(app, "Running AI beta reader (per chapter)...");
@@ -120,8 +120,8 @@ pub async fn run_cliffhanger_score(
     api_key: &str,
     model: &str,
 ) -> GenreResult {
-    if api_key.is_empty() || model.is_empty() {
-        return err("Cliffhanger Score requires an API key and model.");
+    if let Err(msg) = crate::ai::ai_ready(provider, api_key, model) {
+        return err(&msg);
     }
     emit(app, "Scoring chapter endings...");
     match per_chapter_json(app, database, folder, "cliffhanger_score", provider, api_key, model, "", false).await {
@@ -152,8 +152,8 @@ pub async fn run_hook_strength(
     model: &str,
     bible_path: &str,
 ) -> GenreResult {
-    if api_key.is_empty() || model.is_empty() {
-        return err("Hook Strength requires an API key and model.");
+    if let Err(msg) = crate::ai::ai_ready(provider, api_key, model) {
+        return err(&msg);
     }
     emit(app, "Evaluating opening hook...");
     let manuscript = match build_opening_excerpt(folder) {
@@ -200,8 +200,8 @@ pub async fn run_pacing_curve(
     api_key: &str,
     model: &str,
 ) -> GenreResult {
-    if api_key.is_empty() || model.is_empty() {
-        return err("Pacing Curve requires an API key and model.");
+    if let Err(msg) = crate::ai::ai_ready(provider, api_key, model) {
+        return err(&msg);
     }
     emit(app, "Building pacing curve...");
     match per_chapter_json(app, database, folder, "pacing_curve", provider, api_key, model, "", false).await {

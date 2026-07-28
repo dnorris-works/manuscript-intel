@@ -44,8 +44,8 @@ pub async fn check_ai_isms(app: AppHandle, request: AiIsmsRequest) -> GenreResul
 async fn check_inner(app: AppHandle, request: AiIsmsRequest) -> GenreResult {
     let folder = PathBuf::from(&request.folder);
     if !folder.exists() { return err("Folder does not exist."); }
-    if request.api_key.is_empty() || request.model.is_empty() {
-        return err("AI-isms requires an API key and model. Set them in Settings.");
+    if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
+        return err(&msg);
     }
 
     crate::reset_cancel();

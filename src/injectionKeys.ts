@@ -21,7 +21,7 @@ import type {
   ModelInfo,
 } from './types';
 import type { ContinuityScope } from './composables/useAnalysis';
-import type { ModelAssignments, FolderStructure, ThemeMode } from './composables/useSettings';
+import type { ModelAssignments, FolderStructure, ThemeMode, LocalAiStatus } from './composables/useSettings';
 
 // ── Stories ───────────────────────────────────────────────────────────────────
 
@@ -78,7 +78,15 @@ export interface SettingsContext {
   model: ComputedRef<string>;
   proseModel: ComputedRef<string>;
   modelAssignments: Ref<ModelAssignments>;
+  localDefaultModel: Ref<string>;
+  localModelAssignments: Ref<ModelAssignments>;
+  activeModelAssignments: ComputedRef<ModelAssignments>;
   modelFor: (fn: keyof ModelAssignments) => string;
+  localAiStatus: Ref<LocalAiStatus | null>;
+  localAiProgress: Ref<string>;
+  refreshLocalAiStatus: () => Promise<LocalAiStatus>;
+  pullLocalModel: (name?: string) => Promise<{ success: boolean; error: string }>;
+  testLocalAi: () => Promise<{ success: boolean; error: string; reply?: string }>;
   canopyApiKey: Ref<string>;
   dataforseoLogin: Ref<string>;
   dataforseoPassword: Ref<string>;

@@ -548,8 +548,9 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
 }
 
 async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> GenreResult {
-    if request.api_key.is_empty() { return err("No API key set. Go to Settings."); }
-    if request.model.is_empty() { return err("No model selected. Go to Settings."); }
+    if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
+        return err(&msg);
+    }
 
     let database = app.state::<db::Db>();
     let run_ts = if request.run_time.is_empty() { chrono::Utc::now().to_rfc3339() } else { request.run_time.clone() };
@@ -1037,8 +1038,10 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
             || matches!(s.as_str(), "ai_beta_reader" | "cliffhanger_score" | "hook_strength" | "pacing_curve")
     });
 
-    if needs_ai && (request.api_key.is_empty() || request.model.is_empty()) {
-        return err("An API key and model are required for the selected reports. Set them in Settings.");
+    if needs_ai {
+        if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
+            return err(&msg);
+        }
     }
 
     // ── Chapter Summaries ─────────────────────────────────────────────────

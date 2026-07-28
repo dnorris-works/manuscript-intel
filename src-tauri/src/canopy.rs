@@ -1257,8 +1257,9 @@ pub async fn run_market_intel(app: AppHandle, request: MarketIntelRequest) -> Ge
     fn emit(app: &AppHandle, msg: &str) { let _ = app.emit("genre:log", msg); }
 
     if request.canopy_api_key.is_empty() { return GenreResult { success: false, report: String::new(), error: "No Canopy API key set. Go to Settings.".to_string(), run_ts: String::new() }; }
-    if request.api_key.is_empty() { return GenreResult { success: false, report: String::new(), error: "No AI API key set. Go to Settings.".to_string(), run_ts: String::new() }; }
-    if request.model.is_empty() { return GenreResult { success: false, report: String::new(), error: "No model selected. Go to Settings.".to_string(), run_ts: String::new() }; }
+    if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
+        return GenreResult { success: false, report: String::new(), error: msg, run_ts: String::new() };
+    }
 
     emit(&app, "Running Market Intel (Canopy API)...");
     emit(&app, "  → Competition analysis");
