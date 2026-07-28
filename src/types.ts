@@ -34,6 +34,13 @@ export interface ModelsResult {
   error: string;
 }
 
+export type SummaryFileStatus = 'pending' | 'active' | 'done' | 'skipped';
+
+export interface SummaryChapterProgress {
+  filename: string;
+  status: 'started' | 'done' | 'skipped';
+}
+
 export interface AnalysisState {
   has_folder: boolean;
   summary_count: number;

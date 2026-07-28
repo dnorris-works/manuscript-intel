@@ -9,6 +9,7 @@ import type {
   SidebarReportGroup,
   Series,
   LogLine,
+  SummaryFileStatus,
   AdCampaign,
   AdCampaignDetail,
   AdCreative,
@@ -46,6 +47,7 @@ export interface AnalysisContext {
   analysisState: Ref<AnalysisState | null>;
   isWorking: Ref<boolean>;
   logLines: Ref<LogLine[]>;
+  summaryFileProgress: Ref<Record<string, SummaryFileStatus>>;
   refreshState: (folder: string) => Promise<void>;
   runAnalyze: (folder: string, forceResummarize: boolean, platform: string) => Promise<void>;
   runCraftAnalysis: (folder: string, selected: string[], continuityScope: ContinuityScope) => Promise<void>;

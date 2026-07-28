@@ -105,7 +105,7 @@ fn model_installed(models: &[String], name: &str) -> bool {
 }
 
 /// Directory containing llama-server and inference libraries from the Ollama darwin tarball.
-fn ollama_library_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+fn bundled_runtime_source(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     #[cfg(debug_assertions)]
     {
         let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/runtime");
@@ -125,6 +125,42 @@ fn ollama_library_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         "Ollama runtime not found (llama-server missing). Run: pnpm run fetch-ollama"
             .to_string(),
     )
+}
+
+/// Where the Ollama sidecar binary lives — it resolves llama-server relative to this directory.
+fn sidecar_runtime_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    #[cfg(debug_assertions)]
+    {
+        let dev_target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("debug");
+        if dev_target.join("ollama").exists() {
+            return Ok(dev_target);
+        }
+    }
+
+    app.path()
+        .executable_dir()
+        .map_err(|e| e.to_string())
+}
+
+/// Ollama looks for llama-server next to the sidecar binary, not in Resources.
+fn ensure_runtime_next_to_sidecar(
+    app: &AppHandle,
+    source: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let dest = sidecar_runtime_dir(app)?;
+    if dest.join("llama-server").exists() {
+        return Ok(dest);
+    }
+    copy_dir_all(source, &dest).map_err(|e| {
+        format!(
+            "Failed to install Ollama runtime next to sidecar ({}): {}",
+            dest.display(),
+            e
+        )
+    })?;
+    Ok(dest)
 }
 
 fn bundled_models_source(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -200,7 +236,8 @@ pub fn start_local_ai(app: &AppHandle) -> Result<(), String> {
     let port = pick_port()?;
     let host = format!("127.0.0.1:{}", port);
     let base = format!("http://{}", host);
-    let library_path = ollama_library_path(app)?;
+    let runtime_source = bundled_runtime_source(app)?;
+    let library_path = ensure_runtime_next_to_sidecar(app, &runtime_source)?;
 
     let sidecar = app
         .shell()

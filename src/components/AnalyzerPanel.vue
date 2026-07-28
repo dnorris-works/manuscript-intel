@@ -107,6 +107,18 @@ const summaryIssueFiles = computed(() => {
   };
 });
 
+function summaryFileStatus(filename: string): 'pending' | 'active' | 'done' | 'skipped' | null {
+  if (!analysisCtx.isWorking.value) return null;
+  return analysisCtx.summaryFileProgress.value[filename] ?? null;
+}
+
+function summaryFileMarker(filename: string): string {
+  const status = summaryFileStatus(filename);
+  if (status === 'done' || status === 'skipped') return '✓';
+  if (status === 'active') return '…';
+  return '○';
+}
+
 const getReportsDisabled = computed(() => {
   return analysisCtx.isWorking.value
     || !storiesCtx.activeFolder.value
@@ -491,13 +503,35 @@ function onStop(): void {
       <div v-if="summaryIssueFiles.missing.length > 0" class="summary-issue-block">
         <div class="summary-issue-title">Missing summaries:</div>
         <ul class="summary-file-list">
-          <li v-for="f in summaryIssueFiles.missing" :key="`missing-${f}`">{{ f }}</li>
+          <li
+            v-for="f in summaryIssueFiles.missing"
+            :key="`missing-${f}`"
+            class="summary-file-item"
+            :class="{
+              'summary-file-done': summaryFileStatus(f) === 'done' || summaryFileStatus(f) === 'skipped',
+              'summary-file-active': summaryFileStatus(f) === 'active',
+            }"
+          >
+            <span class="summary-file-marker" aria-hidden="true">{{ summaryFileMarker(f) }}</span>
+            <span class="summary-file-name">{{ f }}</span>
+          </li>
         </ul>
       </div>
       <div v-if="summaryIssueFiles.stale.length > 0" class="summary-issue-block">
         <div class="summary-issue-title">Changed since summarized:</div>
         <ul class="summary-file-list">
-          <li v-for="f in summaryIssueFiles.stale" :key="`stale-${f}`">{{ f }}</li>
+          <li
+            v-for="f in summaryIssueFiles.stale"
+            :key="`stale-${f}`"
+            class="summary-file-item"
+            :class="{
+              'summary-file-done': summaryFileStatus(f) === 'done' || summaryFileStatus(f) === 'skipped',
+              'summary-file-active': summaryFileStatus(f) === 'active',
+            }"
+          >
+            <span class="summary-file-marker" aria-hidden="true">{{ summaryFileMarker(f) }}</span>
+            <span class="summary-file-name">{{ f }}</span>
+          </li>
         </ul>
       </div>
     </div>
@@ -802,11 +836,44 @@ function onStop(): void {
 
 .summary-file-list {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 0;
+  list-style: none;
   max-height: 140px;
   overflow-y: auto;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.summary-file-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.summary-file-marker {
+  flex: 0 0 12px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.summary-file-active .summary-file-marker {
+  color: var(--accent);
+}
+
+.summary-file-done .summary-file-marker {
+  color: #6fcf97;
+}
+
+.summary-file-done .summary-file-name {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  opacity: 0.75;
+}
+
+.summary-file-active .summary-file-name {
+  color: var(--text);
 }
 
 .btn-stop {

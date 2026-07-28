@@ -1,13 +1,46 @@
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AnalysisState, GenreResult, LogLine } from '../types';
+import type { AnalysisState, GenreResult, LogLine, SummaryChapterProgress, SummaryFileStatus } from '../types';
 
 import { useSettings } from './useSettings';
 
 const analysisState = ref<AnalysisState | null>(null);
 const isWorking = ref(false);
 const logLines = ref<LogLine[]>([]);
+const summaryFileProgress = ref<Record<string, SummaryFileStatus>>({});
+
+function resetSummaryFileProgress(files: string[]): void {
+  const next: Record<string, SummaryFileStatus> = {};
+  for (const file of files) {
+    next[file] = 'pending';
+  }
+  summaryFileProgress.value = next;
+}
+
+function beginSummaryTracking(): void {
+  const s = analysisState.value;
+  if (!s) {
+    summaryFileProgress.value = {};
+    return;
+  }
+  resetSummaryFileProgress([
+    ...(s.summary_missing_files || []),
+    ...(s.summary_stale_files || []),
+  ]);
+}
+
+function applySummaryProgress(payload: SummaryChapterProgress): void {
+  const { filename, status } = payload;
+  if (!filename) return;
+  if (status === 'started') {
+    summaryFileProgress.value = { ...summaryFileProgress.value, [filename]: 'active' };
+    return;
+  }
+  if (status === 'done' || status === 'skipped') {
+    summaryFileProgress.value = { ...summaryFileProgress.value, [filename]: status };
+  }
+}
 
 function classifyLogLine(msg: string): LogLine {
   const trimmed = msg.trimStart();
@@ -76,6 +109,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
 
   clearLog();
   isWorking.value = true;
+  beginSummaryTracking();
   const runTime = new Date().toISOString();
 
   try {
@@ -114,6 +148,7 @@ async function runCraftAnalysis(folder: string, selected: string[], continuitySc
   const { provider, apiKey } = getSettings();
   clearLog();
   isWorking.value = true;
+  beginSummaryTracking();
 
   try {
     const result = await invoke<GenreResult>('run_craft_pipeline', {
@@ -172,6 +207,7 @@ async function runSummaries(folder: string): Promise<void> {
 
   clearLog();
   isWorking.value = true;
+  beginSummaryTracking();
   const runTime = new Date().toISOString();
 
   try {
@@ -219,12 +255,16 @@ async function saveLog(folder: string, timestamp: string): Promise<void> {
 // Set up Tauri event listeners (runs once at module load)
 listen<string>('genre:log', (event) => { appendLog(event.payload); });
 listen<string>('cdp:log', (event) => { appendLog(event.payload); });
+listen<SummaryChapterProgress>('summary:chapter-progress', (event) => {
+  applySummaryProgress(event.payload);
+});
 
 export function useAnalysis() {
   return {
     analysisState,
     isWorking,
     logLines,
+    summaryFileProgress,
     refreshState,
     runAnalyze,
     runCraftAnalysis,

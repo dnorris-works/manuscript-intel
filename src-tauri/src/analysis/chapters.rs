@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::{emit, err, GenreResult, FolderRequest};
 use crate::db;
@@ -59,22 +59,33 @@ pub(crate) async fn phase1_summaries(
         let fname = chapter_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
         emit(app, &format!("  [{}/{}] Summarizing: {}", i + 1, chapters.len(), fname));
+        emit_summary_progress(app, &fname, "started");
 
         let content = match fs::read_to_string(chapter_path) {
             Ok(c) if !c.trim().is_empty() => c,
-            Ok(_)  => { emit(app, "    \u{26a0} Empty \u{2014} skipping."); continue; }
-            Err(e) => { emit(app, &format!("    \u{26a0} Read error: {}", e)); continue; }
+            Ok(_)  => {
+                emit(app, "    \u{26a0} Empty \u{2014} skipping.");
+                emit_summary_progress(app, &fname, "skipped");
+                continue;
+            }
+            Err(e) => {
+                emit(app, &format!("    \u{26a0} Read error: {}", e));
+                emit_summary_progress(app, &fname, "skipped");
+                continue;
+            }
         };
 
         let cleaned_source = clean_for_ai(&content);
         if cleaned_source.is_empty() {
             emit(app, "    \u{26a0} Empty after cleanup \u{2014} skipping.");
+            emit_summary_progress(app, &fname, "skipped");
             continue;
         }
 
         let source_hash = chapter_source_hash(&cleaned_source);
         if summary_hashes.get(&fname).map(|h| h == &source_hash).unwrap_or(false) {
             emit(app, &format!("  [{}/{}] SKIP: {}", i + 1, chapters.len(), fname));
+            emit_summary_progress(app, &fname, "skipped");
             skipped += 1;
             continue;
         }
@@ -89,6 +100,7 @@ pub(crate) async fn phase1_summaries(
                 let conn = database.0.lock().unwrap();
                 let _ = db::save_chapter_summary(&conn, story_folder, &fname, &title, &compact_signals, &source_hash, word_count as i64);
                 emit(app, &format!("    \u{2713} Done ({} signal chars)", compact_signals.len()));
+                emit_summary_progress(app, &fname, "done");
                 done += 1;
             }
             Err(e) => emit(app, &format!("    \u{26a0} AI error: {}", e)),
@@ -99,6 +111,13 @@ pub(crate) async fn phase1_summaries(
 
     emit(app, &format!("Phase 1 complete \u{2014} {} new, {} skipped.", done, skipped));
     (done, skipped)
+}
+
+fn emit_summary_progress(app: &AppHandle, filename: &str, status: &str) {
+    let _ = app.emit(
+        "summary:chapter-progress",
+        serde_json::json!({ "filename": filename, "status": status }),
+    );
 }
 
 pub(crate) fn clean_for_ai(text: &str) -> String {

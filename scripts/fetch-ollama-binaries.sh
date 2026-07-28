@@ -48,7 +48,8 @@ for triple in x86_64-apple-darwin aarch64-apple-darwin; do
 done
 
 model_present() {
-  [[ -d "$MODELS_DIR/manifests" ]] && find "$MODELS_DIR/manifests" -maxdepth 1 -name "*${OLLAMA_MODEL}*" -print -quit | grep -q .
+  [[ -f "$MODELS_DIR/manifests/registry.ollama.ai/library/${OLLAMA_MODEL}/latest" ]] && return 0
+  find "$MODELS_DIR/manifests" -type f -path "*${OLLAMA_MODEL}*/latest" -print -quit 2>/dev/null | grep -q .
 }
 
 if model_present; then
