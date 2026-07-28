@@ -4,18 +4,12 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::db::Db;
-use crate::local_ai::DEFAULT_LOCAL_MODEL;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiSettings {
     pub theme: String,
-    pub provider: String,
     pub api_key: String,
-    #[serde(default)]
-    pub tokenmix_api_key: String,
     pub model_assignments: String,
-    pub local_default_model: String,
-    pub local_model_assignments: String,
     pub canopy_api_key: String,
     pub dataforseo_login: String,
     pub dataforseo_password: String,
@@ -31,12 +25,8 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             theme: "dark".to_string(),
-            provider: "local".to_string(),
             api_key: String::new(),
-            tokenmix_api_key: String::new(),
             model_assignments: "{}".to_string(),
-            local_default_model: DEFAULT_LOCAL_MODEL.to_string(),
-            local_model_assignments: "{}".to_string(),
             canopy_api_key: String::new(),
             dataforseo_login: String::new(),
             dataforseo_password: String::new(),
@@ -62,36 +52,17 @@ fn load_key_value(conn: &Connection, key: &str) -> String {
     ).unwrap_or_default()
 }
 
-fn normalize_provider(value: &str) -> String {
-    if value == "tokenmix" {
-        "tokenmix".to_string()
-    } else {
-        "local".to_string()
-    }
-}
-
 #[tauri::command]
 pub async fn load_ui_settings(db: tauri::State<'_, Db>) -> Result<UiSettings, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let provider_raw = load_key_value(&conn, "provider");
-    let provider = if provider_raw.is_empty() {
-        "local".to_string()
-    } else {
-        normalize_provider(&provider_raw)
-    };
-    let local_default = load_key_value(&conn, "local_default_model");
+    let mut api_key = load_key_value(&conn, "api_key");
+    if api_key.is_empty() {
+        api_key = load_key_value(&conn, "tokenmix_api_key");
+    }
     Ok(UiSettings {
         theme: load_key_value(&conn, "theme"),
-        provider,
-        api_key: load_key_value(&conn, "api_key"),
-        tokenmix_api_key: load_key_value(&conn, "tokenmix_api_key"),
+        api_key,
         model_assignments: load_key_value(&conn, "model_assignments"),
-        local_default_model: if local_default.is_empty() {
-            DEFAULT_LOCAL_MODEL.to_string()
-        } else {
-            local_default
-        },
-        local_model_assignments: load_key_value(&conn, "local_model_assignments"),
         canopy_api_key: load_key_value(&conn, "canopy_api_key"),
         dataforseo_login: load_key_value(&conn, "dataforseo_login"),
         dataforseo_password: load_key_value(&conn, "dataforseo_password"),
@@ -110,22 +81,15 @@ pub async fn load_app_state(db: tauri::State<'_, Db>) -> Result<AppState, String
 #[tauri::command]
 pub async fn save_ui_settings(
     db: tauri::State<'_, Db>,
-    mut settings: UiSettings,
+    settings: UiSettings,
 ) -> Result<UiSettings, String> {
-    settings.provider = normalize_provider(&settings.provider);
-    if settings.local_default_model.trim().is_empty() {
-        settings.local_default_model = DEFAULT_LOCAL_MODEL.to_string();
-    }
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     for (key, value) in [
         ("theme", settings.theme.as_str()),
-        ("provider", settings.provider.as_str()),
+        ("provider", "tokenmix"),
         ("api_key", settings.api_key.as_str()),
-        ("tokenmix_api_key", settings.tokenmix_api_key.as_str()),
         ("model_assignments", settings.model_assignments.as_str()),
-        ("local_default_model", settings.local_default_model.as_str()),
-        ("local_model_assignments", settings.local_model_assignments.as_str()),
         ("canopy_api_key", settings.canopy_api_key.as_str()),
         ("dataforseo_login", settings.dataforseo_login.as_str()),
         ("dataforseo_password", settings.dataforseo_password.as_str()),

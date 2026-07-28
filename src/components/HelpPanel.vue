@@ -2,9 +2,8 @@
 import { computed, inject } from 'vue';
 import { showPanelKey } from '../injectionKeys';
 import helpMarkdown from '../help/reports.md?raw';
-import localAiMarkdown from '../help/local-ai.md?raw';
 
-const combinedHelp = localAiMarkdown + '\n\n---\n\n' + helpMarkdown;
+const combinedHelp = helpMarkdown;
 
 const showPanel = inject(showPanelKey)!;
 

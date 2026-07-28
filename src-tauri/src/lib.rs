@@ -5,7 +5,6 @@ mod analysis;
 mod cancel;
 mod canopy;
 mod commands;
-mod local_ai;
 mod competition_analyzer;
 mod dataforseo;
 mod db;
@@ -19,7 +18,7 @@ mod settings;
 mod stories;
 mod winningcat;
 
-use tauri::{Manager, RunEvent};
+use tauri::Manager;
 
 pub use cancel::{is_cancelled, reset as reset_cancel, notify as cancel_notify};
 
@@ -35,10 +34,6 @@ pub fn run() {
             let database = db::init(&handle).expect("failed to initialize database");
             app.manage(database);
             let _ = folder_structure::load(&handle);
-            #[cfg(target_os = "macos")]
-            if let Err(e) = local_ai::start_local_ai(&handle) {
-                eprintln!("Local AI failed to start: {}", e);
-            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -84,6 +79,8 @@ pub fn run() {
             db::get_report_cmd,
             db::delete_report_cmd,
             db::get_sidebar_reports,
+            db::inspect_database_overview,
+            db::inspect_database_table,
             settings::load_ui_settings,
             settings::save_ui_settings,
             settings::load_app_state,
@@ -148,15 +145,8 @@ pub fn run() {
             campaigns::create_platform_account,
             campaigns::update_platform_account,
             campaigns::delete_platform_account,
-            local_ai::local_ai_status,
-            local_ai::restart_local_ai,
-            local_ai::test_local_ai_connection,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let RunEvent::Exit = event {
-                local_ai::shutdown_local_ai(app_handle);
-            }
-        });
+        .run(|_app_handle, _event| {});
 }

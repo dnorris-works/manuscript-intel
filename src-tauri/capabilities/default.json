@@ -8,28 +8,6 @@
     "core:window:allow-start-dragging",
     "core:webview:allow-set-webview-focus",
     "clipboard-manager:allow-write-text",
-    "shell:allow-execute",
-    "shell:allow-spawn",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "ollama",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    },
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        {
-          "name": "ollama",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    },
     "shell:allow-open",
     "dialog:allow-open",
     "fs:allow-read-file",

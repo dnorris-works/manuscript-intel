@@ -169,7 +169,7 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
     let genre_result = phase2_analyze(
         &app, &database, &request.folder, &summaries,
         &request.provider, &request.api_key, &request.model,
-        &request.tokenmix_api_key, &request.genre_model,
+        &request.genre_model,
     ).await;
     if !genre_result.success { return genre_result; }
     if crate::is_cancelled() { return err("Cancelled."); }
@@ -253,7 +253,7 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
         let r = phase2_analyze(
         &app, &database, &request.folder, &summaries,
         &request.provider, &request.api_key, &request.model,
-        &request.tokenmix_api_key, &request.genre_model,
+        &request.genre_model,
     ).await;
         if !r.success { return r; }
         let conn = database.0.lock().unwrap();
@@ -310,7 +310,7 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
         let r = phase2_analyze(
         &app, &database, &request.folder, &summaries,
         &request.provider, &request.api_key, &request.model,
-        &request.tokenmix_api_key, &request.genre_model,
+        &request.genre_model,
     ).await;
         if !r.success { return err(&r.error); }
         genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
@@ -342,7 +342,6 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
             &request.provider,
             &request.api_key,
             &request.model,
-            &request.tokenmix_api_key,
             &request.genre_model,
             &description,
             &master_list,
@@ -569,17 +568,7 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
 }
 
 async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> GenreResult {
-    if request.provider == "local" {
-        if let Err(e) = crate::ai::route_for_genre_work(
-            &request.provider,
-            &request.api_key,
-            &request.model,
-            &request.tokenmix_api_key,
-            &request.genre_model,
-        ) {
-            return err(&e);
-        }
-    } else if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
+    if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
         return err(&msg);
     }
 
@@ -632,7 +621,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         let r = phase2_analyze(
         &app, &database, &request.folder, &summaries,
         &request.provider, &request.api_key, &request.model,
-        &request.tokenmix_api_key, &request.genre_model,
+        &request.genre_model,
     ).await;
         if !r.success { return err(&r.error); }
     } else {
@@ -666,7 +655,6 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
             &request.provider,
             &request.api_key,
             &request.model,
-            &request.tokenmix_api_key,
             &request.genre_model,
             &description,
             &master_list,

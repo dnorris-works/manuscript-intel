@@ -2114,3 +2114,226 @@ pub fn node_id_for_path(conn: &Connection, path: &str, store: &str) -> Option<St
         params![path, store], |r| r.get::<_, String>(0)
     ).ok()
 }
+
+// ── Database inspector (Settings → Database tab) ─────────────────────────────
+
+pub fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("manuscript-intel.db"))
+}
+
+fn list_user_table_names(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+             ORDER BY name COLLATE NOCASE",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+fn table_row_count(conn: &Connection, table: &str) -> Result<i64, String> {
+    let sql = format!("SELECT COUNT(*) FROM \"{}\"", table.replace('"', "\"\""));
+    conn.query_row(&sql, [], |r| r.get(0))
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct DbColumnInfo {
+    pub name:      String,
+    pub type_name: String,
+    pub notnull:   bool,
+    pub pk:        bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct DbTableInfo {
+    pub name:      String,
+    pub row_count: i64,
+    pub columns:   Vec<DbColumnInfo>,
+}
+
+#[derive(serde::Serialize)]
+pub struct DbInspectOverview {
+    pub path:            String,
+    pub file_size_bytes: u64,
+    pub tables:          Vec<DbTableInfo>,
+}
+
+#[tauri::command]
+pub async fn inspect_database_overview(
+    app: AppHandle,
+    db: tauri::State<'_, Db>,
+) -> Result<DbInspectOverview, String> {
+    let path = database_path(&app)?;
+    let file_size_bytes = std::fs::metadata(&path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let table_names = list_user_table_names(&conn)?;
+
+    let mut tables = Vec::new();
+    for name in table_names {
+        let row_count = table_row_count(&conn, &name)?;
+        let mut col_stmt = conn
+            .prepare(&format!("PRAGMA table_info(\"{}\")", name.replace('"', "\"\"")))
+            .map_err(|e| e.to_string())?;
+        let columns = col_stmt
+            .query_map([], |r| {
+                Ok(DbColumnInfo {
+                    name:      r.get::<_, String>(1)?,
+                    type_name: r.get::<_, String>(2)?,
+                    notnull:   r.get::<_, i64>(3)? != 0,
+                    pk:        r.get::<_, i64>(5)? != 0,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        tables.push(DbTableInfo { name, row_count, columns });
+    }
+
+    Ok(DbInspectOverview {
+        path: path.to_string_lossy().into_owned(),
+        file_size_bytes,
+        tables,
+    })
+}
+
+#[derive(serde::Deserialize)]
+pub struct DbTablePreviewRequest {
+    pub table:  String,
+    pub offset: Option<i64>,
+    pub limit:  Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+pub struct DbTablePreview {
+    pub table:      String,
+    pub columns:    Vec<String>,
+    pub rows:       Vec<Vec<String>>,
+    pub total_rows: i64,
+    pub offset:     i64,
+    pub limit:      i64,
+}
+
+fn is_sensitive_setting_key(key: &str) -> bool {
+    matches!(
+        key,
+        "api_key"
+            | "tokenmix_api_key"
+            | "canopy_api_key"
+            | "dataforseo_password"
+    )
+}
+
+fn truncate_cell(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        return value.to_string();
+    }
+    let truncated: String = value.chars().take(max).collect();
+    format!("{truncated}…")
+}
+
+#[tauri::command]
+pub async fn inspect_database_table(
+    db: tauri::State<'_, Db>,
+    request: DbTablePreviewRequest,
+) -> Result<DbTablePreview, String> {
+    let offset = request.offset.unwrap_or(0).max(0);
+    let limit = request.limit.unwrap_or(50).clamp(1, 200);
+
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let allowed = list_user_table_names(&conn)?;
+    if !allowed.iter().any(|t| t == &request.table) {
+        return Err(format!("Unknown table: {}", request.table));
+    }
+
+    let table = &request.table;
+    let total_rows = table_row_count(&conn, table)?;
+
+    let mut col_stmt = conn
+        .prepare(&format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\"")))
+        .map_err(|e| e.to_string())?;
+    let columns: Vec<String> = col_stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    if columns.is_empty() {
+        return Ok(DbTablePreview {
+            table: table.clone(),
+            columns,
+            rows: Vec::new(),
+            total_rows,
+            offset,
+            limit,
+        });
+    }
+
+    let col_list = columns
+        .iter()
+        .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {col_list} FROM \"{}\" LIMIT ?1 OFFSET ?2",
+        table.replace('"', "\"\"")
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let raw_rows = stmt
+        .query_map(params![limit, offset], |r| {
+            let mut row = Vec::with_capacity(columns.len());
+            for i in 0..columns.len() {
+                let val: String = match r.get::<_, rusqlite::types::Value>(i) {
+                    Ok(rusqlite::types::Value::Null) => String::new(),
+                    Ok(rusqlite::types::Value::Integer(n)) => n.to_string(),
+                    Ok(rusqlite::types::Value::Real(f)) => f.to_string(),
+                    Ok(rusqlite::types::Value::Text(s)) => s,
+                    Ok(rusqlite::types::Value::Blob(_)) => "[blob]".to_string(),
+                    Err(_) => String::new(),
+                };
+                row.push(val);
+            }
+            Ok(row)
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let key_col = columns.iter().position(|c| c == "key");
+    let value_col = columns.iter().position(|c| c == "value");
+
+    let rows = raw_rows
+        .into_iter()
+        .map(|mut row| {
+            if table == "app_settings" {
+                if let (Some(ki), Some(vi)) = (key_col, value_col) {
+                    if row.len() > vi && is_sensitive_setting_key(&row[ki]) && !row[vi].is_empty() {
+                        row[vi] = "••••••••".to_string();
+                    }
+                }
+            }
+            row.into_iter()
+                .map(|cell| truncate_cell(&cell, 280))
+                .collect()
+        })
+        .collect();
+
+    Ok(DbTablePreview {
+        table: table.clone(),
+        columns,
+        rows,
+        total_rows,
+        offset,
+        limit,
+    })
+}

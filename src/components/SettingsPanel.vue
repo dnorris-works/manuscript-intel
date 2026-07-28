@@ -12,21 +12,10 @@ loadReportTypes();
 
 const savedMsg = ref('');
 const modelFetchStatus = ref('');
-const tokenmixFetchStatus = ref('');
 const canopyTestStatus = ref('');
 const dataforseoTestStatus = ref('');
-const localTestStatus = ref('');
 
-const isLocalProvider = computed(() => settingsCtx.provider.value === 'local');
-const isTokenmixProvider = computed(() => settingsCtx.provider.value === 'tokenmix');
-
-const localStatusText = computed(() => {
-  const s = settingsCtx.localAiStatus.value;
-  if (!s) return 'Checking...';
-  if (!s.running) return 'Not running';
-  if (!s.ready) return 'Starting...';
-  return 'Running — bundled model ready';
-});
+const apiKeyMissing = computed(() => !settingsCtx.apiKey.value.trim());
 
 // ── Sorted models: user-selectable sort order ─────────────────────────────────
 
@@ -62,22 +51,6 @@ const filteredModels = computed(() => {
     return true;
   });
 });
-
-const sortedTokenmixModels = computed(() => {
-  return [...settingsCtx.tokenmixModels.value].sort((a, b) => {
-    const priceA = a.input_price ?? Infinity;
-    const priceB = b.input_price ?? Infinity;
-    return priceA - priceB;
-  });
-});
-
-const genreModelOptions = computed(() => (
-  isLocalProvider.value ? sortedTokenmixModels.value : filteredModels.value
-));
-
-const tokenmixKeyMissing = computed(() => (
-  isLocalProvider.value && !settingsCtx.tokenmixApiKey.value.trim()
-));
 
 // ── Model fitness indicators ──────────────────────────────────────────────────
 
@@ -183,28 +156,6 @@ async function onFetchModels(): Promise<void> {
   } else {
     modelFetchStatus.value = result.error;
   }
-}
-
-async function onFetchTokenmixModels(): Promise<void> {
-  tokenmixFetchStatus.value = 'Fetching TokenMix models...';
-  const result = await settingsCtx.fetchTokenmixModels();
-  if (result.success) {
-    tokenmixFetchStatus.value = `${settingsCtx.tokenmixModels.value.length} TokenMix models loaded.`;
-  } else {
-    tokenmixFetchStatus.value = result.error;
-  }
-}
-
-async function onTestLocalAi(): Promise<void> {
-  localTestStatus.value = 'Testing...';
-  const result = await settingsCtx.testLocalAi();
-  localTestStatus.value = result.success
-    ? `✓ ${result.reply || 'Connected'}`
-    : '✗ ' + result.error;
-}
-
-async function onRefreshLocalStatus(): Promise<void> {
-  await settingsCtx.refreshLocalAiStatus();
 }
 
 function onSave(): void {
@@ -317,74 +268,20 @@ async function onRemoveStale(): Promise<void> {
     <!-- AI Models -->
     <div v-show="activeTab === 'ai'" class="settings-tab-panel">
       <div class="settings-form">
-        <label>AI Provider</label>
-        <div class="provider-options">
-          <label class="provider-option" :class="{ active: isLocalProvider }">
-            <input
-              type="radio"
-              name="ai-provider"
-              value="local"
-              :checked="isLocalProvider"
-              @change="settingsCtx.provider.value = 'local'"
-            />
-            Local (included)
-          </label>
-          <label class="provider-option" :class="{ active: isTokenmixProvider }">
-            <input
-              type="radio"
-              name="ai-provider"
-              value="tokenmix"
-              :checked="isTokenmixProvider"
-              @change="settingsCtx.provider.value = 'tokenmix'"
-            />
-            TokenMix (cloud)
-          </label>
-        </div>
+        <p class="panel-desc">
+          All AI features use <strong>TokenMix</strong>. Chapter fingerprints are scanned locally in Rust (no AI).
+        </p>
 
-        <!-- Local AI panel -->
-        <template v-if="isLocalProvider">
-          <label>Local AI Status</label>
-          <div class="model-row">
-            <span class="local-status">{{ localStatusText }}</span>
-            <button class="btn btn-sm" @click="onRefreshLocalStatus">Refresh</button>
-          </div>
-          <p class="panel-desc">
-            Default model <strong>{{ settingsCtx.localDefaultModel.value || 'phi4-mini' }}</strong> is bundled with the app — no download after install.
-          </p>
-
-          <div class="model-row">
-            <button class="btn btn-sm" @click="onTestLocalAi">Test connection</button>
-            <span class="model-fetch-status">{{ localTestStatus }}</span>
-          </div>
-
-          <label class="settings-required-label">
-            TokenMix API Key
-            <span class="settings-required-badge">Required</span>
-          </label>
-          <p class="panel-desc">
-            Genre and niche classification uses TokenMix even when Local AI handles everything else.
-          </p>
-          <input
-            type="password"
-            v-model="settingsCtx.tokenmixApiKey.value"
-            placeholder="Enter your TokenMix API key"
-            :class="{ 'input-missing': tokenmixKeyMissing }"
-          />
-          <div class="model-row">
-            <button class="btn btn-sm" @click="onFetchTokenmixModels">Fetch TokenMix Models</button>
-            <span class="model-fetch-status">{{ tokenmixFetchStatus }}</span>
-          </div>
-        </template>
-
-        <!-- TokenMix panel -->
-        <template v-if="isTokenmixProvider">
-          <label>API Key</label>
-          <input
-            type="password"
-            v-model="settingsCtx.apiKey.value"
-            placeholder="Enter your API key"
-          />
-        </template>
+        <label class="settings-required-label">
+          TokenMix API Key
+          <span class="settings-required-badge">Required</span>
+        </label>
+        <input
+          type="password"
+          v-model="settingsCtx.apiKey.value"
+          placeholder="Enter your TokenMix API key"
+          :class="{ 'input-missing': apiKeyMissing }"
+        />
 
         <label>
           Default Model
@@ -408,13 +305,13 @@ async function onRemoveStale(): Promise<void> {
         </div>
         <div class="model-fetch-status">{{ modelFetchStatus }}</div>
 
-        <div v-if="isTokenmixProvider && sortedModels.length > 0" class="model-sort-row">
+        <div v-if="sortedModels.length > 0" class="model-sort-row">
           <span class="model-sort-label">Sort:</span>
           <button class="model-sort-btn" :class="{ active: modelSort === 'price' }" @click="modelSort = 'price'">Price</button>
           <button class="model-sort-btn" :class="{ active: modelSort === 'provider' }" @click="modelSort = 'provider'">Provider</button>
         </div>
 
-        <div v-if="isTokenmixProvider && sortedModels.length > 0" class="model-filter-row">
+        <div v-if="sortedModels.length > 0" class="model-filter-row">
           <label class="model-filter-opt">
             <input type="checkbox" v-model="pricedOnly" :disabled="freeOnly" />
             Priced only
@@ -443,21 +340,17 @@ async function onRemoveStale(): Promise<void> {
           <div class="model-assign-row">
             <div class="model-assign-label">
               <strong>Genre Analysis</strong>
-              <span class="model-recommend">
-                {{ isLocalProvider
-                  ? 'Required TokenMix model for niche classification. Fetch TokenMix models above, then pick one here.'
-                  : 'Classification task. Mid-tier model is sufficient.' }}
-              </span>
+              <span class="model-recommend">Classification task. Mid-tier model is sufficient.</span>
             </div>
             <select v-model="settingsCtx.activeModelAssignments.value.genre">
-              <option v-if="!isLocalProvider" value="">(Use default)</option>
+              <option value="">(Use default)</option>
               <option
-                v-if="genreModelOptions.length === 0"
+                v-if="filteredModels.length === 0"
                 value=""
                 disabled
-              >{{ isLocalProvider ? 'Fetch TokenMix models first' : 'No models loaded' }}</option>
+              >No models loaded</option>
               <option
-                v-for="m in genreModelOptions"
+                v-for="m in filteredModels"
                 :key="`genre-${m.id}`"
                 :value="m.id"
               >{{ fnOptionLabel(m, 'genre') }}</option>

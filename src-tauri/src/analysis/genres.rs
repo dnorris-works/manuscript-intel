@@ -64,7 +64,6 @@ pub async fn rank_genres_for_story(app: AppHandle, request: FolderRequest) -> Ge
         &request.provider,
         &request.api_key,
         &request.model,
-        &request.tokenmix_api_key,
         &request.genre_model,
         &description,
         &master_list,
@@ -156,7 +155,6 @@ pub async fn analyze_genre(app: AppHandle, request: FolderRequest) -> GenreResul
         &request.provider,
         &request.api_key,
         &request.model,
-        &request.tokenmix_api_key,
         &request.genre_model,
     )
     .await
@@ -172,30 +170,16 @@ pub(crate) async fn phase2_analyze(
     provider: &str,
     api_key: &str,
     model: &str,
-    tokenmix_api_key: &str,
     genre_model: &str,
 ) -> GenreResult {
     let combined = build_combined_context(summaries);
 
-    let route = match crate::ai::route_for_genre_work(
-        provider,
-        api_key,
-        model,
-        tokenmix_api_key,
-        genre_model,
-    ) {
-        Ok(r) => r,
+    let genre_m = match crate::ai::resolve_slot_model(genre_model, model) {
+        Ok(m) => m,
         Err(e) => return err(&e),
     };
-
-    if provider == "local" && route.provider == "tokenmix" {
-        emit(
-            app,
-            &format!(
-                "  Genre analysis via TokenMix [{}] (local AI not used for niche classification)",
-                route.model
-            ),
-        );
+    if let Err(e) = crate::ai::ai_ready(provider, api_key, &genre_m) {
+        return err(&e);
     }
 
     emit(
@@ -204,15 +188,15 @@ pub(crate) async fn phase2_analyze(
             "  Sending {} chapter fingerprints ({} chars) to {}...",
             summaries.len(),
             combined.len(),
-            route.model
+            genre_m
         ),
     );
 
     match call_ai_genre_analysis(
         database,
-        &route.provider,
-        &route.api_key,
-        &route.model,
+        provider,
+        api_key,
+        &genre_m,
         &combined,
     )
     .await
@@ -241,18 +225,12 @@ pub(crate) async fn ai_rank_genres(
     provider: &str,
     api_key: &str,
     model: &str,
-    tokenmix_api_key: &str,
     genre_model: &str,
     description: &str,
     master_list: &[db::GenreRow],
 ) -> Result<Vec<AiGenreRank>, String> {
-    let route = crate::ai::route_for_genre_work(
-        provider,
-        api_key,
-        model,
-        tokenmix_api_key,
-        genre_model,
-    )?;
+    let genre_m = crate::ai::resolve_slot_model(genre_model, model)?;
+    crate::ai::ai_ready(provider, api_key, &genre_m)?;
 
     let genre_list = master_list
         .iter()
@@ -267,9 +245,9 @@ pub(crate) async fn ai_rank_genres(
     let raw = prompts::execute_prompt(
         database,
         "genre_ranking",
-        &route.provider,
-        &route.api_key,
-        &route.model,
+        provider,
+        api_key,
+        &genre_m,
         vars,
     )
     .await?;

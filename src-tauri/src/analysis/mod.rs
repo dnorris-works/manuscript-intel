@@ -46,9 +46,6 @@ pub struct FolderRequest {
     pub provider: String,
     #[serde(default)]
     pub canopy_api_key: String,
-    /// TokenMix key when provider is local (genre work routes to cloud).
-    #[serde(default)]
-    pub tokenmix_api_key: String,
     #[serde(default)]
     pub genre_model: String,
 }
@@ -70,8 +67,6 @@ pub struct AnalyzeStoryRequest {
     pub dataforseo_password: String,
     #[serde(default)]
     pub run_time:          String,  // local datetime from when user clicked the button
-    #[serde(default)]
-    pub tokenmix_api_key:  String,
     #[serde(default)]
     pub genre_model:       String,
 }

@@ -93,15 +93,11 @@ async function refreshState(folder: string): Promise<void> {
 
 function getSettings() {
   const s = useSettings();
-  const genreModel = s.provider.value === 'local'
-    ? s.activeModelAssignments.value.genre
-    : s.modelFor('genre');
   return {
     provider: s.provider.value,
     apiKey: s.apiKey.value,
-    tokenmixApiKey: s.effectiveTokenmixApiKey(),
     model: s.model.value,
-    genreModel,
+    genreModel: s.modelFor('genre'),
     canopyApiKey: s.canopyApiKey.value,
     dataforseoLogin: s.dataforseoLogin.value,
     dataforseoPassword: s.dataforseoPassword.value,
@@ -120,7 +116,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
     appendLog('✗ Setup required before Analyze:\n' + formatSetupBlock(setupIssues));
     return;
   }
-  const { provider, apiKey, tokenmixApiKey, model, genreModel, canopyApiKey, dataforseoLogin, dataforseoPassword } = getSettings();
+  const { provider, apiKey, model, genreModel, canopyApiKey, dataforseoLogin, dataforseoPassword } = getSettings();
 
   clearLog();
   isWorking.value = true;
@@ -131,7 +127,6 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
     const result = await invoke<GenreResult>('analyze_story', {
       request: {
         folder, api_key: apiKey, model, provider,
-        tokenmix_api_key: tokenmixApiKey,
         genre_model: genreModel,
         force_resummarize: forceResummarize,
         canopy_api_key: canopyApiKey,

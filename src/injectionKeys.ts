@@ -22,7 +22,7 @@ import type {
   ModelInfo,
 } from './types';
 import type { ContinuityScope } from './composables/useAnalysis';
-import type { ModelAssignments, FolderStructure, ThemeMode, LocalAiStatus, SetupIssue } from './composables/useSettings';
+import type { ModelAssignments, FolderStructure, ThemeMode, SetupIssue } from './composables/useSettings';
 
 // ── Stories ───────────────────────────────────────────────────────────────────
 
@@ -75,28 +75,19 @@ export const platformKey: InjectionKey<PlatformContext> = Symbol('platform');
 export interface SettingsContext {
   theme: Ref<ThemeMode>;
   setTheme: (mode: ThemeMode) => void;
-  provider: Ref<string>;
+  provider: ComputedRef<string>;
   apiKey: Ref<string>;
-  tokenmixApiKey: Ref<string>;
-  effectiveTokenmixApiKey: () => string;
   model: ComputedRef<string>;
   proseModel: ComputedRef<string>;
   modelAssignments: Ref<ModelAssignments>;
-  localDefaultModel: Ref<string>;
-  localModelAssignments: Ref<ModelAssignments>;
   activeModelAssignments: ComputedRef<ModelAssignments>;
   modelFor: (fn: keyof ModelAssignments) => string;
-  localAiStatus: Ref<LocalAiStatus | null>;
-  refreshLocalAiStatus: () => Promise<LocalAiStatus>;
-  testLocalAi: () => Promise<{ success: boolean; error: string; reply?: string }>;
   canopyApiKey: Ref<string>;
   dataforseoLogin: Ref<string>;
   dataforseoPassword: Ref<string>;
   models: Ref<ModelInfo[]>;
-  tokenmixModels: Ref<ModelInfo[]>;
   folderStructure: Ref<FolderStructure>;
   fetchModels: () => Promise<{ success: boolean; error: string }>;
-  fetchTokenmixModels: () => Promise<{ success: boolean; error: string }>;
   checkPublishAnalyzeSetup: () => SetupIssue[];
   checkCraftAnalyzeSetup: () => SetupIssue[];
   checkMarketIntelSetup: () => SetupIssue[];
