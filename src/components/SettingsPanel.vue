@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, ref, computed } from 'vue';
+import { inject, ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { settingsKey, showPanelKey } from '../injectionKeys';
 import type { ModelInfo, WinningCatImportResult, StaleCleanupResult } from '../types';
@@ -129,7 +129,7 @@ const showStaleRow = ref(false);
 const importDisabled = ref(false);
 let lastImportedAt = '';
 
-type SettingsTab = 'general' | 'ai' | 'folders' | 'canopy' | 'dataforseo' | 'winningcat';
+type SettingsTab = 'general' | 'ai' | 'folders' | 'canopy' | 'dataforseo' | 'winningcat' | 'database';
 const activeTab = ref<SettingsTab>('general');
 
 const settingsTabs: { id: SettingsTab; label: string }[] = [
@@ -139,7 +139,129 @@ const settingsTabs: { id: SettingsTab; label: string }[] = [
   { id: 'canopy', label: 'Canopy' },
   { id: 'dataforseo', label: 'DataForSEO' },
   { id: 'winningcat', label: 'WinningCat' },
+  { id: 'database', label: 'Database' },
 ];
+
+interface DbColumnInfo {
+  name: string;
+  type_name: string;
+  notnull: boolean;
+  pk: boolean;
+}
+
+interface DbTableInfo {
+  name: string;
+  row_count: number;
+  columns: DbColumnInfo[];
+}
+
+interface DbInspectOverview {
+  path: string;
+  file_size_bytes: number;
+  tables: DbTableInfo[];
+}
+
+interface DbTablePreview {
+  table: string;
+  columns: string[];
+  rows: string[][];
+  total_rows: number;
+  offset: number;
+  limit: number;
+}
+
+const dbOverview = ref<DbInspectOverview | null>(null);
+const dbLoading = ref(false);
+const dbError = ref('');
+const selectedDbTable = ref<string | null>(null);
+const dbPreview = ref<DbTablePreview | null>(null);
+const dbPreviewLoading = ref(false);
+const dbPageOffset = ref(0);
+const dbPageSize = 50;
+
+const selectedTableInfo = computed(() => {
+  if (!dbOverview.value || !selectedDbTable.value) return null;
+  return dbOverview.value.tables.find(t => t.name === selectedDbTable.value) ?? null;
+});
+
+const dbPageEnd = computed(() => {
+  if (!dbPreview.value) return 0;
+  return Math.min(dbPreview.value.offset + dbPreview.value.rows.length, dbPreview.value.total_rows);
+});
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+async function loadDbOverview(): Promise<void> {
+  dbLoading.value = true;
+  dbError.value = '';
+  try {
+    dbOverview.value = await invoke<DbInspectOverview>('inspect_database_overview');
+    if (selectedDbTable.value && !dbOverview.value.tables.some(t => t.name === selectedDbTable.value)) {
+      selectedDbTable.value = null;
+      dbPreview.value = null;
+    }
+  } catch (e) {
+    dbError.value = String(e);
+    dbOverview.value = null;
+  } finally {
+    dbLoading.value = false;
+  }
+}
+
+async function loadDbTablePreview(): Promise<void> {
+  if (!selectedDbTable.value) {
+    dbPreview.value = null;
+    return;
+  }
+  dbPreviewLoading.value = true;
+  dbError.value = '';
+  try {
+    dbPreview.value = await invoke<DbTablePreview>('inspect_database_table', {
+      request: {
+        table: selectedDbTable.value,
+        offset: dbPageOffset.value,
+        limit: dbPageSize,
+      },
+    });
+  } catch (e) {
+    dbError.value = String(e);
+    dbPreview.value = null;
+  } finally {
+    dbPreviewLoading.value = false;
+  }
+}
+
+function selectDbTable(name: string): void {
+  selectedDbTable.value = name;
+  dbPageOffset.value = 0;
+  void loadDbTablePreview();
+}
+
+function dbPrevPage(): void {
+  if (!dbPreview.value) return;
+  dbPageOffset.value = Math.max(0, dbPageOffset.value - dbPageSize);
+  void loadDbTablePreview();
+}
+
+function dbNextPage(): void {
+  if (!dbPreview.value) return;
+  if (dbPageOffset.value + dbPageSize >= dbPreview.value.total_rows) return;
+  dbPageOffset.value += dbPageSize;
+  void loadDbTablePreview();
+}
+
+watch(activeTab, (tab) => {
+  if (tab === 'database') {
+    void loadDbOverview();
+    if (selectedDbTable.value) {
+      void loadDbTablePreview();
+    }
+  }
+});
 
 function modelLabel(m: ModelInfo): string {
   let label = m.id;
@@ -519,7 +641,100 @@ async function onRemoveStale(): Promise<void> {
       </div>
     </div>
 
-    <div v-if="activeTab !== 'winningcat'" class="settings-footer">
+    <!-- Database -->
+    <div v-show="activeTab === 'database'" class="settings-tab-panel db-tab">
+      <div class="db-header">
+        <div v-if="dbOverview" class="db-meta">
+          <div class="db-meta-row"><span class="db-meta-label">File</span> <code class="db-path">{{ dbOverview.path }}</code></div>
+          <div class="db-meta-row"><span class="db-meta-label">Size</span> {{ formatBytes(dbOverview.file_size_bytes) }}</div>
+          <div class="db-meta-row"><span class="db-meta-label">Tables</span> {{ dbOverview.tables.length }}</div>
+        </div>
+        <button class="btn btn-sm" :disabled="dbLoading" @click="loadDbOverview">Refresh</button>
+      </div>
+
+      <div v-if="dbError" class="db-error">{{ dbError }}</div>
+      <div v-else-if="dbLoading && !dbOverview" class="panel-desc">Loading database…</div>
+
+      <div v-if="dbOverview" class="db-layout">
+        <aside class="db-table-list">
+          <div class="db-table-list-header">Tables</div>
+          <button
+            v-for="table in dbOverview.tables"
+            :key="table.name"
+            type="button"
+            class="db-table-item"
+            :class="{ active: selectedDbTable === table.name }"
+            @click="selectDbTable(table.name)"
+          >
+            <span class="db-table-name">{{ table.name }}</span>
+            <span class="db-table-count">{{ table.row_count.toLocaleString() }}</span>
+          </button>
+        </aside>
+
+        <section class="db-detail">
+          <template v-if="selectedTableInfo">
+            <h3 class="db-detail-title">{{ selectedTableInfo.name }}</h3>
+            <p class="panel-desc">{{ selectedTableInfo.row_count.toLocaleString() }} rows · {{ selectedTableInfo.columns.length }} columns</p>
+
+            <div class="db-schema">
+              <div class="db-schema-header">Structure</div>
+              <table class="db-schema-table">
+                <thead>
+                  <tr>
+                    <th>Column</th>
+                    <th>Type</th>
+                    <th>PK</th>
+                    <th>NOT NULL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="col in selectedTableInfo.columns" :key="col.name">
+                    <td><code>{{ col.name }}</code></td>
+                    <td>{{ col.type_name }}</td>
+                    <td>{{ col.pk ? '✓' : '' }}</td>
+                    <td>{{ col.notnull ? '✓' : '' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="db-data">
+              <div class="db-data-header">
+                <span>Data preview</span>
+                <span v-if="dbPreview" class="db-page-info">
+                  {{ dbPreview.total_rows === 0 ? '0 rows' : `${dbPreview.offset + 1}–${dbPageEnd} of ${dbPreview.total_rows.toLocaleString()}` }}
+                </span>
+              </div>
+
+              <div v-if="dbPreviewLoading" class="panel-desc">Loading rows…</div>
+              <div v-else-if="dbPreview && dbPreview.rows.length === 0" class="panel-desc">No rows.</div>
+              <div v-else-if="dbPreview" class="db-data-scroll">
+                <table class="db-data-table">
+                  <thead>
+                    <tr>
+                      <th v-for="col in dbPreview.columns" :key="col">{{ col }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, ri) in dbPreview.rows" :key="ri">
+                      <td v-for="(cell, ci) in row" :key="ci">{{ cell }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div v-if="dbPreview && dbPreview.total_rows > dbPageSize" class="db-pagination">
+                <button class="btn btn-sm" :disabled="dbPreview.offset <= 0 || dbPreviewLoading" @click="dbPrevPage">Previous</button>
+                <button class="btn btn-sm" :disabled="dbPageEnd >= dbPreview.total_rows || dbPreviewLoading" @click="dbNextPage">Next</button>
+              </div>
+            </div>
+          </template>
+          <p v-else class="panel-desc">Select a table to inspect its structure and data.</p>
+        </section>
+      </div>
+    </div>
+
+    <div v-if="activeTab !== 'winningcat' && activeTab !== 'database'" class="settings-footer">
       <button class="btn" @click="onSave">Save Settings</button>
       <div class="settings-saved">{{ savedMsg }}</div>
     </div>
@@ -908,5 +1123,177 @@ async function onRemoveStale(): Promise<void> {
 .stale-status {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.db-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.db-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.db-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.db-meta-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.db-meta-label {
+  color: var(--text-muted);
+  min-width: 52px;
+}
+
+.db-path {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.db-error {
+  color: #e55;
+  font-size: 13px;
+}
+
+.db-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  gap: 16px;
+  min-height: 360px;
+}
+
+.db-table-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: auto;
+  max-height: 70vh;
+}
+
+.db-table-list-header {
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+
+.db-table-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+}
+
+.db-table-item:hover {
+  background: var(--surface2);
+}
+
+.db-table-item.active {
+  background: rgba(232, 97, 44, 0.1);
+}
+
+.db-table-name {
+  font-family: ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-table-count {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.db-detail {
+  min-width: 0;
+}
+
+.db-detail-title {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+
+.db-schema {
+  margin: 12px 0 16px;
+}
+
+.db-schema-header,
+.db-data-header {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.db-schema-table,
+.db-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.db-schema-table th,
+.db-schema-table td,
+.db-data-table th,
+.db-data-table td {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.db-schema-table th,
+.db-data-table th {
+  background: var(--surface2);
+  font-weight: 600;
+}
+
+.db-data-scroll {
+  overflow: auto;
+  max-height: 42vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.db-data-table td {
+  max-width: 280px;
+  word-break: break-word;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.db-page-info {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.db-pagination {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
 }
 </style>

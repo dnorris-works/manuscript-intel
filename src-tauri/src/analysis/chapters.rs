@@ -97,16 +97,13 @@ pub(crate) async fn phase1_summaries(
 
         emit(app, &format!("    {} words — {}", word_count, fingerprint.to_display_summary()));
 
-        let signals_json = fingerprint.to_storage_json();
         let conn = database.0.lock().unwrap();
-        let _ = db::save_chapter_summary(
+        let _ = db::save_chapter_fingerprint(
             &conn,
             story_folder,
             &fname,
-            &title,
-            &signals_json,
+            &fingerprint,
             &source_hash,
-            word_count as i64,
         );
         emit(app, "    \u{2713} Fingerprint saved");
         emit_summary_progress(app, &fname, "done");

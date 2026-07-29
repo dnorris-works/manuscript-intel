@@ -1,7 +1,7 @@
 // chapter_stats.rs — Deterministic chapter fingerprints (no AI).
 //
-// Scans every chapter for measurable genre-relevant signals. Stored as JSON and
-// aggregated into a book dossier for TokenMix genre/category work.
+// Scans every chapter for measurable genre-relevant signals. Stored in the
+// `chapter_fingerprints` table (structured columns + lexicon JSON).
 
 use std::collections::HashMap;
 
