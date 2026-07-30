@@ -1,6 +1,9 @@
 import { ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelInfo, ModelsResult } from '../types';
+import { applyThemeTokens, type ThemeMode } from '../theme/tokens';
+
+export type { ThemeMode };
 
 // ── AI function model assignments ─────────────────────────────────────────────
 // Each AI function can have its own model. Empty means "use the default model."
@@ -96,10 +99,9 @@ function loadAssignments(): ModelAssignments {
   return defaultModelAssignments();
 }
 
-export type ThemeMode = 'dark' | 'light';
 
 function applyTheme(mode: ThemeMode): void {
-  document.documentElement.setAttribute('data-theme', mode);
+  applyThemeTokens(mode);
 }
 
 const theme = ref<ThemeMode>('dark');

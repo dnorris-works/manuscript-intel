@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, provide, computed } from 'vue';
+import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme } from 'naive-ui';
+import { getNaiveThemeOverrides } from './naiveTheme';
 import { useStories } from './composables/useStories';
 import { useAnalysis } from './composables/useAnalysis';
 import { usePlatform } from './composables/usePlatform';
@@ -46,6 +48,9 @@ provide(settingsKey, settingsCtx);
 provide(reportsKey, reportsCtx);
 provide(seriesKey, seriesCtx);
 provide(campaignsKey, campaignsCtx);
+
+const naiveTheme = computed(() => (settingsCtx.theme.value === 'dark' ? darkTheme : null));
+const naiveThemeOverrides = computed(() => getNaiveThemeOverrides(settingsCtx.theme.value));
 
 // ── Top-level mode ────────────────────────────────────────────────────────────
 
@@ -292,7 +297,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <div id="app-root">
+  <n-config-provider :theme="naiveTheme" :theme-overrides="naiveThemeOverrides">
+    <n-message-provider>
+      <n-dialog-provider>
+        <div id="app-root">
     <TitleBar />
     <Sidebar
       @open-story-form="openStoryForm"
@@ -357,7 +365,10 @@ onMounted(() => {
         />
       </template>
     </main>
-  </div>
+        </div>
+      </n-dialog-provider>
+    </n-message-provider>
+  </n-config-provider>
 </template>
 
 <style scoped>
