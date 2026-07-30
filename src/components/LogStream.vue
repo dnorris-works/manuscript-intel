@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { inject, ref, watch, nextTick, computed } from 'vue';
+import { NButton, NText, NSpace } from 'naive-ui';
 import { analysisKey } from '../injectionKeys';
 
 const analysisCtx = inject(analysisKey)!;
@@ -40,10 +41,12 @@ const lines = computed(() => analysisCtx.logLines.value);
 
 <template>
   <div class="log-stream-container">
-    <div class="log-stream-header">
-      <span class="output-tab-label">Output</span>
-      <button class="clear-log" @click="analysisCtx.clearLog()">Clear</button>
-    </div>
+    <n-space justify="space-between" align="center" style="padding: 4px 0 6px;">
+      <n-text depth="3" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px;">
+        Output
+      </n-text>
+      <n-button size="tiny" quaternary @click="analysisCtx.clearLog()">Clear</n-button>
+    </n-space>
     <div ref="paneRef" class="log-stream-pane" @scroll="onScroll">
       <div class="log-stream">
         <div

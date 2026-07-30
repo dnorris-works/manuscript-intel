@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed, inject } from 'vue';
+import { NPageHeader, NScrollbar, NButton } from 'naive-ui';
 import { showPanelKey } from '../injectionKeys';
 import helpMarkdown from '../help/reports.md?raw';
-
-const combinedHelp = helpMarkdown;
 
 const showPanel = inject(showPanelKey)!;
 
@@ -111,60 +110,47 @@ function markdownToHtml(md: string): string {
   return out.join('\n');
 }
 
-const html = computed(() => markdownToHtml(combinedHelp));
+const html = computed(() => markdownToHtml(helpMarkdown));
 </script>
 
 <template>
-  <div class="panel help-panel">
-    <div class="help-toolbar">
-      <h2 class="panel-title">Help</h2>
-      <button type="button" class="btn-ghost" @click="showPanel('analyzer')">Close</button>
-    </div>
-    <div class="help-body report-markdown" v-html="html" />
+  <div class="help-root">
+    <header class="help-header">
+      <n-page-header title="Help">
+        <template #extra>
+          <n-button @click="showPanel('analyzer')">Close</n-button>
+        </template>
+      </n-page-header>
+    </header>
+
+    <n-scrollbar class="help-scroll">
+      <div class="help-body report-markdown" v-html="html" />
+    </n-scrollbar>
   </div>
 </template>
 
 <style scoped>
-.help-panel {
+.help-root {
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  padding: 20px 24px 0;
 }
 
-.help-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
+.help-header {
   flex-shrink: 0;
+  padding: 20px 24px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 
-.panel-title {
-  font-size: 16px;
-  font-weight: 700;
-  margin: 0;
-}
-
-.btn-ghost {
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 4px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.btn-ghost:hover {
-  background: var(--surface-2, var(--surface));
+.help-scroll {
+  flex: 1;
+  min-height: 0;
 }
 
 .help-body {
-  flex: 1;
-  overflow-y: auto;
-  padding-bottom: 40px;
+  padding: 16px 24px 40px;
   max-width: 720px;
   line-height: 1.55;
   font-size: 14px;

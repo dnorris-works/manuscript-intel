@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import { inject, ref, watch, computed } from 'vue';
+import { inject, ref, watch, computed, h } from 'vue';
+import {
+  NPageHeader, NScrollbar, NTabs, NTabPane, NButton, NSpace, NAlert, NSpin,
+  NCard, NForm, NFormItem, NInput, NInputNumber, NSelect, NDescriptions,
+  NDescriptionsItem, NDataTable, NTag, NText, useDialog,
+} from 'naive-ui';
+import type { DataTableColumns } from 'naive-ui';
 import { storiesKey, campaignsKey } from '../../injectionKeys';
 
 const props = defineProps<{
@@ -13,6 +19,7 @@ const emit = defineEmits<{
 
 const storiesCtx = inject(storiesKey)!;
 const campaignsCtx = inject(campaignsKey)!;
+const dialog = useDialog();
 
 type DetailTab = 'overview' | 'creatives' | 'metrics' | 'spend' | 'landing' | 'audience';
 const activeTab = ref<DetailTab>('overview');
@@ -23,16 +30,15 @@ const detail = computed(() => campaignsCtx.campaignDetail.value);
 const campaign = computed(() => detail.value?.campaign);
 const storyFolder = computed(() => storiesCtx.activeFolder.value);
 
-const tabs: { id: DetailTab; label: string }[] = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'creatives', label: 'Creatives' },
-  { id: 'metrics', label: 'Metrics' },
-  { id: 'spend', label: 'Spend' },
-  { id: 'landing', label: 'Landing Page' },
-  { id: 'audience', label: 'Audience' },
+const tabs = [
+  { id: 'overview' as const, label: 'Overview' },
+  { id: 'creatives' as const, label: 'Creatives' },
+  { id: 'metrics' as const, label: 'Metrics' },
+  { id: 'spend' as const, label: 'Spend' },
+  { id: 'landing' as const, label: 'Landing Page' },
+  { id: 'audience' as const, label: 'Audience' },
 ];
 
-// Creative form
 const showCreativeForm = ref(false);
 const editingCreativeId = ref<number | null>(null);
 const crName = ref('');
@@ -44,7 +50,6 @@ const crAssetPath = ref('');
 const crBodyText = ref('');
 const crNotes = ref('');
 
-// Metrics form
 const showMetricsForm = ref(false);
 const mDate = ref('');
 const mCreativeId = ref<number | null>(null);
@@ -57,21 +62,18 @@ const mCpa = ref(0);
 const mSpend = ref(0);
 const mNotes = ref('');
 
-// Spend form
 const showSpendForm = ref(false);
 const sPlatform = ref('');
 const sAmount = ref(0);
 const sDate = ref('');
 const sNotes = ref('');
 
-// Landing page form
 const showLandingForm = ref(false);
 const lpName = ref('');
 const lpUrl = ref('');
 const lpConversion = ref<number | null>(null);
 const lpNotes = ref('');
 
-// Audience form
 const showAudienceForm = ref(false);
 const editingAudienceId = ref<number | null>(null);
 const auLabel = ref('');
@@ -80,6 +82,66 @@ const auInterests = ref('');
 const auLookalike = ref('');
 const auOutcome = ref('untested');
 const auNotes = ref('');
+
+const creativeTypeOptions = [
+  { label: 'Video', value: 'video' },
+  { label: 'Thumbnail', value: 'thumbnail' },
+  { label: 'Hook', value: 'hook' },
+  { label: 'Caption', value: 'caption' },
+  { label: 'CTA', value: 'cta' },
+];
+const creativeStatusOptions = [
+  { label: 'Draft', value: 'draft' },
+  { label: 'Live', value: 'live' },
+  { label: 'Paused', value: 'paused' },
+  { label: 'Retired', value: 'retired' },
+];
+const outcomeOptions = [
+  { label: 'Untested', value: 'untested' },
+  { label: 'Worked', value: 'worked' },
+  { label: 'Poor', value: 'poor' },
+];
+
+const creativeSelectOptions = computed(() =>
+  (detail.value?.creatives || []).map(c => ({ label: c.name, value: c.id })),
+);
+
+const snapshotColumns: DataTableColumns = [
+  { title: 'Date', key: 'snapshot_date' },
+  { title: 'Impr.', key: 'impressions' },
+  { title: 'Clicks', key: 'clicks' },
+  { title: 'CTR', key: 'ctr', render: (row) => `${row.ctr}%` },
+  { title: 'Conv.', key: 'conversions' },
+  { title: 'CPA', key: 'cpa', render: (row) => `$${row.cpa}` },
+  { title: 'Spend', key: 'spend', render: (row) => `$${row.spend}` },
+  {
+    title: '',
+    key: 'actions',
+    width: 48,
+    render: (row) => h(
+      NButton,
+      { size: 'small', quaternary: true, type: 'error', onClick: () => confirmRemoveSnapshot(row.id as number) },
+      { default: () => '×' },
+    ),
+  },
+];
+
+const spendColumns: DataTableColumns = [
+  { title: 'Date', key: 'spent_at' },
+  { title: 'Platform', key: 'platform' },
+  { title: 'Amount', key: 'amount', render: (row) => `$${(row.amount as number).toFixed(2)}` },
+  { title: 'Notes', key: 'notes' },
+  {
+    title: '',
+    key: 'actions',
+    width: 48,
+    render: (row) => h(
+      NButton,
+      { size: 'small', quaternary: true, type: 'error', onClick: () => confirmRemoveSpend(row.id as number) },
+      { default: () => '×' },
+    ),
+  },
+];
 
 async function reload(): Promise<void> {
   loading.value = true;
@@ -109,7 +171,10 @@ function resetCreativeForm(): void {
   crNotes.value = '';
 }
 
-function editCreative(c: { id: number; name: string; creative_type: string; version: string; platform_format: string; status: string; asset_path: string; body_text: string; notes: string }): void {
+function editCreative(c: {
+  id: number; name: string; creative_type: string; version: string;
+  platform_format: string; status: string; asset_path: string; body_text: string; notes: string;
+}): void {
   editingCreativeId.value = c.id;
   crName.value = c.name;
   crType.value = c.creative_type;
@@ -154,10 +219,17 @@ async function saveCreative(): Promise<void> {
   await reload();
 }
 
-async function removeCreative(id: number): Promise<void> {
-  if (!confirm('Delete this creative?')) return;
-  await campaignsCtx.deleteCreative(id);
-  await reload();
+function confirmRemoveCreative(id: number): void {
+  dialog.warning({
+    title: 'Delete creative',
+    content: 'Delete this creative?',
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      await campaignsCtx.deleteCreative(id);
+      await reload();
+    },
+  });
 }
 
 async function saveMetrics(): Promise<void> {
@@ -179,10 +251,17 @@ async function saveMetrics(): Promise<void> {
   await reload();
 }
 
-async function removeSnapshot(id: number): Promise<void> {
-  if (!confirm('Delete this snapshot?')) return;
-  await campaignsCtx.deletePerformanceSnapshot(id);
-  await reload();
+function confirmRemoveSnapshot(id: number): void {
+  dialog.warning({
+    title: 'Delete snapshot',
+    content: 'Delete this snapshot?',
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      await campaignsCtx.deletePerformanceSnapshot(id);
+      await reload();
+    },
+  });
 }
 
 async function saveSpend(): Promise<void> {
@@ -198,10 +277,17 @@ async function saveSpend(): Promise<void> {
   await reload();
 }
 
-async function removeSpend(id: number): Promise<void> {
-  if (!confirm('Delete this spend entry?')) return;
-  await campaignsCtx.deleteSpendEntry(id);
-  await reload();
+function confirmRemoveSpend(id: number): void {
+  dialog.warning({
+    title: 'Delete spend entry',
+    content: 'Delete this spend entry?',
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      await campaignsCtx.deleteSpendEntry(id);
+      await reload();
+    },
+  });
 }
 
 async function saveLanding(): Promise<void> {
@@ -213,21 +299,21 @@ async function saveLanding(): Promise<void> {
     conversion_rate: lpConversion.value,
     notes: lpNotes.value,
   });
-  if (result.success) {
+  if (result.success && campaign.value) {
     await campaignsCtx.updateCampaign({
       id: props.campaignId,
-      name: campaign.value!.name,
-      platform: campaign.value!.platform,
-      platform_account_id: campaign.value!.platform_account_id,
-      objective: campaign.value!.objective,
-      status: campaign.value!.status,
-      budget: campaign.value!.budget,
-      budget_period: campaign.value!.budget_period,
-      start_date: campaign.value!.start_date,
-      end_date: campaign.value!.end_date,
-      target_audience: campaign.value!.target_audience,
+      name: campaign.value.name,
+      platform: campaign.value.platform,
+      platform_account_id: campaign.value.platform_account_id,
+      objective: campaign.value.objective,
+      status: campaign.value.status,
+      budget: campaign.value.budget,
+      budget_period: campaign.value.budget_period,
+      start_date: campaign.value.start_date,
+      end_date: campaign.value.end_date,
+      target_audience: campaign.value.target_audience,
       landing_page_id: result.id,
-      notes: campaign.value!.notes,
+      notes: campaign.value.notes,
     });
     showLandingForm.value = false;
     await reload();
@@ -272,429 +358,314 @@ async function saveAudience(): Promise<void> {
   await reload();
 }
 
-async function removeAudience(id: number): Promise<void> {
-  if (!confirm('Delete this audience note?')) return;
-  await campaignsCtx.deleteAudienceNote(id);
-  await reload();
+function confirmRemoveAudience(id: number): void {
+  dialog.warning({
+    title: 'Delete audience note',
+    content: 'Delete this audience note?',
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      await campaignsCtx.deleteAudienceNote(id);
+      await reload();
+    },
+  });
 }
 
-async function onDeleteCampaign(): Promise<void> {
-  if (!confirm('Delete this campaign and all its data?')) return;
-  await campaignsCtx.deleteCampaign(props.campaignId);
-  if (storyFolder.value) await campaignsCtx.loadCampaigns(storyFolder.value);
-  emit('back');
+function onDeleteCampaign(): void {
+  dialog.warning({
+    title: 'Delete campaign',
+    content: 'Delete this campaign and all its data?',
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      await campaignsCtx.deleteCampaign(props.campaignId);
+      if (storyFolder.value) await campaignsCtx.loadCampaigns(storyFolder.value);
+      emit('back');
+    },
+  });
 }
 </script>
 
 <template>
-  <div class="panel campaign-detail-panel">
-    <div class="detail-header">
-      <button class="btn-back" @click="emit('back')">← Back</button>
-      <h2 class="panel-title">{{ campaign?.name || 'Campaign' }}</h2>
-      <div class="header-actions">
-        <button class="btn btn-sm btn-secondary" @click="emit('edit')">Edit</button>
-        <button class="btn btn-sm btn-danger" @click="onDeleteCampaign">Delete</button>
-      </div>
-    </div>
+  <div class="detail-root">
+    <header class="detail-header">
+      <n-page-header :title="campaign?.name || 'Campaign'">
+        <template #extra>
+          <n-space>
+            <n-button @click="emit('back')">Back</n-button>
+            <n-button @click="emit('edit')">Edit</n-button>
+            <n-button type="error" ghost @click="onDeleteCampaign">Delete</n-button>
+          </n-space>
+        </template>
+      </n-page-header>
 
-    <div v-if="loading" class="loading">Loading…</div>
-    <div v-else-if="error" class="form-error">{{ error }}</div>
-
-    <template v-else-if="campaign">
-      <div class="platform-tabs detail-tabs">
-        <button
+      <n-tabs
+        v-if="campaign"
+        v-model:value="activeTab"
+        type="card"
+        animated
+        class="detail-tabs"
+        style="padding: 0 24px;"
+      >
+        <n-tab-pane
           v-for="tab in tabs"
           :key="tab.id"
-          class="platform-tab"
-          :class="{ active: activeTab === tab.id }"
-          @click="activeTab = tab.id"
-        >{{ tab.label }}</button>
-      </div>
+          :name="tab.id"
+          :tab="tab.label"
+          :display-directive="'show'"
+        />
+      </n-tabs>
+    </header>
 
-      <!-- Overview -->
-      <div v-show="activeTab === 'overview'" class="tab-content">
-        <table class="overview-table">
-          <tbody>
-            <tr><td>Platform</td><td>{{ campaign.platform }}</td></tr>
-            <tr><td>Objective</td><td>{{ campaign.objective }}</td></tr>
-            <tr><td>Status</td><td>{{ campaign.status }}</td></tr>
-            <tr><td>Budget</td><td>{{ campaign.budget != null ? `$${campaign.budget} (${campaign.budget_period})` : '—' }}</td></tr>
-            <tr><td>Dates</td><td>{{ campaign.start_date || '—' }} – {{ campaign.end_date || '—' }}</td></tr>
-            <tr><td>Total Spend</td><td>${{ (campaign.total_spend || 0).toFixed(2) }}</td></tr>
-            <tr v-if="campaign.target_audience"><td>Audience</td><td>{{ campaign.target_audience }}</td></tr>
-            <tr v-if="detail?.landing_page"><td>Landing Page</td><td><a :href="detail.landing_page.url" target="_blank" rel="noopener">{{ detail.landing_page.name }}</a></td></tr>
-            <tr v-if="campaign.notes"><td>Notes</td><td>{{ campaign.notes }}</td></tr>
-          </tbody>
-        </table>
-      </div>
+    <n-scrollbar class="detail-scroll">
+      <div class="detail-body">
+        <n-spin v-if="loading" />
+        <n-alert v-else-if="error" type="error">{{ error }}</n-alert>
 
-      <!-- Creatives -->
-      <div v-show="activeTab === 'creatives'" class="tab-content">
-        <div class="tab-toolbar">
-          <button class="btn btn-sm" @click="showCreativeForm = true; editingCreativeId = null">+ Add Creative</button>
-        </div>
-        <div v-if="showCreativeForm" class="inline-form">
-          <input v-model="crName" placeholder="Name" />
-          <select v-model="crType">
-            <option value="video">Video</option>
-            <option value="thumbnail">Thumbnail</option>
-            <option value="hook">Hook</option>
-            <option value="caption">Caption</option>
-            <option value="cta">CTA</option>
-          </select>
-          <input v-model="crVersion" placeholder="Version (v1)" />
-          <input v-model="crFormat" placeholder="Platform format" />
-          <select v-model="crStatus">
-            <option value="draft">Draft</option>
-            <option value="live">Live</option>
-            <option value="paused">Paused</option>
-            <option value="retired">Retired</option>
-          </select>
-          <input v-model="crAssetPath" placeholder="Asset file path" />
-          <textarea v-model="crBodyText" placeholder="Copy / caption / CTA text" rows="2" />
-          <div class="inline-form-actions">
-            <button class="btn btn-sm" @click="saveCreative">Save</button>
-            <button class="btn btn-sm btn-secondary" @click="resetCreativeForm">Cancel</button>
+        <template v-else-if="campaign">
+          <div v-if="activeTab === 'overview'">
+            <n-descriptions :column="1" label-placement="left" bordered size="small">
+              <n-descriptions-item label="Platform">{{ campaign.platform }}</n-descriptions-item>
+              <n-descriptions-item label="Objective">{{ campaign.objective }}</n-descriptions-item>
+              <n-descriptions-item label="Status">{{ campaign.status }}</n-descriptions-item>
+              <n-descriptions-item label="Budget">
+                {{ campaign.budget != null ? `$${campaign.budget} (${campaign.budget_period})` : '—' }}
+              </n-descriptions-item>
+              <n-descriptions-item label="Dates">
+                {{ campaign.start_date || '—' }} – {{ campaign.end_date || '—' }}
+              </n-descriptions-item>
+              <n-descriptions-item label="Total Spend">
+                ${{ (campaign.total_spend || 0).toFixed(2) }}
+              </n-descriptions-item>
+              <n-descriptions-item v-if="campaign.target_audience" label="Audience">
+                {{ campaign.target_audience }}
+              </n-descriptions-item>
+              <n-descriptions-item v-if="detail?.landing_page" label="Landing Page">
+                <a :href="detail.landing_page.url" target="_blank" rel="noopener">
+                  {{ detail.landing_page.name }}
+                </a>
+              </n-descriptions-item>
+              <n-descriptions-item v-if="campaign.notes" label="Notes">
+                {{ campaign.notes }}
+              </n-descriptions-item>
+            </n-descriptions>
           </div>
-        </div>
-        <div v-if="!detail?.creatives.length" class="empty-hint">No creatives yet.</div>
-        <div v-for="c in detail?.creatives" :key="c.id" class="list-card">
-          <div class="list-card-header">
-            <strong>{{ c.name }}</strong>
-            <span class="badge">{{ c.status }}</span>
-          </div>
-          <div class="list-card-meta">{{ c.creative_type }} · {{ c.version }} · {{ c.platform_format }}</div>
-          <p v-if="c.body_text" class="list-card-body">{{ c.body_text }}</p>
-          <div class="list-card-actions">
-            <button class="btn btn-sm btn-secondary" @click="editCreative(c)">Edit</button>
-            <button class="btn btn-sm btn-danger" @click="removeCreative(c.id)">Delete</button>
-          </div>
-        </div>
-      </div>
 
-      <!-- Metrics -->
-      <div v-show="activeTab === 'metrics'" class="tab-content">
-        <div class="tab-toolbar">
-          <button class="btn btn-sm" @click="showMetricsForm = true">+ Log Snapshot</button>
-        </div>
-        <div v-if="showMetricsForm" class="inline-form">
-          <input v-model="mDate" type="date" />
-          <select v-model="mCreativeId">
-            <option :value="null">Campaign-level</option>
-            <option v-for="c in detail?.creatives" :key="c.id" :value="c.id">{{ c.name }}</option>
-          </select>
-          <input v-model.number="mImpressions" type="number" placeholder="Impressions" />
-          <input v-model.number="mClicks" type="number" placeholder="Clicks" />
-          <input v-model.number="mConversions" type="number" placeholder="Conversions" />
-          <input v-model.number="mCtr" type="number" step="0.01" placeholder="CTR %" />
-          <input v-model.number="mCpc" type="number" step="0.01" placeholder="CPC" />
-          <input v-model.number="mCpa" type="number" step="0.01" placeholder="CPA" />
-          <input v-model.number="mSpend" type="number" step="0.01" placeholder="Spend" />
-          <div class="inline-form-actions">
-            <button class="btn btn-sm" @click="saveMetrics">Save</button>
-            <button class="btn btn-sm btn-secondary" @click="showMetricsForm = false">Cancel</button>
-          </div>
-        </div>
-        <table v-if="detail?.snapshots.length" class="data-table">
-          <thead>
-            <tr><th>Date</th><th>Impr.</th><th>Clicks</th><th>CTR</th><th>Conv.</th><th>CPA</th><th>Spend</th><th></th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="s in detail.snapshots" :key="s.id">
-              <td>{{ s.snapshot_date }}</td>
-              <td>{{ s.impressions }}</td>
-              <td>{{ s.clicks }}</td>
-              <td>{{ s.ctr }}%</td>
-              <td>{{ s.conversions }}</td>
-              <td>${{ s.cpa }}</td>
-              <td>${{ s.spend }}</td>
-              <td><button class="btn-icon" @click="removeSnapshot(s.id)">×</button></td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-else class="empty-hint">No metrics logged yet. Add a weekly snapshot.</div>
-      </div>
+          <div v-else-if="activeTab === 'creatives'">
+            <n-space style="margin-bottom: 12px;">
+              <n-button size="small" type="primary" @click="showCreativeForm = true; editingCreativeId = null">
+                Add Creative
+              </n-button>
+            </n-space>
 
-      <!-- Spend -->
-      <div v-show="activeTab === 'spend'" class="tab-content">
-        <div class="tab-toolbar">
-          <button class="btn btn-sm" @click="showSpendForm = true">+ Log Spend</button>
-        </div>
-        <div v-if="showSpendForm" class="inline-form">
-          <input v-model="sPlatform" :placeholder="campaign.platform" />
-          <input v-model.number="sAmount" type="number" step="0.01" placeholder="Amount" />
-          <input v-model="sDate" type="date" />
-          <input v-model="sNotes" placeholder="Notes" />
-          <div class="inline-form-actions">
-            <button class="btn btn-sm" @click="saveSpend">Save</button>
-            <button class="btn btn-sm btn-secondary" @click="showSpendForm = false">Cancel</button>
-          </div>
-        </div>
-        <table v-if="detail?.spend_entries.length" class="data-table">
-          <thead><tr><th>Date</th><th>Platform</th><th>Amount</th><th>Notes</th><th></th></tr></thead>
-          <tbody>
-            <tr v-for="e in detail.spend_entries" :key="e.id">
-              <td>{{ e.spent_at }}</td>
-              <td>{{ e.platform }}</td>
-              <td>${{ e.amount.toFixed(2) }}</td>
-              <td>{{ e.notes }}</td>
-              <td><button class="btn-icon" @click="removeSpend(e.id)">×</button></td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-else class="empty-hint">No spend logged yet.</div>
-      </div>
+            <n-card v-if="showCreativeForm" size="small" style="margin-bottom: 12px;">
+              <n-form label-placement="top">
+                <n-form-item label="Name"><n-input v-model:value="crName" placeholder="Name" /></n-form-item>
+                <n-form-item label="Type"><n-select v-model:value="crType" :options="creativeTypeOptions" /></n-form-item>
+                <n-form-item label="Version"><n-input v-model:value="crVersion" placeholder="v1" /></n-form-item>
+                <n-form-item label="Format"><n-input v-model:value="crFormat" placeholder="Platform format" /></n-form-item>
+                <n-form-item label="Status"><n-select v-model:value="crStatus" :options="creativeStatusOptions" /></n-form-item>
+                <n-form-item label="Asset path"><n-input v-model:value="crAssetPath" placeholder="Asset file path" /></n-form-item>
+                <n-form-item label="Copy"><n-input v-model:value="crBodyText" type="textarea" :rows="2" placeholder="Copy / caption / CTA text" /></n-form-item>
+              </n-form>
+              <n-space>
+                <n-button size="small" type="primary" @click="saveCreative">Save</n-button>
+                <n-button size="small" @click="resetCreativeForm">Cancel</n-button>
+              </n-space>
+            </n-card>
 
-      <!-- Landing Page -->
-      <div v-show="activeTab === 'landing'" class="tab-content">
-        <div v-if="detail?.landing_page" class="list-card">
-          <strong>{{ detail.landing_page.name }}</strong>
-          <p><a :href="detail.landing_page.url" target="_blank" rel="noopener">{{ detail.landing_page.url }}</a></p>
-          <p v-if="detail.landing_page.conversion_rate != null">Conversion: {{ detail.landing_page.conversion_rate }}%</p>
-          <p v-if="detail.landing_page.notes">{{ detail.landing_page.notes }}</p>
-        </div>
-        <div v-else>
-          <p class="empty-hint">No landing page linked.</p>
-          <button class="btn btn-sm" @click="showLandingForm = true">+ Create &amp; Link</button>
-        </div>
-        <div v-if="showLandingForm" class="inline-form">
-          <input v-model="lpName" placeholder="Page name" />
-          <input v-model="lpUrl" placeholder="https://…" />
-          <input v-model.number="lpConversion" type="number" step="0.1" placeholder="Conversion %" />
-          <textarea v-model="lpNotes" placeholder="Notes" rows="2" />
-          <div class="inline-form-actions">
-            <button class="btn btn-sm" @click="saveLanding">Save &amp; Link</button>
-            <button class="btn btn-sm btn-secondary" @click="showLandingForm = false">Cancel</button>
+            <n-text v-if="!detail?.creatives.length" depth="3">No creatives yet.</n-text>
+            <n-space v-else vertical :size="8">
+              <n-card v-for="c in detail.creatives" :key="c.id" size="small">
+                <n-space justify="space-between">
+                  <n-text strong>{{ c.name }}</n-text>
+                  <n-tag size="small">{{ c.status }}</n-tag>
+                </n-space>
+                <n-text depth="3" style="display: block; font-size: 12px; margin-top: 4px;">
+                  {{ c.creative_type }} · {{ c.version }} · {{ c.platform_format }}
+                </n-text>
+                <n-text v-if="c.body_text" depth="3" style="display: block; font-size: 12px; margin-top: 4px;">
+                  {{ c.body_text }}
+                </n-text>
+                <n-space style="margin-top: 8px;">
+                  <n-button size="small" @click="editCreative(c)">Edit</n-button>
+                  <n-button size="small" type="error" ghost @click="confirmRemoveCreative(c.id)">Delete</n-button>
+                </n-space>
+              </n-card>
+            </n-space>
           </div>
-        </div>
-      </div>
 
-      <!-- Audience -->
-      <div v-show="activeTab === 'audience'" class="tab-content">
-        <div class="tab-toolbar">
-          <button class="btn btn-sm" @click="showAudienceForm = true; editingAudienceId = null">+ Add Note</button>
-        </div>
-        <div v-if="showAudienceForm" class="inline-form">
-          <input v-model="auLabel" placeholder="Label (e.g. Lookalike 1%)" />
-          <textarea v-model="auDemographics" placeholder="Demographics" rows="2" />
-          <textarea v-model="auInterests" placeholder="Interests" rows="2" />
-          <textarea v-model="auLookalike" placeholder="Lookalike notes" rows="2" />
-          <select v-model="auOutcome">
-            <option value="untested">Untested</option>
-            <option value="worked">Worked</option>
-            <option value="poor">Poor</option>
-          </select>
-          <textarea v-model="auNotes" placeholder="Notes" rows="2" />
-          <div class="inline-form-actions">
-            <button class="btn btn-sm" @click="saveAudience">Save</button>
-            <button class="btn btn-sm btn-secondary" @click="resetAudienceForm">Cancel</button>
+          <div v-else-if="activeTab === 'metrics'">
+            <n-space style="margin-bottom: 12px;">
+              <n-button size="small" type="primary" @click="showMetricsForm = true">Log Snapshot</n-button>
+            </n-space>
+
+            <n-card v-if="showMetricsForm" size="small" style="margin-bottom: 12px;">
+              <n-form label-placement="top">
+                <n-form-item label="Date"><n-input v-model:value="mDate" placeholder="YYYY-MM-DD" /></n-form-item>
+                <n-form-item label="Creative"><n-select v-model:value="mCreativeId" clearable :options="creativeSelectOptions" placeholder="Campaign-level" /></n-form-item>
+                <n-space>
+                  <n-form-item label="Impressions"><n-input-number v-model:value="mImpressions" :min="0" style="width: 120px;" /></n-form-item>
+                  <n-form-item label="Clicks"><n-input-number v-model:value="mClicks" :min="0" style="width: 120px;" /></n-form-item>
+                  <n-form-item label="Conversions"><n-input-number v-model:value="mConversions" :min="0" style="width: 120px;" /></n-form-item>
+                </n-space>
+                <n-space>
+                  <n-form-item label="CTR %"><n-input-number v-model:value="mCtr" :step="0.01" style="width: 100px;" /></n-form-item>
+                  <n-form-item label="CPC"><n-input-number v-model:value="mCpc" :step="0.01" style="width: 100px;" /></n-form-item>
+                  <n-form-item label="CPA"><n-input-number v-model:value="mCpa" :step="0.01" style="width: 100px;" /></n-form-item>
+                  <n-form-item label="Spend"><n-input-number v-model:value="mSpend" :step="0.01" style="width: 100px;" /></n-form-item>
+                </n-space>
+              </n-form>
+              <n-space>
+                <n-button size="small" type="primary" @click="saveMetrics">Save</n-button>
+                <n-button size="small" @click="showMetricsForm = false">Cancel</n-button>
+              </n-space>
+            </n-card>
+
+            <n-data-table
+              v-if="detail?.snapshots.length"
+              :columns="snapshotColumns"
+              :data="detail.snapshots"
+              :bordered="false"
+              size="small"
+            />
+            <n-text v-else depth="3">No metrics logged yet. Add a weekly snapshot.</n-text>
           </div>
-        </div>
-        <div v-if="!detail?.audience_notes.length" class="empty-hint">No audience tests recorded.</div>
-        <div v-for="n in detail?.audience_notes" :key="n.id" class="list-card">
-          <div class="list-card-header">
-            <strong>{{ n.label || 'Untitled' }}</strong>
-            <span class="badge">{{ n.outcome }}</span>
+
+          <div v-else-if="activeTab === 'spend'">
+            <n-space style="margin-bottom: 12px;">
+              <n-button size="small" type="primary" @click="showSpendForm = true">Log Spend</n-button>
+            </n-space>
+
+            <n-card v-if="showSpendForm" size="small" style="margin-bottom: 12px;">
+              <n-form label-placement="top">
+                <n-form-item label="Platform"><n-input v-model:value="sPlatform" :placeholder="campaign.platform" /></n-form-item>
+                <n-form-item label="Amount"><n-input-number v-model:value="sAmount" :min="0" :step="0.01" /></n-form-item>
+                <n-form-item label="Date"><n-input v-model:value="sDate" placeholder="YYYY-MM-DD" /></n-form-item>
+                <n-form-item label="Notes"><n-input v-model:value="sNotes" placeholder="Notes" /></n-form-item>
+              </n-form>
+              <n-space>
+                <n-button size="small" type="primary" @click="saveSpend">Save</n-button>
+                <n-button size="small" @click="showSpendForm = false">Cancel</n-button>
+              </n-space>
+            </n-card>
+
+            <n-data-table
+              v-if="detail?.spend_entries.length"
+              :columns="spendColumns"
+              :data="detail.spend_entries"
+              :bordered="false"
+              size="small"
+            />
+            <n-text v-else depth="3">No spend logged yet.</n-text>
           </div>
-          <p v-if="n.demographics"><em>Demographics:</em> {{ n.demographics }}</p>
-          <p v-if="n.interests"><em>Interests:</em> {{ n.interests }}</p>
-          <p v-if="n.lookalike_notes"><em>Lookalikes:</em> {{ n.lookalike_notes }}</p>
-          <div class="list-card-actions">
-            <button class="btn btn-sm btn-danger" @click="removeAudience(n.id)">Delete</button>
+
+          <div v-else-if="activeTab === 'landing'">
+            <n-card v-if="detail?.landing_page" size="small" style="margin-bottom: 12px;">
+              <n-text strong>{{ detail.landing_page.name }}</n-text>
+              <p><a :href="detail.landing_page.url" target="_blank" rel="noopener">{{ detail.landing_page.url }}</a></p>
+              <n-text v-if="detail.landing_page.conversion_rate != null" depth="3">
+                Conversion: {{ detail.landing_page.conversion_rate }}%
+              </n-text>
+              <n-text v-if="detail.landing_page.notes" depth="3" style="display: block; margin-top: 4px;">
+                {{ detail.landing_page.notes }}
+              </n-text>
+            </n-card>
+            <template v-else>
+              <n-text depth="3" style="display: block; margin-bottom: 12px;">No landing page linked.</n-text>
+              <n-button size="small" type="primary" @click="showLandingForm = true">Create & Link</n-button>
+            </template>
+
+            <n-card v-if="showLandingForm" size="small" style="margin-top: 12px;">
+              <n-form label-placement="top">
+                <n-form-item label="Name"><n-input v-model:value="lpName" placeholder="Page name" /></n-form-item>
+                <n-form-item label="URL"><n-input v-model:value="lpUrl" placeholder="https://…" /></n-form-item>
+                <n-form-item label="Conversion %"><n-input-number v-model:value="lpConversion" :step="0.1" /></n-form-item>
+                <n-form-item label="Notes"><n-input v-model:value="lpNotes" type="textarea" :rows="2" /></n-form-item>
+              </n-form>
+              <n-space>
+                <n-button size="small" type="primary" @click="saveLanding">Save & Link</n-button>
+                <n-button size="small" @click="showLandingForm = false">Cancel</n-button>
+              </n-space>
+            </n-card>
           </div>
-        </div>
+
+          <div v-else-if="activeTab === 'audience'">
+            <n-space style="margin-bottom: 12px;">
+              <n-button size="small" type="primary" @click="showAudienceForm = true; editingAudienceId = null">
+                Add Note
+              </n-button>
+            </n-space>
+
+            <n-card v-if="showAudienceForm" size="small" style="margin-bottom: 12px;">
+              <n-form label-placement="top">
+                <n-form-item label="Label"><n-input v-model:value="auLabel" placeholder="e.g. Lookalike 1%" /></n-form-item>
+                <n-form-item label="Demographics"><n-input v-model:value="auDemographics" type="textarea" :rows="2" /></n-form-item>
+                <n-form-item label="Interests"><n-input v-model:value="auInterests" type="textarea" :rows="2" /></n-form-item>
+                <n-form-item label="Lookalike notes"><n-input v-model:value="auLookalike" type="textarea" :rows="2" /></n-form-item>
+                <n-form-item label="Outcome"><n-select v-model:value="auOutcome" :options="outcomeOptions" /></n-form-item>
+                <n-form-item label="Notes"><n-input v-model:value="auNotes" type="textarea" :rows="2" /></n-form-item>
+              </n-form>
+              <n-space>
+                <n-button size="small" type="primary" @click="saveAudience">Save</n-button>
+                <n-button size="small" @click="resetAudienceForm">Cancel</n-button>
+              </n-space>
+            </n-card>
+
+            <n-text v-if="!detail?.audience_notes.length" depth="3">No audience tests recorded.</n-text>
+            <n-space v-else vertical :size="8">
+              <n-card v-for="n in detail.audience_notes" :key="n.id" size="small">
+                <n-space justify="space-between">
+                  <n-text strong>{{ n.label || 'Untitled' }}</n-text>
+                  <n-tag size="small">{{ n.outcome }}</n-tag>
+                </n-space>
+                <n-text v-if="n.demographics" depth="3" style="display: block; margin-top: 4px; font-size: 12px;">
+                  Demographics: {{ n.demographics }}
+                </n-text>
+                <n-text v-if="n.interests" depth="3" style="display: block; font-size: 12px;">
+                  Interests: {{ n.interests }}
+                </n-text>
+                <n-text v-if="n.lookalike_notes" depth="3" style="display: block; font-size: 12px;">
+                  Lookalikes: {{ n.lookalike_notes }}
+                </n-text>
+                <n-button size="small" type="error" ghost style="margin-top: 8px;" @click="confirmRemoveAudience(n.id)">
+                  Delete
+                </n-button>
+              </n-card>
+            </n-space>
+          </div>
+        </template>
       </div>
-    </template>
+    </n-scrollbar>
   </div>
 </template>
 
 <style scoped>
-.campaign-detail-panel {
-  padding: clamp(14px, 2vw, 24px);
-  overflow-y: auto;
+.detail-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }
 
 .detail-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
+  flex-shrink: 0;
+  padding: 20px 24px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 
-.panel-title {
+.detail-tabs :deep(.n-tabs-pane-wrapper) {
+  display: none;
+}
+
+.detail-scroll {
   flex: 1;
-  font-size: 16px;
-  font-weight: 700;
-  margin: 0;
+  min-height: 0;
 }
 
-.header-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.btn-back {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 13px;
-  padding: 4px 0;
-}
-
-.btn-back:hover { color: var(--accent); }
-
-.detail-tabs {
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
-
-.tab-content {
+.detail-body {
+  padding: 16px 24px 24px;
   max-width: 720px;
 }
-
-.tab-toolbar {
-  margin-bottom: 12px;
-}
-
-.overview-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.overview-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-}
-
-.overview-table td:first-child {
-  color: var(--text-muted);
-  width: 140px;
-}
-
-.inline-form {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  margin-bottom: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface2);
-}
-
-.inline-form input,
-.inline-form select,
-.inline-form textarea {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 13px;
-  padding: 6px 8px;
-}
-
-.inline-form-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.list-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  margin-bottom: 8px;
-}
-
-.list-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 4px;
-}
-
-.list-card-meta {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
-
-.list-card-body {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin: 4px 0;
-}
-
-.list-card-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.badge {
-  font-size: 10px;
-  text-transform: uppercase;
-  padding: 2px 6px;
-  border-radius: 8px;
-  background: var(--surface2);
-  color: var(--text-muted);
-}
-
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.data-table th,
-.data-table td {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-  text-align: left;
-}
-
-.data-table th {
-  color: var(--text-muted);
-  font-weight: 600;
-}
-
-.btn-icon {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 16px;
-}
-
-.btn-icon:hover { color: #c0392b; }
-
-.empty-hint {
-  color: var(--text-muted);
-  font-size: 13px;
-  margin-bottom: 12px;
-}
-
-.loading { color: var(--text-muted); font-size: 13px; }
-.form-error { color: var(--danger); font-size: 12px; }
-
-.btn {
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 18px;
-}
-
-.btn:hover { background: var(--accent-dim); }
-.btn-sm { padding: 6px 12px; font-size: 12px; }
-.btn-secondary {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-}
-.btn-danger { background: #c0392b; color: #fff; }
 </style>

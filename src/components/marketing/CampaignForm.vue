@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { inject, ref, watch, computed } from 'vue';
+import {
+  NForm, NFormItem, NInput, NInputNumber, NSelect, NButton, NSpace, NAlert,
+} from 'naive-ui';
 import { storiesKey, campaignsKey } from '../../injectionKeys';
+import FormPanelShell from '../FormPanelShell.vue';
 
 const props = defineProps<{
   campaignId: number | null;
@@ -31,10 +35,33 @@ const saving = ref(false);
 
 const isEditing = computed(() => props.campaignId != null && props.campaignId > 0);
 const storyFolder = computed(() => storiesCtx.activeFolder.value);
+const panelTitle = computed(() => (isEditing.value ? 'Edit Campaign' : 'New Campaign'));
 
 const PLATFORMS = ['meta', 'amazon', 'tiktok', 'google', 'bookbub', 'other'];
 const OBJECTIVES = ['awareness', 'conversion', 'traffic', 'engagement'];
 const STATUSES = ['draft', 'active', 'paused', 'archived'];
+
+const platformOptions = PLATFORMS.map(p => ({ label: p, value: p }));
+const objectiveOptions = OBJECTIVES.map(o => ({ label: o, value: o }));
+const statusOptions = STATUSES.map(s => ({ label: s, value: s }));
+const budgetPeriodOptions = [
+  { label: 'Daily', value: 'daily' },
+  { label: 'Lifetime', value: 'lifetime' },
+];
+
+const platformAccountOptions = computed(() =>
+  campaignsCtx.platformAccounts.value.map(a => ({
+    label: `${a.platform} — ${a.account_id || 'no ID'}`,
+    value: a.id,
+  })),
+);
+
+const landingPageOptions = computed(() =>
+  campaignsCtx.landingPages.value.map(lp => ({
+    label: `${lp.name} — ${lp.url}`,
+    value: lp.id,
+  })),
+);
 
 watch(() => props.campaignId, async (id) => {
   error.value = '';
@@ -127,149 +154,70 @@ async function onSave(): Promise<void> {
 </script>
 
 <template>
-  <div class="panel campaign-form-panel">
-    <h2 class="panel-title">{{ isEditing ? 'Edit Campaign' : 'New Campaign' }}</h2>
+  <FormPanelShell :title="panelTitle">
+    <n-form label-placement="top">
+      <n-form-item label="Name">
+        <n-input v-model:value="name" placeholder="e.g. Book 1 Launch — Meta" />
+      </n-form-item>
 
-    <div class="form-grid">
-      <label>Name</label>
-      <input v-model="name" type="text" placeholder="e.g. Book 1 Launch — Meta" />
+      <n-form-item label="Platform">
+        <n-select v-model:value="platform" :options="platformOptions" />
+      </n-form-item>
 
-      <label>Platform</label>
-      <select v-model="platform">
-        <option v-for="p in PLATFORMS" :key="p" :value="p">{{ p }}</option>
-      </select>
+      <n-form-item label="Objective">
+        <n-select v-model:value="objective" :options="objectiveOptions" />
+      </n-form-item>
 
-      <label>Objective</label>
-      <select v-model="objective">
-        <option v-for="o in OBJECTIVES" :key="o" :value="o">{{ o }}</option>
-      </select>
+      <n-form-item label="Status">
+        <n-select v-model:value="status" :options="statusOptions" />
+      </n-form-item>
 
-      <label>Status</label>
-      <select v-model="status">
-        <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
-      </select>
+      <n-form-item label="Platform Account">
+        <n-select v-model:value="platformAccountId" clearable :options="platformAccountOptions" />
+      </n-form-item>
 
-      <label>Platform Account</label>
-      <select v-model="platformAccountId">
-        <option :value="null">(None)</option>
-        <option v-for="a in campaignsCtx.platformAccounts.value" :key="a.id" :value="a.id">
-          {{ a.platform }} — {{ a.account_id || 'no ID' }}
-        </option>
-      </select>
+      <n-form-item label="Budget">
+        <n-space>
+          <n-input-number v-model:value="budget" :min="0" :step="0.01" placeholder="0.00" style="width: 160px;" />
+          <n-select v-model:value="budgetPeriod" :options="budgetPeriodOptions" style="width: 140px;" />
+        </n-space>
+      </n-form-item>
 
-      <label>Budget</label>
-      <div class="budget-row">
-        <input v-model.number="budget" type="number" min="0" step="0.01" placeholder="0.00" />
-        <select v-model="budgetPeriod">
-          <option value="daily">Daily</option>
-          <option value="lifetime">Lifetime</option>
-        </select>
-      </div>
+      <n-form-item label="Start Date">
+        <n-input v-model:value="startDate" placeholder="YYYY-MM-DD" />
+      </n-form-item>
 
-      <label>Start Date</label>
-      <input v-model="startDate" type="date" />
+      <n-form-item label="End Date">
+        <n-input v-model:value="endDate" placeholder="YYYY-MM-DD" />
+      </n-form-item>
 
-      <label>End Date</label>
-      <input v-model="endDate" type="date" />
+      <n-form-item label="Landing Page">
+        <n-select v-model:value="landingPageId" clearable :options="landingPageOptions" />
+      </n-form-item>
 
-      <label>Landing Page</label>
-      <select v-model="landingPageId">
-        <option :value="null">(None)</option>
-        <option v-for="lp in campaignsCtx.landingPages.value" :key="lp.id" :value="lp.id">
-          {{ lp.name }} — {{ lp.url }}
-        </option>
-      </select>
+      <n-form-item label="Target Audience">
+        <n-input
+          v-model:value="targetAudience"
+          type="textarea"
+          :rows="3"
+          placeholder="Demographics, interests, lookalikes…"
+        />
+      </n-form-item>
 
-      <label>Target Audience</label>
-      <textarea v-model="targetAudience" rows="3" placeholder="Demographics, interests, lookalikes…" />
+      <n-form-item label="Notes">
+        <n-input v-model:value="notes" type="textarea" :rows="2" />
+      </n-form-item>
+    </n-form>
 
-      <label>Notes</label>
-      <textarea v-model="notes" rows="2" />
-    </div>
+    <n-alert v-if="error" type="error" :show-icon="false" style="margin-top: 8px;">
+      {{ error }}
+    </n-alert>
 
-    <div v-if="error" class="form-error">{{ error }}</div>
-
-    <div class="form-actions">
-      <button class="btn" :disabled="saving" @click="onSave">Save</button>
-      <button class="btn btn-secondary" @click="emit('cancel')">Cancel</button>
-    </div>
-  </div>
+    <template #footer>
+      <n-space>
+        <n-button type="primary" :loading="saving" @click="onSave">Save</n-button>
+        <n-button @click="emit('cancel')">Cancel</n-button>
+      </n-space>
+    </template>
+  </FormPanelShell>
 </template>
-
-<style scoped>
-.campaign-form-panel {
-  padding: 20px;
-  max-width: 520px;
-  overflow-y: auto;
-}
-
-.panel-title {
-  font-size: 16px;
-  font-weight: 700;
-  margin-bottom: 16px;
-}
-
-.form-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.form-grid label {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.form-grid input,
-.form-grid select,
-.form-grid textarea {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 13px;
-  padding: 8px 10px;
-  width: 100%;
-}
-
-.budget-row {
-  display: flex;
-  gap: 8px;
-}
-
-.budget-row input { flex: 1; }
-.budget-row select { width: auto; }
-
-.form-error {
-  color: var(--danger);
-  font-size: 12px;
-  margin-top: 10px;
-}
-
-.form-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.btn {
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 18px;
-}
-
-.btn:hover { background: var(--accent-dim); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-secondary {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-}
-</style>

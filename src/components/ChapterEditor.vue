@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount, nextTick, computed } from 'vue';
+import { NButton, NButtonGroup, NText } from 'naive-ui';
 import { useEditor, EditorContent } from '@tiptap/vue-3';
 import StarterKit from '@tiptap/starter-kit';
 import Highlight from '@tiptap/extension-highlight';
@@ -253,31 +254,29 @@ onBeforeUnmount(() => {
 <template>
   <div class="chapter-editor">
     <div v-if="editor" class="editor-toolbar">
-      <div class="toolbar-group">
-        <button type="button" class="tb-btn" title="Bold" :class="{ active: editor.isActive('bold') }" @click="runFormat(() => editor!.chain().focus().toggleBold().run())"><b>B</b></button>
-        <button type="button" class="tb-btn" title="Italic" :class="{ active: editor.isActive('italic') }" @click="runFormat(() => editor!.chain().focus().toggleItalic().run())"><i>I</i></button>
-        <button type="button" class="tb-btn" title="Strikethrough" :class="{ active: editor.isActive('strike') }" @click="runFormat(() => editor!.chain().focus().toggleStrike().run())"><s>S</s></button>
-      </div>
-      <div class="toolbar-group">
-        <button type="button" class="tb-btn" title="Heading 1" :class="{ active: editor.isActive('heading', { level: 1 }) }" @click="runFormat(() => editor!.chain().focus().toggleHeading({ level: 1 }).run())">H1</button>
-        <button type="button" class="tb-btn" title="Heading 2" :class="{ active: editor.isActive('heading', { level: 2 }) }" @click="runFormat(() => editor!.chain().focus().toggleHeading({ level: 2 }).run())">H2</button>
-        <button type="button" class="tb-btn" title="Heading 3" :class="{ active: editor.isActive('heading', { level: 3 }) }" @click="runFormat(() => editor!.chain().focus().toggleHeading({ level: 3 }).run())">H3</button>
-      </div>
-      <div class="toolbar-group">
-        <button type="button" class="tb-btn" title="Bullet list" :class="{ active: editor.isActive('bulletList') }" @click="runFormat(() => editor!.chain().focus().toggleBulletList().run())">• List</button>
-        <button type="button" class="tb-btn" title="Numbered list" :class="{ active: editor.isActive('orderedList') }" @click="runFormat(() => editor!.chain().focus().toggleOrderedList().run())">1. List</button>
-        <button type="button" class="tb-btn" title="Quote" :class="{ active: editor.isActive('blockquote') }" @click="runFormat(() => editor!.chain().focus().toggleBlockquote().run())">“”</button>
-        <button type="button" class="tb-btn" title="Horizontal rule" @click="runFormat(() => editor!.chain().focus().setHorizontalRule().run())">―</button>
-      </div>
-      <div class="toolbar-group">
-        <button type="button" class="tb-btn" title="Undo" @click="editor.chain().focus().undo().run()">↶</button>
-        <button type="button" class="tb-btn" title="Redo" @click="editor.chain().focus().redo().run()">↷</button>
-      </div>
-      <div class="toolbar-status">
-        <span v-if="saving" class="status-saving">Saving...</span>
-        <span v-else-if="saveStatus" class="status-saved">{{ saveStatus }}</span>
-        <span v-else-if="dirty" class="status-dirty">Unsaved</span>
-      </div>
+      <n-button-group size="small">
+        <n-button :type="editor.isActive('bold') ? 'primary' : 'default'" title="Bold" @click="runFormat(() => editor!.chain().focus().toggleBold().run())"><b>B</b></n-button>
+        <n-button :type="editor.isActive('italic') ? 'primary' : 'default'" title="Italic" @click="runFormat(() => editor!.chain().focus().toggleItalic().run())"><i>I</i></n-button>
+        <n-button :type="editor.isActive('strike') ? 'primary' : 'default'" title="Strikethrough" @click="runFormat(() => editor!.chain().focus().toggleStrike().run())"><s>S</s></n-button>
+      </n-button-group>
+      <n-button-group size="small">
+        <n-button :type="editor.isActive('heading', { level: 1 }) ? 'primary' : 'default'" @click="runFormat(() => editor!.chain().focus().toggleHeading({ level: 1 }).run())">H1</n-button>
+        <n-button :type="editor.isActive('heading', { level: 2 }) ? 'primary' : 'default'" @click="runFormat(() => editor!.chain().focus().toggleHeading({ level: 2 }).run())">H2</n-button>
+        <n-button :type="editor.isActive('heading', { level: 3 }) ? 'primary' : 'default'" @click="runFormat(() => editor!.chain().focus().toggleHeading({ level: 3 }).run())">H3</n-button>
+      </n-button-group>
+      <n-button-group size="small">
+        <n-button :type="editor.isActive('bulletList') ? 'primary' : 'default'" @click="runFormat(() => editor!.chain().focus().toggleBulletList().run())">• List</n-button>
+        <n-button :type="editor.isActive('orderedList') ? 'primary' : 'default'" @click="runFormat(() => editor!.chain().focus().toggleOrderedList().run())">1. List</n-button>
+        <n-button :type="editor.isActive('blockquote') ? 'primary' : 'default'" @click="runFormat(() => editor!.chain().focus().toggleBlockquote().run())">Quote</n-button>
+        <n-button @click="runFormat(() => editor!.chain().focus().setHorizontalRule().run())">―</n-button>
+      </n-button-group>
+      <n-button-group size="small">
+        <n-button @click="editor.chain().focus().undo().run()">↶</n-button>
+        <n-button @click="editor.chain().focus().redo().run()">↷</n-button>
+      </n-button-group>
+      <n-text v-if="saving" depth="3" style="margin-left: auto; font-size: 11px;">Saving...</n-text>
+      <n-text v-else-if="saveStatus" depth="3" style="margin-left: auto; font-size: 11px;">{{ saveStatus }}</n-text>
+      <n-text v-else-if="dirty" depth="3" type="warning" style="margin-left: auto; font-size: 11px;">Unsaved</n-text>
     </div>
     <EditorContent :editor="editor" class="editor-wrapper" />
   </div>

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, inject } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import {
+  NPageHeader, NButton, NSpace, NTag, NAlert, NInput, NSpin, useDialog, useMessage,
+} from 'naive-ui';
 import { useSettings } from '../composables/useSettings';
 import { formatMarkdown } from '../formatMarkdown';
 import ChapterEditor from './ChapterEditor.vue';
@@ -20,6 +23,8 @@ const emit = defineEmits<{
 
 const settings = useSettings();
 const bumpFileTree = inject<() => void>('bumpFileTree', () => {});
+const dialog = useDialog();
+const message = useMessage();
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -149,50 +154,53 @@ function onClose(): void {
   emit('close');
 }
 
-async function onDelete(): Promise<void> {
+function onDelete(): void {
   const path = finding.value?.filePath;
   if (!path || !props.storyFolder) return;
   const name = finding.value?.chapterTitle || 'this document';
-  if (!confirm(`Delete “${name}”? This cannot be undone.`)) return;
-
-  deleting.value = true;
-  try {
-    await invoke<void>('delete_story_document', {
-      storyFolder: props.storyFolder,
-      filePath: path,
-    });
-    bumpFileTree();
-    emit('close');
-  } catch (e) {
-    alert('Could not delete: ' + String(e));
-  } finally {
-    deleting.value = false;
-  }
+  dialog.warning({
+    title: 'Delete document',
+    content: `Delete “${name}”? This cannot be undone.`,
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      deleting.value = true;
+      try {
+        await invoke<void>('delete_story_document', {
+          storyFolder: props.storyFolder,
+          filePath: path,
+        });
+        bumpFileTree();
+        emit('close');
+      } catch (e) {
+        message.error('Could not delete: ' + String(e));
+      } finally {
+        deleting.value = false;
+      }
+    },
+  });
 }
 </script>
 
 <template>
   <div class="manuscript-viewer">
-    <!-- Header -->
-    <div class="mv-header">
-      <div class="mv-header-left">
-        <button class="mv-back" @click="onClose">&larr; Back</button>
-        <span class="mv-chapter-title">{{ finding?.chapterTitle || '' }}</span>
-      </div>
-      <div class="mv-header-right">
-        <div v-if="!isReadMode" class="mv-nav">
-          <span class="mv-nav-label">{{ currentIndex + 1 }} of {{ totalFindings }}</span>
-          <button class="mv-nav-btn" :disabled="currentIndex === 0" @click="onPrev">&larr; Prev</button>
-          <button class="mv-nav-btn" :disabled="currentIndex === totalFindings - 1" @click="onNext">Next &rarr;</button>
-        </div>
-        <button type="button" class="mv-action" @click="onClose">Close</button>
-        <button type="button" class="mv-action danger" :disabled="deleting" @click="onDelete">Delete</button>
-      </div>
-    </div>
+    <header class="mv-header">
+      <n-page-header :title="finding?.chapterTitle || ''">
+        <template #extra>
+          <n-space align="center">
+            <n-text v-if="!isReadMode" depth="3" style="font-size: 12px;">
+              {{ currentIndex + 1 }} of {{ totalFindings }}
+            </n-text>
+            <n-button v-if="!isReadMode" size="small" :disabled="currentIndex === 0" @click="onPrev">Prev</n-button>
+            <n-button v-if="!isReadMode" size="small" :disabled="currentIndex === totalFindings - 1" @click="onNext">Next</n-button>
+            <n-button size="small" @click="onClose">Close</n-button>
+            <n-button size="small" type="error" ghost :loading="deleting" @click="onDelete">Delete</n-button>
+          </n-space>
+        </template>
+      </n-page-header>
+    </header>
 
-    <!-- Body: editor + suggestion panel -->
     <div class="mv-body" :class="{ 'read-mode': isReadMode }">
-      <!-- Left: Tiptap editor -->
       <div class="mv-chapter">
         <ChapterEditor
           ref="editorRef"
@@ -201,31 +209,29 @@ async function onDelete(): Promise<void> {
         />
       </div>
 
-      <!-- Right: suggestion panel (only in fix mode) -->
       <div v-if="!isReadMode" class="mv-suggestion-panel">
-        <div class="mv-finding-info">
-          <div class="mv-finding-severity" :class="'sev-' + (finding?.severity || 'minor')">{{ finding?.severity }}</div>
-          <div class="mv-finding-why">{{ finding?.why }}</div>
-        </div>
+        <n-card size="small">
+          <n-tag size="small" style="margin-bottom: 6px; text-transform: capitalize;">{{ finding?.severity }}</n-tag>
+          <n-text style="font-size: 13px; line-height: 1.5;">{{ finding?.why }}</n-text>
+        </n-card>
 
-        <div v-if="!suggestion && !loadingSuggestion" class="mv-suggest-action">
-          <button class="btn" @click="onSuggestFix" :disabled="loadingSuggestion">Suggest Fix</button>
-        </div>
+        <n-button v-if="!suggestion && !loadingSuggestion" type="primary" @click="onSuggestFix">
+          Suggest Fix
+        </n-button>
 
-        <div v-if="loadingSuggestion" class="mv-loading">Generating suggestion...</div>
-
-        <div v-if="suggestionError" class="mv-error">{{ suggestionError }}</div>
+        <n-spin v-if="loadingSuggestion" size="small">Generating suggestion...</n-spin>
+        <n-alert v-if="suggestionError" type="error" :show-icon="false">{{ suggestionError }}</n-alert>
 
         <div v-if="suggestion" class="mv-suggestion-content">
           <div class="mv-suggestion-text" v-html="formatMarkdown(suggestion)"></div>
           <div class="mv-apply-section">
-            <label class="mv-apply-label">Replacement text:</label>
-            <textarea v-model="applyText" class="mv-apply-input" rows="3" placeholder="Paste or type the replacement text"></textarea>
-            <div class="mv-apply-actions">
-              <button class="btn btn-sm" @click="onReplace" :disabled="!applyText.trim()">Replace selected</button>
-              <button class="btn btn-sm btn-secondary" @click="onInsertAtCursor" :disabled="!applyText.trim()">Insert at cursor</button>
-              <button class="mv-skip-btn" @click="onNext">Skip</button>
-            </div>
+            <n-text depth="3" style="font-size: 11px; display: block; margin-bottom: 4px;">Replacement text:</n-text>
+            <n-input v-model:value="applyText" type="textarea" :rows="3" placeholder="Paste or type the replacement text" />
+            <n-space style="margin-top: 8px;">
+              <n-button size="small" type="primary" :disabled="!applyText.trim()" @click="onReplace">Replace selected</n-button>
+              <n-button size="small" :disabled="!applyText.trim()" @click="onInsertAtCursor">Insert at cursor</n-button>
+              <n-button size="small" quaternary @click="onNext">Skip</n-button>
+            </n-space>
           </div>
         </div>
       </div>
@@ -241,94 +247,11 @@ async function onDelete(): Promise<void> {
 }
 
 .mv-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  padding: 8px 16px 0;
+  border-bottom: 1px solid var(--border);
 }
 
-.mv-header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.mv-back {
-  background: none;
-  border: none;
-  color: var(--accent);
-  font-size: 13px;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: var(--radius);
-}
-
-.mv-back:hover { background: var(--surface2); }
-
-.mv-chapter-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.mv-nav {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mv-header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mv-action {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-muted);
-  font-size: 12px;
-  padding: 5px 10px;
-  cursor: pointer;
-}
-
-.mv-action:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.mv-action.danger:hover {
-  color: var(--danger);
-  border-color: var(--danger);
-}
-
-.mv-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.mv-nav-label {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.mv-nav-btn {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 12px;
-  padding: 4px 10px;
-  cursor: pointer;
-}
-
-.mv-nav-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.mv-nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* Body */
 .mv-body {
   flex: 1;
   display: flex;
@@ -346,7 +269,6 @@ async function onDelete(): Promise<void> {
   border-right: none;
 }
 
-/* Suggestion panel */
 .mv-suggestion-panel {
   flex: 0 0 40%;
   overflow-y: auto;
@@ -355,42 +277,6 @@ async function onDelete(): Promise<void> {
   flex-direction: column;
   gap: 12px;
 }
-
-.mv-finding-info {
-  padding: 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.mv-finding-severity {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 4px;
-}
-
-.mv-finding-severity.sev-minor { color: #7a7a7a; }
-.mv-finding-severity.sev-moderate { color: #e0a020; }
-.mv-finding-severity.sev-major { color: #e74c3c; }
-
-.mv-finding-why {
-  font-size: 13px;
-  color: var(--text);
-  line-height: 1.5;
-}
-
-.mv-suggest-action { padding: 8px 0; }
-
-.mv-loading {
-  color: var(--text-muted);
-  font-style: italic;
-  font-size: 13px;
-  padding: 8px 0;
-}
-
-.mv-error { color: #e74c3c; font-size: 12px; }
 
 .mv-suggestion-content { flex: 1; }
 
@@ -420,72 +306,4 @@ async function onDelete(): Promise<void> {
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }
-
-.mv-apply-label {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-  display: block;
-}
-
-.mv-apply-input {
-  width: 100%;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.5;
-  padding: 8px 10px;
-  resize: vertical;
-  font-family: inherit;
-}
-
-.mv-apply-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-  align-items: center;
-}
-
-.mv-skip-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-muted);
-  font-size: 12px;
-  padding: 6px 12px;
-  cursor: pointer;
-}
-
-.mv-skip-btn:hover { border-color: var(--accent); color: var(--text); }
-
-.btn {
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 18px;
-  transition: background 0.15s;
-}
-
-.btn:hover { background: var(--accent-dim); }
-.btn:disabled { background: var(--surface2); color: var(--text-muted); cursor: not-allowed; }
-
-.btn-sm { padding: 6px 12px; font-size: 12px; }
-
-.btn-secondary {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--text);
-}
-
-.btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 </style>

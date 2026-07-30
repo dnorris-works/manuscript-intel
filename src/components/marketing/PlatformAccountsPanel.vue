@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { inject, ref, onMounted } from 'vue';
+import { inject, ref, onMounted, computed } from 'vue';
+import {
+  NPageHeader, NScrollbar, NButton, NCard, NForm, NFormItem, NInput, NSelect,
+  NSpace, NAlert, NEmpty, NTag, useDialog,
+} from 'naive-ui';
 import { campaignsKey, showPanelKey } from '../../injectionKeys';
 import type { AdPlatformAccount } from '../../types';
 
 const campaignsCtx = inject(campaignsKey)!;
 const showPanel = inject(showPanelKey)!;
+const dialog = useDialog();
 
 const showForm = ref(false);
 const editingId = ref<number | null>(null);
@@ -16,6 +21,9 @@ const paymentNotes = ref('');
 const error = ref('');
 
 const PLATFORMS = ['meta', 'amazon', 'tiktok', 'google', 'bookbub', 'other'];
+const platformOptions = PLATFORMS.map(p => ({ label: p, value: p }));
+
+const formTitle = computed(() => (editingId.value ? 'Edit Account' : 'Add Account'));
 
 onMounted(() => {
   void campaignsCtx.loadPlatformAccounts();
@@ -67,9 +75,14 @@ async function onSave(): Promise<void> {
   resetForm();
 }
 
-async function onDelete(id: number): Promise<void> {
-  if (!confirm('Delete this platform account reference?')) return;
-  await campaignsCtx.deletePlatformAccount(id);
+function onDelete(id: number): void {
+  dialog.warning({
+    title: 'Delete account',
+    content: 'Delete this platform account reference?',
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    onPositiveClick: () => campaignsCtx.deletePlatformAccount(id),
+  });
 }
 
 function onBack(): void {
@@ -78,181 +91,106 @@ function onBack(): void {
 </script>
 
 <template>
-  <div class="panel platform-accounts-panel">
-    <div class="panel-header">
-      <button class="btn-back" @click="onBack">← Campaigns</button>
-      <h2 class="panel-title">Platform Accounts</h2>
-      <button class="btn btn-sm" @click="showForm = true; editingId = null">+ Add Account</button>
-    </div>
+  <div class="panel-root">
+    <header class="panel-header">
+      <n-page-header title="Platform Accounts">
+        <template #extra>
+          <n-space>
+            <n-button @click="onBack">Campaigns</n-button>
+            <n-button type="primary" @click="showForm = true; editingId = null">
+              Add Account
+            </n-button>
+          </n-space>
+        </template>
+      </n-page-header>
+    </header>
 
-    <p class="panel-desc">
-      Reference data for your ad accounts — IDs, pixels, and payment notes. API tokens belong in Settings.
-    </p>
+    <n-scrollbar class="panel-scroll">
+      <div class="panel-body">
+        <n-text depth="3" style="display: block; margin-bottom: 16px;">
+          Reference data for your ad accounts — IDs, pixels, and payment notes. API tokens belong in Settings.
+        </n-text>
 
-    <div v-if="showForm" class="account-form">
-      <label>Platform</label>
-      <select v-model="platform">
-        <option v-for="p in PLATFORMS" :key="p" :value="p">{{ p }}</option>
-      </select>
-      <label>Account ID</label>
-      <input v-model="accountId" type="text" placeholder="Ad account ID" />
-      <label>Pixel / Tag ID</label>
-      <input v-model="pixelId" type="text" placeholder="Pixel or tracking tag ID" />
-      <label>Tracking Notes</label>
-      <textarea v-model="trackingNotes" rows="2" placeholder="Install notes, tag locations…" />
-      <label>Payment Notes</label>
-      <textarea v-model="paymentNotes" rows="2" placeholder="Card reference, billing contact…" />
-      <div v-if="error" class="form-error">{{ error }}</div>
-      <div class="form-actions">
-        <button class="btn btn-sm" @click="onSave">Save</button>
-        <button class="btn btn-sm btn-secondary" @click="resetForm">Cancel</button>
+        <n-card v-if="showForm" :title="formTitle" size="small" style="margin-bottom: 16px;">
+          <n-form label-placement="top">
+            <n-form-item label="Platform">
+              <n-select v-model:value="platform" :options="platformOptions" />
+            </n-form-item>
+            <n-form-item label="Account ID">
+              <n-input v-model:value="accountId" placeholder="Ad account ID" />
+            </n-form-item>
+            <n-form-item label="Pixel / Tag ID">
+              <n-input v-model:value="pixelId" placeholder="Pixel or tracking tag ID" />
+            </n-form-item>
+            <n-form-item label="Tracking Notes">
+              <n-input v-model:value="trackingNotes" type="textarea" :rows="2" placeholder="Install notes, tag locations…" />
+            </n-form-item>
+            <n-form-item label="Payment Notes">
+              <n-input v-model:value="paymentNotes" type="textarea" :rows="2" placeholder="Card reference, billing contact…" />
+            </n-form-item>
+          </n-form>
+          <n-alert v-if="error" type="error" :show-icon="false" style="margin: 8px 0;">
+            {{ error }}
+          </n-alert>
+          <n-space>
+            <n-button type="primary" @click="onSave">Save</n-button>
+            <n-button @click="resetForm">Cancel</n-button>
+          </n-space>
+        </n-card>
+
+        <n-empty
+          v-if="campaignsCtx.platformAccounts.value.length === 0 && !showForm"
+          description="No platform accounts yet."
+        />
+
+        <n-space v-else vertical :size="8">
+          <n-card v-for="a in campaignsCtx.platformAccounts.value" :key="a.id" size="small">
+            <n-space justify="space-between" align="center">
+              <n-tag style="text-transform: capitalize;">{{ a.platform }}</n-tag>
+              <n-text depth="3">{{ a.account_id || 'no ID' }}</n-text>
+            </n-space>
+            <n-text v-if="a.pixel_id" depth="3" style="display: block; margin-top: 6px; font-size: 12px;">
+              Pixel: {{ a.pixel_id }}
+            </n-text>
+            <n-text v-if="a.tracking_notes" depth="3" style="display: block; margin-top: 4px; font-size: 12px;">
+              {{ a.tracking_notes }}
+            </n-text>
+            <n-text v-if="a.payment_notes" depth="3" style="display: block; margin-top: 4px; font-size: 12px;">
+              Payment: {{ a.payment_notes }}
+            </n-text>
+            <n-space style="margin-top: 8px;">
+              <n-button size="small" @click="editAccount(a)">Edit</n-button>
+              <n-button size="small" type="error" ghost @click="onDelete(a.id)">Delete</n-button>
+            </n-space>
+          </n-card>
+        </n-space>
       </div>
-    </div>
-
-    <div v-if="campaignsCtx.platformAccounts.value.length === 0 && !showForm" class="empty-state">
-      No platform accounts yet.
-    </div>
-
-    <div v-for="a in campaignsCtx.platformAccounts.value" :key="a.id" class="account-card">
-      <div class="account-card-header">
-        <strong>{{ a.platform }}</strong>
-        <span class="account-id">{{ a.account_id || 'no ID' }}</span>
-      </div>
-      <div v-if="a.pixel_id" class="account-meta">Pixel: {{ a.pixel_id }}</div>
-      <div v-if="a.tracking_notes" class="account-meta">{{ a.tracking_notes }}</div>
-      <div v-if="a.payment_notes" class="account-meta">Payment: {{ a.payment_notes }}</div>
-      <div class="account-actions">
-        <button class="btn btn-sm btn-secondary" @click="editAccount(a)">Edit</button>
-        <button class="btn btn-sm btn-danger" @click="onDelete(a.id)">Delete</button>
-      </div>
-    </div>
+    </n-scrollbar>
   </div>
 </template>
 
 <style scoped>
-.platform-accounts-panel {
-  padding: clamp(14px, 2vw, 24px);
-  max-width: 560px;
-  overflow-y: auto;
+.panel-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }
 
 .panel-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
+  flex-shrink: 0;
+  padding: 20px 24px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 
-.panel-title {
+.panel-scroll {
   flex: 1;
-  font-size: 16px;
-  font-weight: 700;
-  margin: 0;
+  min-height: 0;
 }
 
-.panel-desc {
-  color: var(--text-muted);
-  font-size: 13px;
-  margin-bottom: 16px;
+.panel-body {
+  padding: 16px 24px 24px;
+  max-width: 560px;
 }
-
-.btn-back {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.btn-back:hover { color: var(--accent); }
-
-.account-form {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  margin-bottom: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface2);
-}
-
-.account-form label {
-  font-size: 11px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-}
-
-.account-form input,
-.account-form select,
-.account-form textarea {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 13px;
-  padding: 6px 8px;
-}
-
-.account-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  margin-bottom: 8px;
-}
-
-.account-card-header {
-  display: flex;
-  justify-content: space-between;
-  text-transform: capitalize;
-}
-
-.account-id {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.account-meta {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 4px;
-}
-
-.account-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.empty-state {
-  color: var(--text-muted);
-  font-size: 13px;
-  padding: 16px;
-  text-align: center;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-}
-
-.form-error { color: var(--danger); font-size: 12px; }
-.form-actions { display: flex; gap: 8px; margin-top: 8px; }
-
-.btn {
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 18px;
-}
-
-.btn:hover { background: var(--accent-dim); }
-.btn-sm { padding: 6px 12px; font-size: 12px; }
-.btn-secondary {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-}
-.btn-danger { background: #c0392b; color: #fff; }
 </style>

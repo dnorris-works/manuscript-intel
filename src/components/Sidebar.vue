@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { inject, ref, watch, computed, type Ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { NButton, NButtonGroup, useDialog } from 'naive-ui';
 import { storiesKey, reportsKey, platformKey, showPanelKey, seriesKey, campaignsKey } from '../injectionKeys';
 import type { Story, Series, SeriesBook } from '../types';
 import FileTreeNodes, { type FileTreeEntry } from './FileTreeNodes.vue';
@@ -20,6 +21,7 @@ const openInWritingMode = inject<(filePath: string, title: string) => void>('ope
 const openNewDocumentForm = inject<(location?: string) => void>('openNewDocumentForm')!;
 const fileTreeTick = inject<Ref<number>>('fileTreeTick')!;
 const writingBrowseFolder = inject<Ref<string>>('writingBrowseFolder')!;
+const dialog = useDialog();
 
 // ── Emits ─────────────────────────────────────────────────────────────────────
 
@@ -290,16 +292,23 @@ async function onVersionClick(id: number): Promise<void> {
   showPanel('reports');
 }
 
-async function onDeleteVersion(id: number, e: Event): Promise<void> {
+function onDeleteVersion(id: number, e: Event): void {
   e.stopPropagation();
-  if (!confirm('Delete this report? This cannot be undone.')) return;
-  try {
-    await reportsCtx.deleteReport(id);
-    const folder = storiesCtx.activeFolder.value;
-    if (folder) await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
-  } catch (err) {
-    alert('Could not delete: ' + String(err));
-  }
+  dialog.warning({
+    title: 'Delete report',
+    content: 'Delete this report? This cannot be undone.',
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      try {
+        await reportsCtx.deleteReport(id);
+        const folder = storiesCtx.activeFolder.value;
+        if (folder) await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
+      } catch (err) {
+        console.error(err);
+      }
+    },
+  });
 }
 
 function formatTimestamp(ts: string): string {
@@ -312,9 +321,23 @@ function formatTimestamp(ts: string): string {
 <template>
   <aside id="sidebar">
     <div class="nav-section mode-tabs">
-      <button class="mode-tab" :class="{ active: appMode === 'analyzer' }" @click="setAppMode('analyzer'); showPanel('analyzer')">Analyzer</button>
-      <button class="mode-tab" :class="{ active: appMode === 'writing' }" @click="setAppMode('writing'); sidebarMode = 'files'">Writing</button>
-      <button class="mode-tab" :class="{ active: appMode === 'marketing' }" @click="setAppMode('marketing')">Marketing</button>
+      <n-button-group style="width: 100%;">
+        <n-button
+          :type="appMode === 'analyzer' ? 'primary' : 'default'"
+          style="flex: 1;"
+          @click="setAppMode('analyzer'); showPanel('analyzer')"
+        >Analyzer</n-button>
+        <n-button
+          :type="appMode === 'writing' ? 'primary' : 'default'"
+          style="flex: 1;"
+          @click="setAppMode('writing'); sidebarMode = 'files'"
+        >Writing</n-button>
+        <n-button
+          :type="appMode === 'marketing' ? 'primary' : 'default'"
+          style="flex: 1;"
+          @click="setAppMode('marketing')"
+        >Marketing</n-button>
+      </n-button-group>
     </div>
 
     <section class="sidebar-block">
@@ -325,7 +348,7 @@ function formatTimestamp(ts: string): string {
       <div v-show="sectionOpen.stories" class="section-content stories-section">
         <div class="nav-label-row">
           <span class="nav-label">Library</span>
-          <button class="btn-new-story" title="New story" @click.stop="onNewStory">+</button>
+          <n-button size="tiny" quaternary @click.stop="onNewStory">+</n-button>
         </div>
         <div class="stories-list">
           <div
@@ -370,30 +393,23 @@ function formatTimestamp(ts: string): string {
         </div>
 
         <div v-if="appMode === 'analyzer'" class="mode-toggle-row">
-          <div class="mode-toggle">
-            <button
-              class="mode-btn"
-              :class="{ active: sidebarMode === 'files' }"
-              @click="switchSidebarMode('files')"
-            >Files</button>
-            <button
-              class="mode-btn"
-              :class="{ active: sidebarMode === 'reports' }"
-              @click="switchSidebarMode('reports')"
-            >Reports</button>
-          </div>
-          <button
+          <n-button-group style="flex: 1;">
+            <n-button :type="sidebarMode === 'files' ? 'primary' : 'default'" style="flex: 1;" @click="switchSidebarMode('files')">Files</n-button>
+            <n-button :type="sidebarMode === 'reports' ? 'primary' : 'default'" style="flex: 1;" @click="switchSidebarMode('reports')">Reports</n-button>
+          </n-button-group>
+          <n-button
             v-if="sidebarMode === 'files' && storiesCtx.activeFolder.value"
-            class="btn-new-story"
+            size="tiny"
+            quaternary
             title="New document"
             @click="onAddDocument"
-          >+</button>
+          >+</n-button>
         </div>
 
         <div v-if="(sidebarMode === 'files' || appMode === 'writing') && effectiveBrowseFolder" class="files-section">
           <div v-if="appMode === 'writing'" class="nav-label-row files-header">
             <span class="nav-label">Files</span>
-            <button class="btn-new-story" title="New document" @click="onAddDocument">+</button>
+            <n-button size="tiny" quaternary title="New document" @click="onAddDocument">+</n-button>
           </div>
           <div v-if="fileTreeError" class="sidebar-hint">{{ fileTreeError }}</div>
           <div v-else-if="fileTree.length === 0" class="sidebar-hint">No documents yet. Click + to create one.</div>
@@ -457,7 +473,7 @@ function formatTimestamp(ts: string): string {
       <div v-show="sectionOpen.campaigns" class="section-content campaigns-section">
         <div class="nav-label-row">
           <span class="nav-label">For this story</span>
-          <button class="btn-new-story" title="New campaign" :disabled="!storiesCtx.activeFolder.value" @click.stop="onNewCampaign">+</button>
+          <n-button size="tiny" quaternary title="New campaign" :disabled="!storiesCtx.activeFolder.value" @click.stop="onNewCampaign">+</n-button>
         </div>
         <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint">Select a story first.</div>
         <div v-else-if="campaignsCtx.campaigns.value.length === 0" class="sidebar-hint">No campaigns yet.</div>
@@ -479,7 +495,7 @@ function formatTimestamp(ts: string): string {
         <span class="section-chevron" :class="{ open: sectionOpen.platformAccounts }">&#8250;</span>
       </button>
       <div v-show="sectionOpen.platformAccounts" class="section-content">
-        <button class="nav-item" @click="onPlatformAccounts">Manage accounts</button>
+        <n-button block quaternary @click="onPlatformAccounts">Manage accounts</n-button>
       </div>
     </section>
 
@@ -491,12 +507,13 @@ function formatTimestamp(ts: string): string {
       <div v-show="sectionOpen.series" class="section-content series-section">
         <div class="nav-label-row">
           <span class="nav-label">Collections</span>
-          <button
+          <n-button
             v-if="appMode === 'analyzer'"
-            class="btn-new-story"
+            size="tiny"
+            quaternary
             title="New series"
             @click.stop="onNewSeries"
-          >+</button>
+          >+</n-button>
         </div>
         <div class="series-list">
           <div
@@ -567,12 +584,8 @@ function formatTimestamp(ts: string): string {
         <span class="section-chevron" :class="{ open: sectionOpen.tools }">&#8250;</span>
       </button>
       <div v-show="sectionOpen.tools" class="section-content nav-section">
-        <button class="nav-item" @click="showPanel('help')">
-          Help
-        </button>
-        <button class="nav-item" @click="showPanel('settings')">
-          Settings
-        </button>
+        <n-button block quaternary @click="showPanel('help')">Help</n-button>
+        <n-button block quaternary @click="showPanel('settings')">Settings</n-button>
       </div>
     </section>
   </aside>

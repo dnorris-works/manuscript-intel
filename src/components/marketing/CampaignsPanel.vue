@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { inject, computed } from 'vue';
+import {
+  NPageHeader, NScrollbar, NButton, NCard, NTag, NEmpty, NText, NSpace,
+} from 'naive-ui';
 import { storiesKey, campaignsKey } from '../../injectionKeys';
 import type { AdCampaign } from '../../types';
 
@@ -14,8 +17,10 @@ const emit = defineEmits<{
 const activeStory = computed(() => storiesCtx.activeStory.value);
 const campaigns = computed(() => campaignsCtx.campaigns.value);
 
-function statusClass(status: string): string {
-  return `status-badge status-${status}`;
+function statusType(status: string): 'default' | 'success' | 'warning' {
+  if (status === 'active') return 'success';
+  if (status === 'paused') return 'warning';
+  return 'default';
 }
 
 function formatSpend(amount: number): string {
@@ -28,161 +33,89 @@ function onOpen(c: AdCampaign): void {
 </script>
 
 <template>
-  <div class="panel campaigns-panel">
-    <div class="panel-header">
-      <h2 class="panel-title">Ad Campaigns</h2>
-      <button
-        class="btn btn-sm"
-        :disabled="!activeStory"
-        @click="emit('new-campaign')"
-      >+ New Campaign</button>
-    </div>
+  <div class="panel-root">
+    <header class="panel-header">
+      <n-page-header title="Ad Campaigns">
+        <template #extra>
+          <n-button type="primary" :disabled="!activeStory" @click="emit('new-campaign')">
+            New Campaign
+          </n-button>
+        </template>
+      </n-page-header>
+    </header>
 
-    <p v-if="!activeStory" class="panel-desc">
-      Select a story in the sidebar to manage its ad campaigns.
-    </p>
+    <n-scrollbar class="panel-scroll">
+      <div class="panel-body">
+        <n-empty
+          v-if="!activeStory"
+          description="Select a story in the sidebar to manage its ad campaigns."
+        />
 
-    <template v-else>
-      <p class="panel-desc">
-        Campaigns for <strong>{{ activeStory.name }}</strong>. Create a campaign, then add creatives, metrics, and spend.
-      </p>
+        <template v-else>
+          <n-text depth="3" style="display: block; margin-bottom: 16px;">
+            Campaigns for <strong>{{ activeStory.name }}</strong>. Create a campaign, then add creatives, metrics, and spend.
+          </n-text>
 
-      <div v-if="campaigns.length === 0" class="empty-state">
-        No campaigns yet. Click <strong>New Campaign</strong> to get started.
+          <n-empty
+            v-if="campaigns.length === 0"
+            description="No campaigns yet. Click New Campaign to get started."
+          />
+
+          <n-space v-else vertical :size="12">
+            <n-card
+              v-for="c in campaigns"
+              :key="c.id"
+              size="small"
+              hoverable
+              style="cursor: pointer;"
+              @click="onOpen(c)"
+            >
+              <n-space justify="space-between" align="center">
+                <n-text strong>{{ c.name }}</n-text>
+                <n-tag :type="statusType(c.status)" size="small">{{ c.status }}</n-tag>
+              </n-space>
+              <n-text depth="3" style="display: block; margin-top: 4px; text-transform: capitalize;">
+                <template v-if="c.platform">{{ c.platform }}</template>
+                <template v-if="c.objective"> · {{ c.objective }}</template>
+              </n-text>
+              <n-space :size="12" style="margin-top: 6px;">
+                <n-text v-if="c.total_spend" depth="3" style="font-size: 12px;">
+                  Spent: {{ formatSpend(c.total_spend) }}
+                </n-text>
+                <n-text v-if="c.start_date" depth="3" style="font-size: 12px;">
+                  {{ c.start_date }}<template v-if="c.end_date"> – {{ c.end_date }}</template>
+                </n-text>
+              </n-space>
+            </n-card>
+          </n-space>
+        </template>
       </div>
-
-      <div v-else class="campaign-cards">
-        <div
-          v-for="c in campaigns"
-          :key="c.id"
-          class="campaign-card"
-          @click="onOpen(c)"
-        >
-          <div class="campaign-card-header">
-            <span class="campaign-name">{{ c.name }}</span>
-            <span :class="statusClass(c.status)">{{ c.status }}</span>
-          </div>
-          <div class="campaign-card-meta">
-            <span v-if="c.platform">{{ c.platform }}</span>
-            <span v-if="c.objective"> · {{ c.objective }}</span>
-          </div>
-          <div class="campaign-card-footer">
-            <span v-if="c.total_spend">Spent: {{ formatSpend(c.total_spend) }}</span>
-            <span v-if="c.start_date">{{ c.start_date }}<template v-if="c.end_date"> – {{ c.end_date }}</template></span>
-          </div>
-        </div>
-      </div>
-    </template>
+    </n-scrollbar>
   </div>
 </template>
 
 <style scoped>
-.campaigns-panel {
-  padding: clamp(14px, 2vw, 24px);
-  overflow-y: auto;
+.panel-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }
 
 .panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
+  flex-shrink: 0;
+  padding: 20px 24px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 
-.panel-title {
-  font-size: 16px;
-  font-weight: 700;
-  margin: 0;
+.panel-scroll {
+  flex: 1;
+  min-height: 0;
 }
 
-.panel-desc {
-  color: var(--text-muted);
-  font-size: 13px;
-  margin-bottom: 16px;
+.panel-body {
+  padding: 16px 24px 24px;
+  max-width: 640px;
 }
-
-.empty-state {
-  padding: 24px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 13px;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-}
-
-.campaign-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.campaign-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px 14px;
-  cursor: pointer;
-  background: color-mix(in srgb, var(--surface2) 40%, transparent);
-  transition: border-color 0.15s;
-}
-
-.campaign-card:hover {
-  border-color: var(--accent);
-}
-
-.campaign-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.campaign-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.status-badge {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  padding: 2px 8px;
-  border-radius: 10px;
-  letter-spacing: 0.04em;
-}
-
-.status-draft { background: var(--surface2); color: var(--text-muted); }
-.status-active { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
-.status-paused { background: color-mix(in srgb, #f39c12 20%, transparent); color: #f39c12; }
-.status-archived { background: var(--surface2); color: var(--text-muted); opacity: 0.7; }
-
-.campaign-card-meta {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-transform: capitalize;
-}
-
-.campaign-card-footer {
-  display: flex;
-  gap: 12px;
-  margin-top: 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.btn {
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 18px;
-}
-
-.btn:hover { background: var(--accent-dim); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-sm { padding: 6px 12px; font-size: 12px; }
 </style>

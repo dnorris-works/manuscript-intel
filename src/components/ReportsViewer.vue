@@ -1,23 +1,22 @@
 <script setup lang="ts">
 import { inject, ref, computed, onMounted, onUnmounted } from 'vue';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
+import {
+  NPageHeader, NScrollbar, NButton, NSpace, NEmpty, useDialog, useMessage,
+} from 'naive-ui';
 import { renderReport } from '../reportRenderer';
 import { storiesKey, reportsKey, platformKey, showPanelKey, openManuscriptEditorKey } from '../injectionKeys';
 import type { Finding } from '../types';
-
-// ── Injections ────────────────────────────────────────────────────────────────
 
 const reportsCtx = inject(reportsKey)!;
 const storiesCtx = inject(storiesKey)!;
 const platformCtx = inject(platformKey)!;
 const showPanel = inject(showPanelKey)!;
 const openManuscriptEditor = inject(openManuscriptEditorKey)!;
-
-// ── Local state ───────────────────────────────────────────────────────────────
+const dialog = useDialog();
+const message = useMessage();
 
 const copyLabel = ref('Copy');
-
-// ── Computed ──────────────────────────────────────────────────────────────────
 
 const report = computed(() => reportsCtx.currentReport.value);
 
@@ -30,12 +29,10 @@ const renderedHtml = computed(() => {
 const reportTitle = computed(() => {
   if (!report.value) return '';
   const ts = new Date(report.value.generated_at).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
   return `${report.value.label} — ${ts}`;
 });
-
-// ── Handlers ──────────────────────────────────────────────────────────────────
 
 async function onCopy(): Promise<void> {
   if (!report.value) return;
@@ -44,26 +41,31 @@ async function onCopy(): Promise<void> {
   setTimeout(() => { copyLabel.value = 'Copy'; }, 1500);
 }
 
-async function onDelete(): Promise<void> {
+function onDelete(): void {
   if (!report.value) return;
-  if (!confirm('Delete this report version? This cannot be undone.')) return;
-  try {
-    await reportsCtx.deleteReport(report.value.id);
-    const folder = storiesCtx.activeFolder.value;
-    if (folder) await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
-    reportsCtx.closeReport();
-    showPanel('analyzer');
-  } catch (e) {
-    alert('Could not delete: ' + String(e));
-  }
+  dialog.warning({
+    title: 'Delete report',
+    content: 'Delete this report version? This cannot be undone.',
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      try {
+        await reportsCtx.deleteReport(report.value!.id);
+        const folder = storiesCtx.activeFolder.value;
+        if (folder) await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
+        reportsCtx.closeReport();
+        showPanel('analyzer');
+      } catch (e) {
+        message.error('Could not delete: ' + String(e));
+      }
+    },
+  });
 }
 
 function onClose(): void {
   reportsCtx.closeReport();
   showPanel('analyzer');
 }
-
-// ── Open manuscript editor for a finding ──────────────────────────────────────
 
 function openEditorForSdt(chapterIndex: number, violationIndex: number): void {
   openEditorForPassageReport(chapterIndex, violationIndex, 'show_dont_tell');
@@ -119,12 +121,10 @@ function openEditorForContinuity(findingIndex: number): void {
   const data = JSON.parse(report.value.content);
   const reportFindings: any[] = data.findings || [];
 
-  // Build findings array from continuity findings
   const findings: Finding[] = [];
 
   reportFindings.forEach((f: any) => {
     const occs: any[] = f.occurrences || [];
-    // Use the first occurrence's file as the chapter to open
     const firstOcc = occs[0] || {};
     findings.push({
       filePath: folder + '/' + (firstOcc.file || ''),
@@ -151,8 +151,6 @@ function openEditorForContinuity(findingIndex: number): void {
     openManuscriptEditor(findings, findingIndex);
   }
 }
-
-// ── Click delegation for "Suggest fix" links ──────────────────────────────────
 
 const contentRef = ref<HTMLElement | null>(null);
 
@@ -187,113 +185,59 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="report" class="reports-viewer">
-    <div class="reports-viewer-header">
-      <span class="reports-viewer-title">{{ reportTitle }}</span>
-      <div class="reports-viewer-actions">
-        <button class="btn btn-sm" @click="onCopy">{{ copyLabel }}</button>
-        <button class="btn btn-sm btn-danger" @click="onDelete">Delete</button>
-        <button class="btn-close" @click="onClose">&times;</button>
-      </div>
-    </div>
-    <div class="reports-viewer-content" ref="contentRef" v-html="renderedHtml"></div>
+  <div v-if="report" class="reports-root">
+    <header class="reports-header">
+      <n-page-header :title="reportTitle">
+        <template #extra>
+          <n-space>
+            <n-button size="small" @click="onCopy">{{ copyLabel }}</n-button>
+            <n-button size="small" type="error" ghost @click="onDelete">Delete</n-button>
+            <n-button size="small" quaternary @click="onClose">Close</n-button>
+          </n-space>
+        </template>
+      </n-page-header>
+    </header>
+
+    <n-scrollbar class="reports-scroll">
+      <div ref="contentRef" class="reports-content" v-html="renderedHtml" />
+    </n-scrollbar>
   </div>
-  <div v-else class="reports-viewer reports-empty">
-    <p>No report selected.</p>
-    <button class="btn btn-sm" @click="onClose">Back</button>
+
+  <div v-else class="reports-root reports-empty">
+    <n-empty description="No report selected." style="margin: auto;">
+      <template #extra>
+        <n-button @click="onClose">Back</n-button>
+      </template>
+    </n-empty>
   </div>
 </template>
 
 <style scoped>
-.reports-viewer {
+.reports-root {
   display: flex;
   flex-direction: column;
   height: 100%;
-}
-
-.reports-viewer-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 12px;
-  flex-shrink: 0;
-}
-
-.reports-viewer-title {
-  flex: 1;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.reports-viewer-actions {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+.reports-header {
+  flex-shrink: 0;
+  padding: 16px 24px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 
-.reports-viewer-content {
+.reports-scroll {
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
+}
+
+.reports-content {
+  padding: 16px 24px 24px;
   user-select: text;
 }
 
 .reports-empty {
-  align-items: flex-start;
-  gap: 12px;
-  padding: 20px;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-/* Buttons */
-.btn {
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 18px;
-  transition: background 0.15s;
-}
-
-.btn:hover { background: var(--accent-dim); }
-.btn:disabled { background: var(--surface2); color: var(--text-muted); cursor: not-allowed; }
-
-.btn-sm {
-  padding: 6px 12px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.btn-danger {
-  background: #c0392b;
-  color: #fff;
-}
-
-.btn-danger:hover { background: #a93226; }
-
-.btn-close {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  margin-left: 4px;
-}
-
-.btn-close:hover {
-  color: var(--text);
-  background: var(--surface2);
+  padding: 24px;
 }
 </style>

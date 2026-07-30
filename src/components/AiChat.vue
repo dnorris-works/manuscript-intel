@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, nextTick, watch } from 'vue';
+import { ref, nextTick, watch, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { NText, NSelect, NButton, NSpace, NInput, NAlert } from 'naive-ui';
 import { useSettings } from '../composables/useSettings';
 import { formatMarkdown } from '../formatMarkdown';
 
@@ -18,6 +19,10 @@ const emit = defineEmits<{
 }>();
 
 const settings = useSettings();
+
+const modelOptions = computed(() =>
+  settings.models.value.map(m => ({ label: m.id, value: m.id })),
+);
 
 interface Message {
   role: 'user' | 'assistant';
@@ -117,17 +122,15 @@ watch(() => props.chapterTitle, () => {
 <template>
   <div class="ai-chat">
     <div class="chat-header">
-      <span class="chat-title">AI Chat</span>
-      <select v-model="chatModel" class="chat-model-select">
-        <option v-for="m in settings.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
-      </select>
-      <button v-if="messages.length > 0" class="chat-clear" @click="clearChat">Clear</button>
+      <n-text depth="3" style="font-size: 12px; font-weight: 700; text-transform: uppercase;">AI Chat</n-text>
+      <n-select v-model:value="chatModel" size="small" :options="modelOptions" style="flex: 1;" />
+      <n-button v-if="messages.length > 0" size="tiny" quaternary @click="clearChat">Clear</n-button>
     </div>
 
-    <div class="chat-messages" ref="chatPane">
-      <div v-if="messages.length === 0" class="chat-empty">
+    <div ref="chatPane" class="chat-messages">
+      <n-text v-if="messages.length === 0" depth="3" style="font-size: 12px; font-style: italic; text-align: center; padding: 20px 0;">
         Ask anything about your chapter — rewrites, brainstorming, continuity, prose feedback.
-      </div>
+      </n-text>
       <div
         v-for="(msg, i) in messages"
         :key="i"
@@ -142,29 +145,29 @@ watch(() => props.chapterTitle, () => {
       </div>
     </div>
 
-    <div v-if="error" class="chat-error">{{ error }}</div>
+    <n-alert v-if="error" type="error" :show-icon="false" style="margin: 0 14px;">{{ error }}</n-alert>
 
     <div v-if="props.selectedText || props.pinnedCount > 0" class="chat-selection-bar">
       <div v-if="props.selectedText" class="chat-selection-indicator">
         <span class="selection-label">{{ props.pinnedCount > 0 ? `${props.pinnedCount} pinned` : 'Selected' }}:</span>
         {{ props.selectedText.length > 80 ? props.selectedText.substring(0, 80) + '...' : props.selectedText }}
       </div>
-      <div class="chat-pin-actions">
-        <button class="pin-btn" @click="emit('pin')" title="Pin selection (⌘D)">📌 Pin</button>
-        <button v-if="props.pinnedCount > 0" class="pin-btn pin-clear" @click="emit('clear-pins')" title="Clear all pins (Esc)">Clear pins</button>
-      </div>
+      <n-space size="small" style="padding: 2px 14px 6px;">
+        <n-button size="tiny" @click="emit('pin')" title="Pin selection (⌘D)">Pin</n-button>
+        <n-button v-if="props.pinnedCount > 0" size="tiny" quaternary @click="emit('clear-pins')">Clear pins</n-button>
+      </n-space>
     </div>
 
     <div class="chat-input-row">
-      <textarea
-        v-model="input"
-        class="chat-input"
-        rows="2"
+      <n-input
+        v-model:value="input"
+        type="textarea"
+        :rows="2"
         placeholder="Ask about your chapter..."
-        @keydown="onKeydown"
         :disabled="loading"
-      ></textarea>
-      <button class="chat-send" @click="onSend" :disabled="loading || !input.trim()">Send</button>
+        @keydown="onKeydown"
+      />
+      <n-button type="primary" :loading="loading" :disabled="!input.trim()" @click="onSend">Send</n-button>
     </div>
   </div>
 </template>

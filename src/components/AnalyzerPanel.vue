@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { inject, ref, computed, watch, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import {
+  NText, NRadioGroup, NRadioButton, NRadio, NButton, NSpace, NAlert, NCheckbox,
+  NCard, NSpin, NSelect, useDialog, useMessage,
+} from 'naive-ui';
 import type { ContinuityScope } from '../composables/useAnalysis';
 import { useSettings } from '../composables/useSettings';
 import { storiesKey, analysisKey, seriesKey, platformKey, showPanelKey } from '../injectionKeys';
@@ -15,6 +19,24 @@ const seriesCtx = inject(seriesKey)!;
 const platformCtx = inject(platformKey)!;
 const showPanel = inject(showPanelKey);
 const settings = useSettings();
+const dialog = useDialog();
+const message = useMessage();
+
+const seriesOptions = computed(() =>
+  seriesCtx.series.value.map(s => ({
+    label: `${s.name} (${s.books.length} books)`,
+    value: s.id,
+  })),
+);
+
+const needsContinuityScope = computed(() =>
+  (platformCtx.platform.value === 'craft' || platformCtx.platform.value === 'publish')
+  && selected.value.some(id =>
+    id === 'continuity_check'
+    || id === 'cross_book_setup_payoff'
+    || id === 'series_pacing_comparator'
+    || id === 'recurring_motif_theme_series'),
+);
 
 // ── Report types from DB ──────────────────────────────────────────────────────
 
@@ -276,6 +298,7 @@ async function maybeRefreshSummariesBeforeRun(folder: string): Promise<boolean> 
     return true;
   }
 
+  let msg = 'Some chapters need a fingerprint refresh before these reports can run.\n\n';
   try {
     const estimate = await invoke<{
       success: boolean;
@@ -284,28 +307,31 @@ async function maybeRefreshSummariesBeforeRun(folder: string): Promise<boolean> 
     }>('estimate_summary_refresh_cost', {
       request: { folder },
     });
-
     const count = estimate.success ? estimate.chapter_count : 0;
-    const msg = [
-      'Some chapters need a fingerprint refresh before these reports can run.',
-      '',
-      count > 0 ? `Chapters to scan: ${count}` : summaryStatus.value.text,
-      'This is instant and uses no AI.',
-      '',
-      'Refresh fingerprints now?',
-    ].join('\n');
-    if (!confirm(msg)) return false;
+    msg += count > 0 ? `Chapters to scan: ${count}\n` : `${summaryStatus.value.text}\n`;
   } catch {
-    if (!confirm('Chapter fingerprints need refresh before running reports.\n\nRefresh now?')) {
-      return false;
-    }
+    msg += `${summaryStatus.value.text}\n`;
   }
+  msg += 'This is instant and uses no AI.\n\nRefresh fingerprints now?';
+
+  const confirmed = await new Promise<boolean>((resolve) => {
+    dialog.info({
+      title: 'Refresh fingerprints',
+      content: msg,
+      positiveText: 'Refresh',
+      negativeText: 'Cancel',
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+    });
+  });
+  if (!confirmed) return false;
 
   await analysisCtx.runSummaries(folder);
 
   const s = analysisCtx.analysisState.value;
   if (s && (s.summary_missing_count > 0 || s.summary_stale_count > 0)) {
-    alert('Fingerprints are still not up to date after refresh. Please resolve chapter read errors and try again.');
+    message.error('Fingerprints are still not up to date after refresh. Please resolve chapter read errors and try again.');
     return false;
   }
   return true;
@@ -415,94 +441,80 @@ function onStop(): void {
 </script>
 
 <template>
-  <div class="panel analyzer-panel">
-    <p class="panel-desc">
+  <div class="analyzer-root">
+    <n-text depth="3" style="display: block; margin-bottom: 12px; font-size: 13px;">
       {{ storiesCtx.activeStory.value ? `Story: ${storiesCtx.activeStory.value.name}` : 'Select or create a story to begin.' }}
-    </p>
+    </n-text>
 
-    <!-- Platform tabs -->
-    <div class="platform-tabs">
-      <button
-        class="platform-tab"
-        :class="{ active: platformCtx.platform.value === 'kdp' }"
-        @click="platformCtx.setPlatform('kdp')"
-      >KDP</button>
-      <button
-        class="platform-tab"
-        :class="{ active: platformCtx.platform.value === 'wide' }"
-        @click="platformCtx.setPlatform('wide')"
-      >Wide</button>
-      <button
-        class="platform-tab"
-        :class="{ active: platformCtx.platform.value === 'craft' }"
-        @click="platformCtx.setPlatform('craft')"
-      >Craft</button>
-      <button
-        class="platform-tab"
-        :class="{ active: platformCtx.platform.value === 'publish' }"
-        @click="platformCtx.setPlatform('publish')"
-      >Publish</button>
-    </div>
+    <n-radio-group
+      :value="platformCtx.platform.value"
+      style="margin-bottom: 12px;"
+      @update:value="platformCtx.setPlatform"
+    >
+      <n-radio-button value="kdp">KDP</n-radio-button>
+      <n-radio-button value="wide">Wide</n-radio-button>
+      <n-radio-button value="craft">Craft</n-radio-button>
+      <n-radio-button value="publish">Publish</n-radio-button>
+    </n-radio-group>
 
-    <div v-if="setupIssues.length > 0" class="setup-warning">
-      <div class="setup-warning-title">Setup required before running reports</div>
-      <ul class="setup-warning-list">
+    <n-alert v-if="setupIssues.length > 0" type="warning" title="Setup required before running reports" style="margin-bottom: 12px;">
+      <ul style="margin: 8px 0; padding-left: 1.2em;">
         <li v-for="issue in setupIssues" :key="issue.id">{{ issue.message }}</li>
       </ul>
-      <button type="button" class="btn btn-sm" @click="openSettings">Open Settings</button>
-    </div>
+      <n-button size="small" @click="openSettings">Open Settings</n-button>
+    </n-alert>
 
-    <div v-if="platformCtx.isKdp.value && marketIntelSetupIssues.length > 0" class="setup-warning setup-warning-muted">
-      <div class="setup-warning-title">Market Intel also needs</div>
-      <ul class="setup-warning-list">
+    <n-alert
+      v-if="platformCtx.isKdp.value && marketIntelSetupIssues.length > 0"
+      type="info"
+      title="Market Intel also needs"
+      style="margin-bottom: 12px;"
+    >
+      <ul style="margin: 8px 0; padding-left: 1.2em;">
         <li v-for="issue in marketIntelSetupIssues" :key="`mi-${issue.id}`">{{ issue.message }}</li>
       </ul>
-    </div>
+    </n-alert>
 
-    <!-- Actions (top) -->
-    <div class="analyzer-actions">
-      <button
-        class="btn"
-        :disabled="getReportsDisabled"
-        @click="onGetReports"
-      >Get Reports</button>
-
-      <span v-if="selected.length > 0 && totalEstimatedCost > 0" class="cost-total">
+    <n-space align="center" style="margin-bottom: 8px;" wrap>
+      <n-button type="primary" :disabled="getReportsDisabled" @click="onGetReports">
+        Get Reports
+      </n-button>
+      <n-text v-if="selected.length > 0 && totalEstimatedCost > 0" depth="3">
         {{ formatCost(totalEstimatedCost) }}
-      </span>
-
-      <button
+      </n-text>
+      <n-button
         v-if="platformCtx.isKdp.value"
-        class="btn btn-secondary"
-        title="Run market intelligence via Canopy API"
         :disabled="analysisCtx.isWorking.value || !analysisCtx.analysisState.value?.has_search_terms || marketIntelSetupIssues.length > 0"
+        title="Run market intelligence via Canopy API"
         @click="onMarketIntel"
-      >Market Intel</button>
-
-      <button
-        v-if="analysisCtx.isWorking.value"
-        class="btn btn-stop"
-        @click="onStop"
-      >Stop</button>
-
-      <label v-if="platformCtx.platform.value !== 'craft' && platformCtx.platform.value !== 'publish'" class="force-resummarize-label">
-        <input v-model="forceResummarize" type="checkbox" />
+      >
+        Market Intel
+      </n-button>
+      <n-button v-if="analysisCtx.isWorking.value" type="error" @click="onStop">Stop</n-button>
+      <n-checkbox
+        v-if="platformCtx.platform.value !== 'craft' && platformCtx.platform.value !== 'publish'"
+        v-model:checked="forceResummarize"
+      >
         Force re-scan
-      </label>
-    </div>
+      </n-checkbox>
+    </n-space>
 
-    <div class="summary-status" :class="{ stale: summaryStatus.needsRefresh }">
-      <span>{{ summaryStatus.text }}</span>
-      <button
-        class="btn btn-secondary btn-sm"
+    <n-space justify="space-between" align="center" style="margin-bottom: 8px;" wrap>
+      <n-text :type="summaryStatus.needsRefresh ? 'warning' : undefined" style="font-size: 13px;">
+        {{ summaryStatus.text }}
+      </n-text>
+      <n-button
+        size="small"
         :disabled="analysisCtx.isWorking.value || !storiesCtx.activeFolder.value"
         @click="onRefreshSummaries"
-      >Refresh Fingerprints</button>
-    </div>
+      >
+        Refresh Fingerprints
+      </n-button>
+    </n-space>
 
     <div v-if="summaryStatus.needsRefresh" class="summary-issues">
-      <div v-if="summaryIssueFiles.missing.length > 0" class="summary-issue-block">
-        <div class="summary-issue-title">Missing fingerprints:</div>
+      <div v-if="summaryIssueFiles.missing.length > 0">
+        <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 4px;">Missing fingerprints:</n-text>
         <ul class="summary-file-list">
           <li
             v-for="f in summaryIssueFiles.missing"
@@ -513,13 +525,13 @@ function onStop(): void {
               'summary-file-active': summaryFileStatus(f) === 'active',
             }"
           >
-            <span class="summary-file-marker" aria-hidden="true">{{ summaryFileMarker(f) }}</span>
-            <span class="summary-file-name">{{ f }}</span>
+            <span aria-hidden="true">{{ summaryFileMarker(f) }}</span>
+            {{ f }}
           </li>
         </ul>
       </div>
-      <div v-if="summaryIssueFiles.stale.length > 0" class="summary-issue-block">
-        <div class="summary-issue-title">Changed since last scan:</div>
+      <div v-if="summaryIssueFiles.stale.length > 0" style="margin-top: 8px;">
+        <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 4px;">Changed since last scan:</n-text>
         <ul class="summary-file-list">
           <li
             v-for="f in summaryIssueFiles.stale"
@@ -530,124 +542,76 @@ function onStop(): void {
               'summary-file-active': summaryFileStatus(f) === 'active',
             }"
           >
-            <span class="summary-file-marker" aria-hidden="true">{{ summaryFileMarker(f) }}</span>
-            <span class="summary-file-name">{{ f }}</span>
+            <span aria-hidden="true">{{ summaryFileMarker(f) }}</span>
+            {{ f }}
           </li>
         </ul>
       </div>
     </div>
 
-    <!-- Continuity Check scope (only relevant when that report is selected) -->
-    <div v-if="(platformCtx.platform.value === 'craft' || platformCtx.platform.value === 'publish') && selected.some(id => id === 'continuity_check' || id === 'cross_book_setup_payoff' || id === 'series_pacing_comparator' || id === 'recurring_motif_theme_series')" class="continuity-scope-row">
-      <span class="continuity-scope-label">Continuity Check scope:</span>
-      <label class="scope-radio">
-        <input v-model="continuityScopeMode" type="radio" value="manuscript" />
-        This manuscript
-      </label>
-      <label class="scope-radio">
-        <input v-model="continuityScopeMode" type="radio" value="series" :disabled="seriesCtx.series.value.length === 0" />
-        Series
-      </label>
-      <select
+    <n-card v-if="needsContinuityScope" size="small" style="margin-bottom: 12px;">
+      <n-text style="display: block; margin-bottom: 8px; font-size: 13px;">Continuity Check scope:</n-text>
+      <n-radio-group v-model:value="continuityScopeMode">
+        <n-space>
+          <n-radio value="manuscript">This manuscript</n-radio>
+          <n-radio value="series" :disabled="seriesCtx.series.value.length === 0">Series</n-radio>
+        </n-space>
+      </n-radio-group>
+      <n-select
         v-if="continuityScopeMode === 'series'"
-        v-model="continuitySeriesId"
-        class="continuity-series-select"
-      >
-        <option :value="null" disabled>Choose a series…</option>
-        <option v-for="s in seriesCtx.series.value" :key="s.id" :value="s.id">{{ s.name }} ({{ s.books.length }} books)</option>
-      </select>
-      <span v-if="seriesCtx.series.value.length === 0" class="continuity-scope-hint">No series yet — create one in the Series panel.</span>
-    </div>
+        v-model:value="continuitySeriesId"
+        :options="seriesOptions"
+        placeholder="Choose a series…"
+        style="margin-top: 8px; max-width: 280px;"
+      />
+      <n-text v-if="seriesCtx.series.value.length === 0" depth="3" style="display: block; margin-top: 6px; font-size: 12px;">
+        No series yet — create one in the Series panel.
+      </n-text>
+    </n-card>
 
-    <!-- Report cards -->
     <div class="report-cards">
-      <div
+      <n-card
         v-for="report in visibleReports"
         :key="report.id"
+        size="small"
+        hoverable
         class="report-card"
       >
-        <div class="report-card-check">
-          <input
-            type="checkbox"
+        <n-space align="start" :size="10">
+          <n-checkbox
             :checked="selected.includes(report.id)"
-            @input="toggleReport(report.id)"
+            @update:checked="() => toggleReport(report.id)"
           />
-        </div>
-        <div class="report-card-content">
-          <div class="report-card-label">{{ report.label }}</div>
-          <div class="report-card-desc">{{ reportCardDescription(report) }}</div>
-          <div class="report-card-meta">
-            <span v-if="report.exists" class="report-card-exists">✓ exists</span>
+          <div style="min-width: 0;">
+            <n-text strong style="display: block;">{{ report.label }}</n-text>
+            <n-text depth="3" style="font-size: 12px; display: block; margin-top: 2px;">
+              {{ reportCardDescription(report) }}
+            </n-text>
+            <n-text v-if="report.exists" type="success" style="font-size: 11px; display: block; margin-top: 4px;">
+              ✓ exists
+            </n-text>
           </div>
-        </div>
-      </div>
+        </n-space>
+      </n-card>
     </div>
 
-    <!-- Activity indicator -->
-    <div v-if="hasRun && analysisCtx.isWorking.value" class="activity-indicator">
-      <div class="spinner"></div>
-      <span class="activity-text">Working...</span>
-    </div>
+    <n-space v-if="hasRun && analysisCtx.isWorking.value" align="center" style="margin: 8px 0;">
+      <n-spin size="small" />
+      <n-text depth="3">Working…</n-text>
+    </n-space>
 
-    <!-- Log output (only shown after first run) -->
     <LogStream v-if="hasRun" />
   </div>
 </template>
 
 <style scoped>
-.analyzer-panel {
+.analyzer-root {
   display: flex;
   flex-direction: column;
   height: 100%;
   padding: 20px;
   overflow: hidden;
 }
-
-.panel-title {
-  font-size: 16px;
-  font-weight: 700;
-  margin-bottom: 10px;
-}
-
-.panel-desc {
-  color: var(--text-muted);
-  margin-bottom: 14px;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-/* ── Platform tabs ─────────────────────────────────────────────────────────── */
-
-.platform-tabs {
-  display: flex;
-  gap: 0;
-  margin-bottom: 14px;
-  border-bottom: 2px solid var(--border);
-}
-
-.platform-tab {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 13px;
-  font-weight: 600;
-  padding: 8px 16px;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.platform-tab:hover {
-  color: var(--text);
-}
-
-.platform-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
-/* ── Report cards ──────────────────────────────────────────────────────────── */
 
 .report-cards {
   flex: 1;
@@ -661,357 +625,38 @@ function onStop(): void {
 }
 
 .report-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  transition: border-color 0.15s, opacity 0.15s;
-}
-
-.report-card:hover {
-  border-color: var(--accent);
-}
-
-.report-card.dimmed {
-  opacity: 0.55;
-}
-
-.report-card.dimmed:hover {
-  border-color: var(--border);
-}
-
-.report-card-check {
-  display: flex;
-  align-items: center;
-  padding-top: 2px;
-  cursor: pointer;
-}
-
-.report-card-check input[type="checkbox"] {
-  accent-color: var(--accent);
-  width: 15px;
-  height: 15px;
-  cursor: pointer;
-}
-
-.report-card.dimmed .report-card-check input[type="checkbox"] {
-  cursor: not-allowed;
-}
-
-.report-card-content {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.report-card-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.report-card-desc {
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.4;
-}
-
-.report-card-exists {
-  font-size: 11px;
-  color: var(--accent);
-  font-weight: 500;
-  margin-top: 2px;
-}
-
-.report-card-meta {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin-top: 2px;
-}
-
-.report-card-cost {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-weight: 500;
-}
-
-.cost-total {
-  font-size: 12px;
-  color: var(--text-muted);
-  font-weight: 600;
-  padding: 4px 10px;
-  background: var(--surface2);
-  border-radius: var(--radius);
-}
-
-/* ── Actions ───────────────────────────────────────────────────────────────── */
-
-.analyzer-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.btn {
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 18px;
-  transition: background 0.15s;
-}
-
-.btn:hover {
-  background: var(--accent-dim);
-}
-
-.btn:disabled {
-  background: var(--surface2);
-  color: var(--text-muted);
-  cursor: not-allowed;
-}
-
-.btn-secondary {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-}
-
-.btn-secondary:hover:not(:disabled) {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.btn-sm {
-  padding: 6px 10px;
-  font-size: 12px;
-}
-
-.summary-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 0 0 10px;
-  padding: 8px 10px;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.summary-status.stale {
-  border-color: var(--accent);
-  color: var(--text);
+  cursor: default;
 }
 
 .summary-issues {
-  margin: 0 0 10px;
-  padding: 8px 10px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--surface);
-}
-
-.summary-issue-block + .summary-issue-block {
-  margin-top: 8px;
-}
-
-.summary-issue-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 4px;
+  background: color-mix(in srgb, var(--surface2) 50%, transparent);
 }
 
 .summary-file-list {
-  margin: 0;
-  padding-left: 0;
   list-style: none;
-  max-height: 140px;
+  margin: 0;
+  padding: 0;
+  max-height: 120px;
   overflow-y: auto;
-  font-size: 12px;
-  color: var(--text-muted);
 }
 
 .summary-file-item {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
   padding: 2px 0;
 }
 
-.summary-file-marker {
-  flex: 0 0 12px;
-  text-align: center;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.summary-file-active .summary-file-marker {
+.summary-file-active {
   color: var(--accent);
-}
-
-.summary-file-done .summary-file-marker {
-  color: #6fcf97;
-}
-
-.summary-file-done .summary-file-name {
-  color: var(--text-muted);
-  text-decoration: line-through;
-  opacity: 0.75;
-}
-
-.summary-file-active .summary-file-name {
-  color: var(--text);
-}
-
-.btn-stop {
-  background: var(--danger);
-  color: white;
-  font-size: 12px;
-  padding: 9px 12px;
-  border-radius: var(--radius);
-  border: none;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.btn-stop:hover {
-  background: #a04050;
-}
-
-.force-resummarize-label {
-  font-size: 12px;
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-  cursor: pointer;
-  margin-left: auto;
-}
-
-.force-resummarize-label input[type="checkbox"] {
-  accent-color: var(--accent);
-}
-
-/* ── Continuity scope row ────────────────────────────────────────────────── */
-
-.continuity-scope-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  margin-bottom: 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 12px;
-}
-
-.continuity-scope-label {
-  color: var(--text-muted);
   font-weight: 600;
-  white-space: nowrap;
 }
 
-.scope-radio {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--text);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.scope-radio input[type="radio"] {
-  accent-color: var(--accent);
-}
-
-.continuity-series-select {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  padding: 5px 8px;
-  font-size: 12px;
-}
-
-.continuity-scope-hint {
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-/* ── Activity indicator ────────────────────────────────────────────────────── */
-
-.activity-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  padding: 6px 12px;
-  background: rgba(232, 97, 44, 0.06);
-  border: 1px solid rgba(232, 97, 44, 0.15);
-  border-radius: var(--radius);
-  font-size: 12px;
-  color: var(--accent);
-}
-
-.spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(232, 97, 44, 0.3);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.activity-text {
-  font-weight: 500;
-}
-
-.setup-warning {
-  margin: 12px 0;
-  padding: 12px 14px;
-  border: 1px solid rgba(232, 97, 44, 0.35);
-  border-radius: var(--radius);
-  background: rgba(232, 97, 44, 0.08);
-  color: var(--text);
-}
-
-.setup-warning-muted {
-  border-color: var(--border);
-  background: var(--surface2);
-}
-
-.setup-warning-title {
-  font-size: 13px;
-  font-weight: 700;
-  margin-bottom: 8px;
-}
-
-.setup-warning-list {
-  margin: 0 0 10px 18px;
-  padding: 0;
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--text-muted);
+.summary-file-done {
+  color: var(--success);
 }
 </style>

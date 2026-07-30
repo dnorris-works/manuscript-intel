@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import {
+  NForm, NFormItem, NInput, NRadioGroup, NRadio, NButton, NSpace, NAlert,
+} from 'naive-ui';
 import { storiesKey, settingsKey } from '../injectionKeys';
 import { manuscriptActPaths } from '../composables/useSettings';
+import FormPanelShell from './FormPanelShell.vue';
 
 const props = defineProps<{
-  /** Relative path under the story folder (e.g. from a folder + click). */
   initialLocation?: string;
 }>();
 
@@ -49,7 +52,6 @@ const docTypeId = ref('act-1');
 const location = ref('Manuscript/Act-1');
 const error = ref('');
 const saving = ref(false);
-/** When true, changing type does not overwrite a folder-picked location. */
 const locationFromFolder = ref(false);
 
 const selectedType = computed(() =>
@@ -108,15 +110,11 @@ watch(docTypes, (types) => {
   }
 });
 
-function onSelectType(id: string): void {
-  docTypeId.value = id;
+watch(docTypeId, (id) => {
+  if (locationFromFolder.value) return;
   const t = docTypes.value.find(x => x.id === id);
-  if (t && !locationFromFolder.value) {
-    location.value = t.path;
-  } else if (t && locationFromFolder.value) {
-    // Keep folder path; type is only a hint
-  }
-}
+  if (t) location.value = t.path;
+});
 
 function onLocationEdit(): void {
   locationFromFolder.value = true;
@@ -157,182 +155,52 @@ function onCancel(): void {
 </script>
 
 <template>
-  <div class="panel new-doc-panel">
-    <h2 class="panel-title">New Document</h2>
+  <FormPanelShell title="New Document">
+    <n-form label-placement="top">
+      <n-form-item label="Name">
+        <n-input
+          v-model:value="name"
+          :placeholder="namePlaceholder"
+          @keydown.enter="onCreate"
+        />
+      </n-form-item>
 
-    <div class="form-group">
-      <label>Name</label>
-      <input v-model="name" type="text" :placeholder="namePlaceholder" @keydown.enter="onCreate" />
-    </div>
+      <n-form-item label="Type">
+        <n-radio-group v-model:value="docTypeId">
+          <n-space vertical>
+            <n-radio
+              v-for="t in docTypes"
+              :key="t.id"
+              :value="t.id"
+            >
+              <strong>{{ t.label }}</strong>
+              <div style="font-size: 11px; color: var(--text-muted); font-family: var(--mono);">
+                {{ t.path }}
+              </div>
+            </n-radio>
+          </n-space>
+        </n-radio-group>
+      </n-form-item>
 
-    <div class="form-group">
-      <label>Type</label>
-      <div class="type-options">
-        <label
-          v-for="t in docTypes"
-          :key="t.id"
-          class="type-option"
-          :class="{ active: docTypeId === t.id }"
-          @click.prevent="onSelectType(t.id)"
-        >
-          <input :checked="docTypeId === t.id" type="radio" :value="t.id" tabindex="-1" />
-          <span class="type-option-title">{{ t.label }}</span>
-          <span class="type-option-path">{{ t.path }}</span>
-        </label>
-      </div>
-    </div>
+      <n-form-item label="Location" feedback="Relative to the story folder (editable)">
+        <n-input
+          v-model:value="location"
+          placeholder="Manuscript"
+          style="font-family: var(--mono);"
+          @input="onLocationEdit"
+        />
+      </n-form-item>
+    </n-form>
 
-    <div class="form-group">
-      <label>
-        Location
-        <span class="form-hint"> — relative to the story folder (editable)</span>
-      </label>
-      <input
-        v-model="location"
-        type="text"
-        placeholder="Manuscript"
-        class="mono"
-        @input="onLocationEdit"
-      />
-    </div>
+    <n-alert v-if="error" type="error" :show-icon="false" style="margin-top: 8px;">
+      {{ error }}
+    </n-alert>
 
-    <div v-if="error" class="form-error">{{ error }}</div>
-
-    <div class="form-actions">
-      <button class="btn" :disabled="saving" @click="onCreate">Create</button>
-      <button class="btn btn-secondary" @click="onCancel">Cancel</button>
-    </div>
-  </div>
+    <template #footer>
+      <n-space>
+        <n-button type="primary" :loading="saving" @click="onCreate">Create</n-button>
+        <n-button @click="onCancel">Cancel</n-button>
+      </n-space>
+    </template>
+  </FormPanelShell>
 </template>
-
-<style scoped>
-.new-doc-panel {
-  padding: 20px;
-  max-width: 480px;
-}
-
-.panel-title {
-  font-size: 16px;
-  font-weight: 700;
-  margin-bottom: 16px;
-}
-
-.form-group {
-  margin-bottom: 14px;
-}
-
-.form-group label {
-  display: block;
-  font-size: 12px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: 6px;
-}
-
-.form-hint {
-  text-transform: none;
-  letter-spacing: 0;
-  font-weight: 400;
-  font-size: 11px;
-}
-
-.form-group input[type="text"] {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 13px;
-  padding: 8px 10px;
-  width: 100%;
-  user-select: text;
-}
-
-.form-group input.mono {
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.type-options {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.type-option {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 8px 12px 8px 32px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface2);
-  cursor: pointer;
-  position: relative;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--text);
-}
-
-.type-option.active {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface2));
-}
-
-.type-option input[type="radio"] {
-  position: absolute;
-  left: 10px;
-  top: 10px;
-  margin: 0;
-  pointer-events: none;
-}
-
-.type-option-title {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.type-option-path {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-family: var(--mono);
-}
-
-.form-error {
-  color: var(--danger);
-  font-size: 12px;
-  margin-bottom: 12px;
-}
-
-.form-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.btn {
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 18px;
-  transition: background 0.15s;
-}
-
-.btn:hover { background: var(--accent-dim); }
-.btn:disabled { background: var(--surface2); color: var(--text-muted); cursor: not-allowed; }
-
-.btn-secondary {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-}
-
-.btn-secondary:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-</style>
