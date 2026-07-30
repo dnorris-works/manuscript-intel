@@ -83,22 +83,20 @@ export interface ArchivedReportRow {
   archive_reason: string;
 }
 
-export interface ChapterFingerprintRow {
+export interface ChapterSummaryStatusRow {
   file: string;
   title: string;
   word_count: number;
   source_hash: string;
-  pov: string;
-  tense: string;
-  dialogue_pct: number;
   updated_at: string;
+  summary_preview: string;
 }
 
 export interface StoryArtifactStateResponse {
   manuscript_fingerprint: string;
   fingerprint_updated_at: string;
   chapter_count: number;
-  chapters: ChapterFingerprintRow[];
+  chapters: ChapterSummaryStatusRow[];
   artifacts: [string, string][];
 }
 

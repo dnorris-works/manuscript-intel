@@ -50,33 +50,33 @@ When the manuscript changes, Loremetry archives the previous current report for 
 
 Open **Settings → Archived Reports** to browse them in a table. Use **Read** to open a snapshot or **Delete** to remove one row. The table shows the report name, when it was archived, and the reason (typically a manuscript change).
 
-### Chapter fingerprints (Story Data)
+### Chapter summaries (Story Data)
 
-**Chapter Summaries** are no longer listed as a report you open from Saved Reports. They are **story infrastructure**: per-chapter fingerprint data that other reports depend on.
+**Chapter Summaries** are no longer listed as a report you open from Saved Reports. They are **story infrastructure**: per-chapter AI genre-signal summaries that other reports depend on.
 
 Manage them in **Settings → Story Data**:
 
-- View fingerprint status per chapter
-- **Refresh fingerprints** after you edit chapters (instant, no AI)
-- **Clear fingerprints** if you need to reset
+- View summary status and preview per chapter
+- **Refresh summaries** after you edit chapters (uses AI — one call per changed chapter, up to 2000 words each)
+- **Clear summaries** if you need to reset
 
-The Analyzer shows fingerprint status before you run reports that depend on them and can prompt you to refresh when needed.
+The Analyzer shows summary status before you run reports that depend on them and can prompt you to refresh when needed.
 
 ---
 
 ## Shared (KDP + Wide)
 
-### Chapter fingerprints
+### Chapter summaries
 
-Reads each manuscript chapter and extracts **genre signals** — setting, tone, themes, conflict type, romance/faith/supernatural markers, pacing, POV, and tropes — not a plot synopsis.
+Reads each manuscript chapter (up to 2000 words) and uses AI to extract **genre signals** — setting, tone, themes, conflict type, romance/faith/supernatural markers, pacing, and tropes — not a plot synopsis.
 
-This is the foundation for genre analysis, ranking, categories, and keywords. Refresh fingerprints in **Settings → Story Data** (or from the Analyzer prompt) when chapters change. Re-run dependent reports after a manuscript edit so saved results stay current.
+This is the foundation for genre analysis, ranking, categories, and keywords. Refresh summaries in **Settings → Story Data** (or from the Analyzer prompt) when chapters change. Re-run dependent reports after a manuscript edit so saved results stay current.
 
-### Genre Analysis
+### Genre Analysis - KDP/Wide
 
 Uses chapter summaries to produce industry ebook/print genre labels, suggested KDP category paths, comparable titles, reader demographic, bookstore shelving notes, and marketing notes.
 
-### Genre Ranking
+### Genre Ranking - KDP/Wide
 
 Scores the manuscript independently against every genre in the app’s catalog (scores need not sum to 100). Helps spot cross-genre fit and confidence levels.
 
@@ -244,8 +244,8 @@ Per-chapter pace and drag-risk scores so you can see where the manuscript slows 
 
 ## Tips
 
-1. Start publishing work with **chapter fingerprints** (Settings → Story Data), then genre/ranking, then platform-specific reports.
+1. Start publishing work with **chapter summaries** (Settings → Story Data), then genre/ranking, then platform-specific reports.
 2. After editing the manuscript, check **Saved Reports** for stale items or open **Settings → Archived Reports** to read older snapshots.
-3. Craft and Publish do not require fingerprints for every report, but a story bible (and Characters / Locations folders) improves AI context when present.
+3. Craft and Publish do not require chapter summaries for every report, but a story bible (and Characters / Locations folders) improves AI context when present.
 4. Series craft audits need a series with books in reading order and the series scope selected in the Analyzer.
 5. Cost estimates in the Analyzer use model prices from Settings; Free means no LLM call (Zeigarnik, Line Polish, Vellum prep).

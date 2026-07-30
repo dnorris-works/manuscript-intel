@@ -11,6 +11,7 @@
 //   continuity — Continuity checker (Craft platform, AI-assisted, manuscript or series scope)
 
 pub mod chapters;
+#[allow(dead_code)]
 pub mod chapter_stats;
 pub mod genres;
 pub mod categories;
@@ -48,6 +49,8 @@ pub struct FolderRequest {
     pub canopy_api_key: String,
     #[serde(default)]
     pub genre_model: String,
+    #[serde(default)]
+    pub summaries_model: String,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +72,8 @@ pub struct AnalyzeStoryRequest {
     pub run_time:          String,  // local datetime from when user clicked the button
     #[serde(default)]
     pub genre_model:       String,
+    #[serde(default)]
+    pub summaries_model:   String,
     /// Report IDs to run. Empty means run the full legacy pipeline.
     #[serde(default)]
     pub selected:          Vec<String>,

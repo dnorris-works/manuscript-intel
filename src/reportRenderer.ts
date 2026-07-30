@@ -393,7 +393,7 @@ function renderCombinedAnalysis(data: any): string {
     try {
       const ranking = JSON.parse(sections.genre_ranking);
       html += renderGenreRanking(ranking);
-    } catch { html += renderRawSection('Genre Ranking', sections.genre_ranking); }
+    } catch { html += renderRawSection('Genre Ranking - KDP/Wide', sections.genre_ranking); }
   }
 
   // KDP Categories
@@ -445,7 +445,7 @@ function renderGenreRanking(data: any): string {
   const genres: any[] = data.genres || [];
   if (!genres.length) return '';
 
-  let html = `<section class="report-section"><h3>Genre Ranking</h3>`;
+  let html = `<section class="report-section"><h3>Genre Ranking - KDP/Wide</h3>`;
   html += `<p class="report-hint">Scored independently — percentages do not sum to 100.</p>`;
   html += `<table class="report-table"><thead><tr><th>Genre</th><th>Confidence</th><th>Reasoning</th></tr></thead><tbody>`;
   for (const g of genres) {

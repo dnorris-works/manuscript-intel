@@ -10,7 +10,7 @@ export type { ThemeMode };
 
 export interface ModelAssignments {
   default:       string;  // Fallback for any function without a specific model
-  summaries:     string;  // Legacy slot (fingerprints are Rust-only)
+  summaries:     string;  // Chapter summary (genre signals) extraction
   genre:         string;  // Genre analysis & ranking
   keywords:      string;  // Keywords, search terms, BISAC
   continuity:    string;  // Continuity checker (fact extraction + judgment)

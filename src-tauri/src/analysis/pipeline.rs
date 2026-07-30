@@ -11,7 +11,7 @@ use super::{emit, err, GenreResult, FolderRequest, AnalyzeStoryRequest};
 use crate::db;
 use crate::models::KeywordResult;
 
-use super::chapters::{collect_chapters, phase1_summaries, clean_for_ai, chapter_source_hash, compute_manuscript_fingerprint};
+use super::chapters::{collect_chapters, phase1_summaries, phase1_config_from, clean_for_ai, chapter_source_hash, compute_manuscript_fingerprint};
 use super::genres::{RankedGenre, ai_rank_genres, phase2_analyze, render_full_report};
 use super::categories::{match_categories_by_store, rank_by_discoverability};
 use super::bisac::ai_pick_bisac;
@@ -119,7 +119,7 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             if current_hash != *stored_hash {
                 summary_stale_count += 1;
                 summary_stale_files.push(file);
-            } else if !db::chapter_fingerprint_complete(&conn, &folder, &file) {
+            } else if !db::chapter_has_current_summary(&conn, &folder, &file, &current_hash) {
                 summary_stale_count += 1;
                 summary_stale_files.push(file);
             }
@@ -210,7 +210,20 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
         emit(&app, "Step 1: No summaries found — generating now...");
         let chapters = collect_chapters(&folder);
         if chapters.is_empty() { return err("No .md chapter files found."); }
-        phase1_summaries(&app, &database, &chapters, &request.folder).await;
+        phase1_summaries(
+            &app,
+            &database,
+            &chapters,
+            &request.folder,
+            &phase1_config_from(
+                &request.provider,
+                &request.api_key,
+                &request.model,
+                &request.summaries_model,
+                false,
+            ),
+        )
+        .await;
         let conn = database.0.lock().unwrap();
         summaries = db::load_chapter_summaries(&conn, &request.folder);
         if summaries.is_empty() { return err("Could not produce chapter summaries."); }
@@ -290,7 +303,20 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
         emit(&app, "Phase 1: Generating chapter summaries...");
         let chapters = collect_chapters(&folder);
         if chapters.is_empty() { return err("No .md files found."); }
-        phase1_summaries(&app, &database, &chapters, &request.folder).await;
+        phase1_summaries(
+            &app,
+            &database,
+            &chapters,
+            &request.folder,
+            &phase1_config_from(
+                &request.provider,
+                &request.api_key,
+                &request.model,
+                &request.summaries_model,
+                false,
+            ),
+        )
+        .await;
         let conn = database.0.lock().unwrap();
         summaries = db::load_chapter_summaries(&conn, &request.folder);
     } else {
@@ -356,7 +382,20 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
         if summaries.is_empty() {
             let chapters = collect_chapters(&folder_path);
             if chapters.is_empty() { return err("No .md chapter files found."); }
-            phase1_summaries(&app, &database, &chapters, &request.folder).await;
+            phase1_summaries(
+            &app,
+            &database,
+            &chapters,
+            &request.folder,
+            &phase1_config_from(
+                &request.provider,
+                &request.api_key,
+                &request.model,
+                &request.summaries_model,
+                false,
+            ),
+        )
+        .await;
             let conn = database.0.lock().unwrap();
             summaries = db::load_chapter_summaries(&conn, &request.folder);
         }
@@ -689,32 +728,57 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         || wants_report(selected, "keyword_search", platform)
         || wants_report(selected, "analysis", platform);
 
-    // ── Step 1: Chapter fingerprints (infrastructure) ─────────────────────
+    // ── Step 1: Chapter summaries (infrastructure) ────────────────────────
     if needs_genre_data || request.force_resummarize {
-        let fp_status = {
+        let summary_status = {
             let conn = database.0.lock().unwrap();
-            db::artifact_status(&conn, &request.folder, "fingerprints", &manuscript_fp)
+            db::artifact_status(&conn, &request.folder, "summaries", &manuscript_fp)
         };
+        let phase1_config = phase1_config_from(
+            &request.provider,
+            &request.api_key,
+            &request.model,
+            &request.summaries_model,
+            request.force_resummarize,
+        );
         if request.force_resummarize {
-            emit(&app, "  Force re-scan — deleting existing fingerprints...");
+            emit(&app, "  Force re-summarize — clearing existing chapter summaries...");
             let conn = database.0.lock().unwrap();
             let _ = db::delete_chapter_summaries(&conn, &request.folder);
         }
-        if fp_status != db::Freshness::Fresh || request.force_resummarize {
-            emit(&app, "Step 1: Scanning chapter fingerprints...");
+        let chapters = collect_chapters(&folder_path);
+        let summaries_stale = chapters.iter().any(|chapter| {
+            let Some(file) = chapter.file_name().map(|f| f.to_string_lossy().to_string()) else {
+                return false;
+            };
+            let source = std::fs::read_to_string(chapter).unwrap_or_default();
+            let cleaned = clean_for_ai(&source);
+            if cleaned.is_empty() {
+                return false;
+            }
+            let hash = chapter_source_hash(&cleaned);
+            let conn = database.0.lock().unwrap();
+            !db::chapter_has_current_summary(&conn, &request.folder, &file, &hash)
+        });
+        if summary_status != db::Freshness::Fresh || request.force_resummarize || summaries_stale {
+            emit(&app, "Step 1: Summarizing chapters (AI)...");
             crate::reset_cancel();
-            let chapters = collect_chapters(&folder_path);
-            if chapters.is_empty() { return err("No .md chapter files found."); }
-            let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
-            emit(&app, &format!("  ✓ {} scanned, {} skipped.", done, skipped));
+            if chapters.is_empty() {
+                return err("No .md chapter files found.");
+            }
+            let (done, skipped) =
+                phase1_summaries(&app, &database, &chapters, &request.folder, &phase1_config).await;
+            emit(&app, &format!("  ✓ {} summarized, {} skipped.", done, skipped));
             {
                 let conn = database.0.lock().unwrap();
-                let _ = db::record_artifact_built(&conn, &request.folder, "fingerprints", &manuscript_fp);
+                let _ = db::record_artifact_built(&conn, &request.folder, "summaries", &manuscript_fp);
             }
         } else {
-            emit(&app, "Step 1: Chapter fingerprints up to date — skipping.");
+            emit(&app, "Step 1: Chapter summaries up to date — skipping.");
         }
-        if crate::is_cancelled() { return err("Cancelled."); }
+        if crate::is_cancelled() {
+            return err("Cancelled.");
+        }
     }
 
     // ── Step 2: Genre Analysis ─────────────────────────────────────────────
@@ -1207,20 +1271,35 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
         }
     }
 
-    // ── Chapter fingerprints (infrastructure — not saved as a report) ─────
+    // ── Chapter summaries (infrastructure — not saved as a report) ───────
     if request.selected.contains(&"chapter_summaries".to_string()) {
-        emit(&app, "Scanning chapter fingerprints (deterministic — no AI)...");
+        emit(&app, "Summarizing chapters (AI)...");
         let chapters = collect_chapters(&folder);
-        if chapters.is_empty() { return err("No .md chapter files found."); }
+        if chapters.is_empty() {
+            return err("No .md chapter files found.");
+        }
 
-        let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
-        emit(&app, &format!("✓ Chapter fingerprints complete ({} new, {} skipped).", done, skipped));
+        let phase1_config = phase1_config_from(
+            &request.provider,
+            &request.api_key,
+            &request.model,
+            &request.model_summaries,
+            false,
+        );
+        let (done, skipped) =
+            phase1_summaries(&app, &database, &chapters, &request.folder, &phase1_config).await;
+        emit(
+            &app,
+            &format!("✓ Chapter summaries complete ({} new, {} skipped).", done, skipped),
+        );
 
         let manuscript_fp = compute_manuscript_fingerprint(&folder);
         let conn = database.0.lock().unwrap();
-        let _ = db::record_artifact_built(&conn, &request.folder, "fingerprints", &manuscript_fp);
+        let _ = db::record_artifact_built(&conn, &request.folder, "summaries", &manuscript_fp);
 
-        if crate::is_cancelled() { return err("Cancelled."); }
+        if crate::is_cancelled() {
+            return err("Cancelled.");
+        }
     }
 
     // ── Zeigarnik Effect ──────────────────────────────────────────────────

@@ -670,7 +670,7 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     seed_provider_models(&conn)?;
     seed_lookup_config(&conn)?;
     migrate_legacy_summaries_to_fingerprints(&conn)?;
-    invalidate_incomplete_fingerprints(&conn)?;
+    invalidate_non_prose_summaries(&conn)?;
     migrate_artifact_architecture(&conn)?;
     backfill_books_kdp_catalog(&conn)?;
 
@@ -782,9 +782,9 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
     // (id, label, description, platforms, depends_on,
     //  cost_truncation, cost_output_max, cost_per_chapter, cost_fixed_calls, model_slot, min_tier)
     let rows: &[(&str, &str, &str, &str, &str, i64, i64, i64, i64, &str, &str)] = &[
-        ("chapter_summaries", "Chapter Fingerprints", "Deterministic genre signal scan of every manuscript chapter (no AI).", "kdp,wide", "", 0, 0, 1, 0, "summaries", "basic"),
-        ("genre_analysis", "Genre Analysis", "Industry genre classification, KDP paths, comps, and reader demographic.", "kdp,wide", "chapter_summaries", 0, 1200, 0, 1, "genre", "capable"),
-        ("genre_ranking", "Genre Ranking", "Score the manuscript against all known genres independently.", "kdp,wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "genre", "capable"),
+        ("chapter_summaries", "Chapter Summaries", "AI genre-signal summary per chapter (up to 2000 words each).", "kdp,wide", "", 2000, 600, 1, 1, "summaries", "basic"),
+        ("genre_analysis", "Genre Analysis - KDP/Wide", "Industry genre classification, KDP paths, comps, and reader demographic.", "kdp,wide", "chapter_summaries", 0, 1200, 0, 1, "genre", "capable"),
+        ("genre_ranking", "Genre Ranking - KDP/Wide", "Score the manuscript against all known genres independently.", "kdp,wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "genre", "capable"),
         ("kdp_categories", "KDP Categories", "Find the best-fit Amazon categories with discoverability stats.", "kdp", "chapter_summaries,genre_analysis,genre_ranking", 0, 1200, 0, 2, "keywords", "basic"),
         ("kdp_keywords", "KDP Keywords", "Optimize the 7 keyword strings for KDP discoverability.", "kdp", "chapter_summaries,genre_analysis,genre_ranking", 0, 1200, 0, 1, "keywords", "basic"),
         ("bisac_classification", "BISAC Classification", "Select BISAC subject codes for Ingram, wide distributors, and print metadata.", "wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 2, "keywords", "basic"),
@@ -1589,7 +1589,7 @@ pub fn replace_category_results(
     Ok(())
 }
 
-// ── Chapter fingerprints ─────────────────────────────────────────────────
+// ── Chapter summaries (AI genre-signal prose) ────────────────────────────
 
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct ChapterSummaryRow {
@@ -1600,320 +1600,127 @@ pub struct ChapterSummaryRow {
 }
 
 fn migrate_legacy_summaries_to_fingerprints(conn: &Connection) -> Result<(), String> {
-    use crate::analysis::chapter_stats::ChapterFingerprint;
+    // One-time migration from an older dual-table layout; no-op if already applied.
+    let _ = conn;
+    Ok(())
+}
+
+/// Force re-summary for rows that still store fingerprint JSON instead of prose.
+fn invalidate_non_prose_summaries(conn: &Connection) -> Result<(), String> {
+    use crate::analysis::chapters::is_prose_summary;
 
     let mut stmt = conn
-        .prepare(
-            "SELECT story_folder, file, title, signals, source_hash, word_count, updated_at
-             FROM chapter_summaries",
-        )
+        .prepare("SELECT story_folder, file, signals FROM chapter_summaries")
         .map_err(|e| e.to_string())?;
-
     let rows = stmt
         .query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, String>(6)?,
             ))
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
 
-    for (story_folder, file, title, signals, source_hash, word_count, updated_at) in rows {
-        let exists: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM chapter_fingerprints WHERE story_folder = ?1 AND file = ?2",
+    for (story_folder, file, signals) in rows {
+        if !is_prose_summary(&signals) {
+            conn.execute(
+                "UPDATE chapter_summaries SET source_hash = '' WHERE story_folder = ?1 AND file = ?2",
                 params![story_folder, file],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        if exists > 0 {
-            continue;
-        }
-
-        if let Some(fp) = ChapterFingerprint::from_storage(&signals) {
-            let lexicon_json =
-                serde_json::to_string(&fp.lexicon).unwrap_or_else(|_| "{}".to_string());
-            conn.execute(
-                "INSERT INTO chapter_fingerprints
-                 (story_folder, file, title, source_hash, word_count, sentence_count,
-                  paragraph_count, dialogue_pct, pov, tense, pacing, lexicon_json, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    story_folder,
-                    file,
-                    fp.title,
-                    source_hash,
-                    fp.word_count as i64,
-                    fp.sentence_count as i64,
-                    fp.paragraph_count as i64,
-                    fp.dialogue_pct as i64,
-                    fp.pov,
-                    fp.tense,
-                    fp.pacing,
-                    lexicon_json,
-                    updated_at,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-        } else if !signals.trim().is_empty() {
-            // Legacy prose summary — keep a minimal row so the chapter stays tracked.
-            conn.execute(
-                "INSERT INTO chapter_fingerprints
-                 (story_folder, file, title, source_hash, word_count, lexicon_json, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6)",
-                params![story_folder, file, title, source_hash, word_count, updated_at],
             )
             .map_err(|e| e.to_string())?;
         }
     }
-
     Ok(())
 }
 
-/// Legacy AI-summary rows migrated without POV/tense must be rescanned.
-fn invalidate_incomplete_fingerprints(conn: &Connection) -> Result<(), String> {
-    conn.execute(
-        "UPDATE chapter_fingerprints SET source_hash = ''
-         WHERE trim(pov) = '' OR trim(tense) = ''",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE chapter_summaries SET source_hash = ''
-         WHERE EXISTS (
-           SELECT 1 FROM chapter_fingerprints f
-           WHERE f.story_folder = chapter_summaries.story_folder
-             AND f.file = chapter_summaries.file
-             AND (trim(f.pov) = '' OR trim(f.tense) = '')
-         )",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// True when the chapter has a full deterministic fingerprint (not a legacy stub).
-pub fn chapter_fingerprint_complete(
+/// True when the chapter has a current AI prose summary for this content hash.
+pub fn chapter_has_current_summary(
     conn: &Connection,
     story_folder: &str,
     file: &str,
+    source_hash: &str,
 ) -> bool {
+    use crate::analysis::chapters::is_prose_summary;
+
     conn.query_row(
-        "SELECT pov, tense FROM chapter_fingerprints
+        "SELECT source_hash, signals FROM chapter_summaries
          WHERE story_folder = ?1 AND file = ?2",
         params![story_folder, file],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     )
-    .map(|(pov, tense)| !pov.trim().is_empty() && !tense.trim().is_empty())
+    .map(|(hash, signals)| hash == source_hash && is_prose_summary(&signals))
     .unwrap_or(false)
 }
 
-fn fingerprint_row_to_summary(
-    file: String,
-    title: String,
-    word_count: i64,
-    sentence_count: i64,
-    paragraph_count: i64,
-    dialogue_pct: i64,
-    pov: String,
-    tense: String,
-    pacing: String,
-    lexicon_json: String,
-) -> ChapterSummaryRow {
-    use crate::analysis::chapter_stats::ChapterFingerprint;
-    use std::collections::HashMap;
-
-    let lexicon: HashMap<String, u32> =
-        serde_json::from_str(&lexicon_json).unwrap_or_default();
-    let fp = ChapterFingerprint {
-        schema: ChapterFingerprint::SCHEMA.to_string(),
-        title: if title.is_empty() { file.clone() } else { title.clone() },
-        word_count: word_count.max(0) as usize,
-        sentence_count: sentence_count.max(0) as usize,
-        paragraph_count: paragraph_count.max(0) as usize,
-        dialogue_pct: dialogue_pct.max(0) as u32,
-        pov,
-        tense,
-        pacing,
-        lexicon,
-    };
-    ChapterSummaryRow {
-        file,
-        title,
-        signals: fp.to_storage_json(),
-        word_count,
-    }
-}
-
-pub fn save_chapter_fingerprint(
+pub fn save_chapter_summary(
     conn: &Connection,
     story_folder: &str,
     file: &str,
-    fp: &crate::analysis::chapter_stats::ChapterFingerprint,
+    title: &str,
+    signals: &str,
     source_hash: &str,
+    word_count: i64,
 ) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
-    let lexicon_json = serde_json::to_string(&fp.lexicon).unwrap_or_else(|_| "{}".to_string());
-    let signals_json = fp.to_storage_json();
-
-    conn.execute(
-        "INSERT INTO chapter_fingerprints
-         (story_folder, file, title, source_hash, word_count, sentence_count, paragraph_count,
-          dialogue_pct, pov, tense, pacing, lexicon_json, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-         ON CONFLICT(story_folder, file) DO UPDATE SET
-            title = excluded.title,
-            source_hash = excluded.source_hash,
-            word_count = excluded.word_count,
-            sentence_count = excluded.sentence_count,
-            paragraph_count = excluded.paragraph_count,
-            dialogue_pct = excluded.dialogue_pct,
-            pov = excluded.pov,
-            tense = excluded.tense,
-            pacing = excluded.pacing,
-            lexicon_json = excluded.lexicon_json,
-            updated_at = excluded.updated_at",
-        params![
-            story_folder,
-            file,
-            fp.title,
-            source_hash,
-            fp.word_count as i64,
-            fp.sentence_count as i64,
-            fp.paragraph_count as i64,
-            fp.dialogue_pct as i64,
-            fp.pov,
-            fp.tense,
-            fp.pacing,
-            lexicon_json,
-            now,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-
-    // Keep legacy table in sync for any external tooling still reading it.
     conn.execute(
         "INSERT INTO chapter_summaries (story_folder, file, title, signals, source_hash, word_count, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(story_folder, file) DO UPDATE SET
-            title = excluded.title, signals = excluded.signals,
+            title = excluded.title,
+            signals = excluded.signals,
             source_hash = excluded.source_hash,
-            word_count = excluded.word_count, updated_at = excluded.updated_at",
-        params![story_folder, file, fp.title, signals_json, source_hash, fp.word_count as i64, now],
+            word_count = excluded.word_count,
+            updated_at = excluded.updated_at",
+        params![story_folder, file, title, signals, source_hash, word_count, now],
     )
     .map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
 pub fn load_chapter_summaries(conn: &Connection, story_folder: &str) -> Vec<ChapterSummaryRow> {
+    use crate::analysis::chapters::is_prose_summary;
+
     let mut stmt = match conn.prepare(
-        "SELECT file, title, word_count, sentence_count, paragraph_count, dialogue_pct,
-                pov, tense, pacing, lexicon_json
-         FROM chapter_fingerprints
-         WHERE story_folder = ?1
-         ORDER BY file",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-
-    let from_fingerprints: Vec<ChapterSummaryRow> = stmt
-        .query_map(params![story_folder], |r| {
-            Ok(fingerprint_row_to_summary(
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-                r.get(7)?,
-                r.get(8)?,
-                r.get(9)?,
-            ))
-        })
-        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
-        .unwrap_or_default();
-
-    if !from_fingerprints.is_empty() {
-        return from_fingerprints;
-    }
-
-    // Fallback: legacy rows not yet migrated (should be rare after init migration).
-    let mut legacy = match conn.prepare(
         "SELECT file, title, signals, word_count FROM chapter_summaries
-         WHERE story_folder = ?1 ORDER BY file",
+         WHERE story_folder = ?1 ORDER BY file COLLATE NOCASE",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
 
-    legacy
-        .query_map(params![story_folder], |r| {
-            let signals: String = r.get(2)?;
-            Ok(ChapterSummaryRow {
-                file: r.get(0)?,
-                title: r.get(1)?,
-                signals: signals.clone(),
-                word_count: r.get(3)?,
-            })
+    stmt.query_map(params![story_folder], |r| {
+        Ok(ChapterSummaryRow {
+            file: r.get(0)?,
+            title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            signals: r.get(2)?,
+            word_count: r.get(3)?,
         })
-        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
-        .unwrap_or_default()
+    })
+    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+    .unwrap_or_default()
+    .into_iter()
+    .filter(|row| is_prose_summary(&row.signals))
+    .collect()
 }
 
 pub fn chapter_summary_count(conn: &Connection, story_folder: &str) -> i64 {
-    let fp_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM chapter_fingerprints WHERE story_folder = ?1",
-            params![story_folder],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    if fp_count > 0 {
-        return fp_count;
-    }
-    conn.query_row(
-        "SELECT COUNT(*) FROM chapter_summaries WHERE story_folder = ?1",
-        params![story_folder],
-        |r| r.get(0),
-    )
-    .unwrap_or(0)
+    load_chapter_summaries(conn, story_folder).len() as i64
 }
 
 pub fn load_chapter_summary_hashes(conn: &Connection, story_folder: &str) -> std::collections::HashMap<String, String> {
     let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT file, source_hash FROM chapter_fingerprints WHERE story_folder = ?1",
+        "SELECT file, source_hash FROM chapter_summaries WHERE story_folder = ?1",
     ) {
         if let Ok(rows) = stmt.query_map(params![story_folder], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         }) {
             for row in rows.flatten() {
                 out.insert(row.0, row.1);
-            }
-        }
-    }
-
-    if out.is_empty() {
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT file, source_hash FROM chapter_summaries WHERE story_folder = ?1",
-        ) {
-            if let Ok(rows) = stmt.query_map(params![story_folder], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            }) {
-                for row in rows.flatten() {
-                    out.insert(row.0, row.1);
-                }
             }
         }
     }
@@ -1926,7 +1733,7 @@ pub fn delete_chapter_summaries(conn: &Connection, story_folder: &str) -> Result
         "DELETE FROM chapter_fingerprints WHERE story_folder = ?1",
         params![story_folder],
     )
-    .map_err(|e| e.to_string())?;
+    .ok();
     conn.execute(
         "DELETE FROM chapter_summaries WHERE story_folder = ?1",
         params![story_folder],
@@ -2774,15 +2581,13 @@ pub async fn get_archived_reports(
 // ── Story artifact state (Settings → Story Data) ─────────────────────────────
 
 #[derive(serde::Serialize, Clone, Debug)]
-pub struct ChapterFingerprintRow {
-    pub file:          String,
-    pub title:         String,
-    pub word_count:    i64,
-    pub source_hash:   String,
-    pub pov:           String,
-    pub tense:         String,
-    pub dialogue_pct:  i64,
-    pub updated_at:    String,
+pub struct ChapterSummaryStatusRow {
+    pub file:            String,
+    pub title:           String,
+    pub word_count:      i64,
+    pub source_hash:     String,
+    pub updated_at:      String,
+    pub summary_preview: String,
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -2790,7 +2595,7 @@ pub struct StoryArtifactStateResponse {
     pub manuscript_fingerprint: String,
     pub fingerprint_updated_at: String,
     pub chapter_count:          usize,
-    pub chapters:               Vec<ChapterFingerprintRow>,
+    pub chapters:               Vec<ChapterSummaryStatusRow>,
     pub artifacts:              Vec<(String, String)>, // (artifact_type, status)
 }
 
@@ -2814,24 +2619,32 @@ pub async fn get_story_artifact_state(
         )
         .unwrap_or((current_fp.clone(), String::new()));
 
-    let chapters: Vec<ChapterFingerprintRow> = {
+    let chapters: Vec<ChapterSummaryStatusRow> = {
         let mut ch_stmt = conn
             .prepare(
-                "SELECT file, title, word_count, source_hash, pov, tense, dialogue_pct, updated_at
-                 FROM chapter_fingerprints WHERE story_folder = ?1 ORDER BY file COLLATE NOCASE",
+                "SELECT file, title, word_count, source_hash, updated_at, signals
+                 FROM chapter_summaries WHERE story_folder = ?1 ORDER BY file COLLATE NOCASE",
             )
             .map_err(|e| e.to_string())?;
         let rows = ch_stmt
             .query_map(params![folder], |r| {
-                Ok(ChapterFingerprintRow {
-                    file:         r.get(0)?,
-                    title:        r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                    word_count:   r.get(2)?,
-                    source_hash:  r.get(3)?,
-                    pov:          r.get(4)?,
-                    tense:        r.get(5)?,
-                    dialogue_pct: r.get(6)?,
-                    updated_at:   r.get(7)?,
+                let signals: String = r.get(5)?;
+                if !crate::analysis::chapters::is_prose_summary(&signals) {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                }
+                let preview: String = signals.chars().take(160).collect();
+                let preview = if signals.chars().count() > 160 {
+                    format!("{preview}…")
+                } else {
+                    preview
+                };
+                Ok(ChapterSummaryStatusRow {
+                    file:            r.get(0)?,
+                    title:           r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    word_count:      r.get(2)?,
+                    source_hash:     r.get(3)?,
+                    updated_at:      r.get(4)?,
+                    summary_preview: preview,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2839,7 +2652,7 @@ pub async fn get_story_artifact_state(
     };
 
     let artifact_types = [
-        "fingerprints",
+        "summaries",
         "genre_data",
         "genre_ranking",
         "categories",
@@ -2867,16 +2680,8 @@ pub async fn get_story_artifact_state(
 #[tauri::command]
 pub async fn refresh_chapter_fingerprints(
     app: tauri::AppHandle,
-    folder: String,
+    request: crate::analysis::FolderRequest,
 ) -> Result<String, String> {
-    let request = crate::analysis::FolderRequest {
-        folder,
-        provider: String::new(),
-        api_key: String::new(),
-        model: String::new(),
-        genre_model: String::new(),
-        canopy_api_key: String::new(),
-    };
     let result = crate::analysis::chapters::generate_summaries(app, request).await;
     if result.success {
         Ok(result.report)

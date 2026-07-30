@@ -112,7 +112,7 @@ const visibleReports = computed(() => {
 const summaryStatus = computed(() => {
   const s = analysisCtx.analysisState.value;
   if (!s || !storiesCtx.activeFolder.value) {
-    return { needsRefresh: false, text: 'Select a story to manage chapter fingerprints.' };
+    return { needsRefresh: false, text: 'Select a story to manage chapter summaries.' };
   }
   if (s.summary_chapter_count === 0) {
     return { needsRefresh: false, text: 'No manuscript chapters found yet.' };
@@ -123,12 +123,12 @@ const summaryStatus = computed(() => {
     if (s.summary_stale_count > 0) parts.push(`${s.summary_stale_count} changed since last scan`);
     return {
       needsRefresh: true,
-      text: `Chapter fingerprints need refresh: ${parts.join(', ')}.`
+      text: `Chapter summaries need refresh: ${parts.join(', ')}.`
     };
   }
   return {
     needsRefresh: false,
-    text: `Chapter fingerprints are up to date (${s.summary_count}/${s.summary_chapter_count}). Manage in Settings → Story Data.`,
+    text: `Chapter summaries are up to date (${s.summary_count}/${s.summary_chapter_count}). Manage in Settings → Story Data.`,
   };
 });
 
@@ -323,25 +323,34 @@ async function maybeRefreshSummariesBeforeRun(folder: string): Promise<boolean> 
     return true;
   }
 
-  let msg = 'Some chapters need a fingerprint refresh before these reports can run.\n\n';
+  let msg = 'Some chapters need AI summarization before these reports can run.\n\n';
   try {
     const estimate = await invoke<{
       success: boolean;
       chapter_count: number;
+      input_tokens: number;
+      output_tokens: number;
       error: string;
     }>('estimate_summary_refresh_cost', {
       request: { folder },
     });
     const count = estimate.success ? estimate.chapter_count : 0;
-    msg += count > 0 ? `Chapters to scan: ${count}\n` : `${summaryStatus.value.text}\n`;
+    if (count > 0) {
+      msg += `Chapters to summarize: ${count}\n`;
+      if (estimate.input_tokens > 0) {
+        msg += `Estimated tokens: ~${estimate.input_tokens.toLocaleString()} in / ~${estimate.output_tokens.toLocaleString()} out\n`;
+      }
+    } else {
+      msg += `${summaryStatus.value.text}\n`;
+    }
   } catch {
     msg += `${summaryStatus.value.text}\n`;
   }
-  msg += 'This is instant and uses no AI.\n\nRefresh fingerprints now?';
+  msg += '\nSummarize chapters now?';
 
   const confirmed = await new Promise<boolean>((resolve) => {
     dialog.info({
-      title: 'Refresh fingerprints',
+      title: 'Refresh chapter summaries',
       content: msg,
       positiveText: 'Refresh',
       negativeText: 'Cancel',
@@ -356,7 +365,7 @@ async function maybeRefreshSummariesBeforeRun(folder: string): Promise<boolean> 
 
   const s = analysisCtx.analysisState.value;
   if (s && (s.summary_missing_count > 0 || s.summary_stale_count > 0)) {
-    message.error('Fingerprints are still not up to date after refresh. Please resolve chapter read errors and try again.');
+    message.error('Chapter summaries are still not up to date after refresh. Please resolve chapter read errors and try again.');
     return false;
   }
   return true;
@@ -529,13 +538,13 @@ function onStop(): void {
         :disabled="analysisCtx.isWorking.value || !storiesCtx.activeFolder.value"
         @click="onRefreshSummaries"
       >
-        Refresh Fingerprints
+        Refresh Summaries
       </n-button>
     </n-space>
 
     <div v-if="summaryStatus.needsRefresh" class="summary-issues">
       <div v-if="summaryIssueFiles.missing.length > 0">
-        <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 4px;">Missing fingerprints:</n-text>
+        <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 4px;">Missing summaries:</n-text>
         <ul class="summary-file-list">
           <li
             v-for="f in summaryIssueFiles.missing"

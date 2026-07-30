@@ -13,7 +13,7 @@ use super::{emit, err, extract_json_object, GenreResult, FolderRequest};
 use crate::db;
 use crate::prompts;
 
-use super::chapters::{collect_chapters, phase1_summaries, build_combined_context};
+use super::chapters::{collect_chapters, phase1_summaries, phase1_config_from, build_combined_context};
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -138,15 +138,29 @@ pub async fn analyze_genre(app: AppHandle, request: FolderRequest) -> GenreResul
     if summaries.is_empty() {
         emit(&app, "No summaries found \u{2014} running Phase 1 first...");
         let chapters = collect_chapters(&folder);
-        if chapters.is_empty() { return err("No .md files found."); }
-        phase1_summaries(&app, &database, &chapters, &request.folder).await;
+        if chapters.is_empty() {
+            return err("No .md files found.");
+        }
+        let config = phase1_config_from(
+            &request.provider,
+            &request.api_key,
+            &request.model,
+            &request.summaries_model,
+            false,
+        );
+        phase1_summaries(&app, &database, &chapters, &request.folder, &config).await;
         let conn = database.0.lock().unwrap();
         summaries = db::load_chapter_summaries(&conn, &request.folder);
     }
 
-    if summaries.is_empty() { return err("Could not produce any chapter fingerprints."); }
+    if summaries.is_empty() {
+        return err("Could not produce any chapter summaries.");
+    }
 
-    emit(&app, &format!("Phase 2: Analyzing {} chapter fingerprints...", summaries.len()));
+    emit(
+        &app,
+        &format!("Phase 2: Analyzing {} chapter summaries...", summaries.len()),
+    );
     phase2_analyze(
         &app,
         &database,
@@ -185,7 +199,7 @@ pub(crate) async fn phase2_analyze(
     emit(
         app,
         &format!(
-            "  Sending {} chapter fingerprints ({} chars) to {}...",
+            "  Sending {} chapter summaries ({} chars) to {}...",
             summaries.len(),
             combined.len(),
             genre_m

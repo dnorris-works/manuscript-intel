@@ -5,7 +5,6 @@ import type { AnalysisState, GenreResult, LogLine, SummaryChapterProgress, Summa
 
 import { useSettings } from './useSettings';
 import { useReports } from './useReports';
-import { usePlatform } from './usePlatform';
 
 const analysisState = ref<AnalysisState | null>(null);
 const isWorking = ref(false);
@@ -100,6 +99,7 @@ function getSettings() {
     apiKey: s.apiKey.value,
     model: s.model.value,
     genreModel: s.modelFor('genre'),
+    summariesModel: s.modelFor('summaries'),
     canopyApiKey: s.canopyApiKey.value,
     dataforseoLogin: s.dataforseoLogin.value,
     dataforseoPassword: s.dataforseoPassword.value,
@@ -124,7 +124,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
     appendLog('✗ Setup required before Analyze:\n' + formatSetupBlock(setupIssues));
     return;
   }
-  const { provider, apiKey, model, genreModel, canopyApiKey, dataforseoLogin, dataforseoPassword } = getSettings();
+  const { provider, apiKey, model, genreModel, summariesModel, canopyApiKey, dataforseoLogin, dataforseoPassword } = getSettings();
 
   clearLog();
   isWorking.value = true;
@@ -136,6 +136,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
       request: {
         folder, api_key: apiKey, model, provider,
         genre_model: genreModel,
+        summaries_model: summariesModel,
         force_resummarize: forceResummarize,
         canopy_api_key: canopyApiKey,
         platform,
@@ -236,7 +237,13 @@ async function runMarketIntel(folder: string): Promise<void> {
 
 async function runSummaries(folder: string): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
-  const { provider, apiKey } = getSettings();
+  const s = useSettings();
+  const setupIssues = s.checkPublishAnalyzeSetup();
+  if (setupIssues.length > 0) {
+    appendLog('✗ Setup required before summarizing:\n' + formatSetupBlock(setupIssues));
+    return;
+  }
+  const { provider, apiKey, model, summariesModel } = getSettings();
 
   clearLog();
   isWorking.value = true;
@@ -249,13 +256,14 @@ async function runSummaries(folder: string): Promise<void> {
         folder,
         provider,
         api_key: apiKey,
-        model: '',
+        model,
+        summaries_model: summariesModel,
       },
     });
     if (!result.success) {
       appendLog('✗ ' + result.error);
     } else {
-      appendLog(result.report || '✓ Chapter fingerprints refreshed.');
+      appendLog(result.report || '✓ Chapter summaries refreshed.');
     }
   } catch (e) {
     appendLog('✗ ' + String(e));

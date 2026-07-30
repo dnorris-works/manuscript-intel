@@ -775,7 +775,13 @@ pub async fn estimate_summary_refresh_cost(
     db: tauri::State<'_, crate::db::Db>,
     request: SummaryRefreshEstimateRequest,
 ) -> Result<SummaryRefreshEstimateResult, String> {
-    use crate::analysis::chapters::{chapter_source_hash, clean_for_ai, collect_chapters};
+    use crate::analysis::chapters::{
+        chapter_source_hash, clean_for_ai, collect_chapters, CHAPTER_SUMMARY_WORD_LIMIT,
+    };
+
+    const WORDS_TO_TOKENS: f64 = 1.3;
+    const SYSTEM_PROMPT_TOKENS: usize = 400;
+    const SUMMARY_OUTPUT_TOKENS: usize = 600;
 
     let folder = std::path::PathBuf::from(&request.folder);
     if !folder.exists() {
@@ -791,12 +797,11 @@ pub async fn estimate_summary_refresh_cost(
     }
 
     let chapters = collect_chapters(&folder);
-    let summary_hashes = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        crate::db::load_chapter_summary_hashes(&conn, &request.folder)
-    };
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
 
     let mut files_to_refresh: Vec<String> = Vec::new();
+    let mut input_tokens = 0usize;
+    let mut output_tokens = 0usize;
 
     for chapter in &chapters {
         let Some(file) = chapter.file_name().map(|f| f.to_string_lossy().to_string()) else {
@@ -810,9 +815,13 @@ pub async fn estimate_summary_refresh_cost(
         }
 
         let hash = chapter_source_hash(&cleaned);
-        let changed = summary_hashes.get(&file).map(|h| h != &hash).unwrap_or(true);
-        if changed {
+        let needs_refresh = !crate::db::chapter_has_current_summary(&conn, &request.folder, &file, &hash);
+        if needs_refresh {
             files_to_refresh.push(file);
+            let word_count = cleaned.split_whitespace().count();
+            let truncated = word_count.min(CHAPTER_SUMMARY_WORD_LIMIT);
+            input_tokens += (truncated as f64 * WORDS_TO_TOKENS) as usize + SYSTEM_PROMPT_TOKENS;
+            output_tokens += SUMMARY_OUTPUT_TOKENS;
         }
     }
 
@@ -820,9 +829,9 @@ pub async fn estimate_summary_refresh_cost(
         success: true,
         files: files_to_refresh.clone(),
         chapter_count: files_to_refresh.len(),
-        input_tokens: 0,
-        output_tokens: 0,
-        estimated_cost: Some(0.0),
+        input_tokens,
+        output_tokens,
+        estimated_cost: None,
         error: String::new(),
     })
 }

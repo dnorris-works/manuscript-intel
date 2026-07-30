@@ -52,6 +52,7 @@ async function onFetchModels(): Promise<void> {
 }
 
 const ASSIGNMENTS: { key: keyof ModelAssignments; label: string; hint: string }[] = [
+  { key: 'summaries', label: 'Chapter Summaries', hint: 'Per-chapter genre signal extraction. Fast model is usually fine.' },
   { key: 'genre', label: 'Genre Analysis', hint: 'Classification task. Mid-tier model is sufficient.' },
   { key: 'keywords', label: 'Keywords & Categories', hint: 'Short structured output. Fast model works — speed over depth.' },
   { key: 'continuity', label: 'Continuity Check', hint: 'Needs reasoning to spot contradictions across chapters.' },
@@ -64,7 +65,7 @@ const ASSIGNMENTS: { key: keyof ModelAssignments; label: string; hint: string }[
 <template>
   <n-space vertical :size="16">
     <n-alert type="info" :bordered="false">
-      All AI features use <strong>TokenMix</strong>. Chapter fingerprints are scanned locally in Rust (no AI).
+      All AI features use <strong>TokenMix</strong>, including per-chapter genre summaries used for publishing analysis.
     </n-alert>
 
     <n-form label-placement="top">
