@@ -2,7 +2,7 @@
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useDialog } from 'naive-ui';
-import { NButton, NText, NSpace, NAlert } from 'naive-ui';
+import { NButton, NSpace, NAlert, NCard } from 'naive-ui';
 import type { WinningCatImportResult, StaleCleanupResult } from '../../../types';
 
 const dialog = useDialog();
@@ -19,12 +19,12 @@ async function onImportWinningCat(): Promise<void> {
   try {
     const result = await invoke<WinningCatImportResult>('import_winningcat_csv');
     if (result.success) {
-      winningcatStatus.value = `✓ Imported ${result.imported} categories (${result.imported_kindle} Kindle, ${result.imported_books} Books). Skipped ${result.skipped_other_department} (other department), ${result.skipped_unparseable} (unparseable).`;
+      winningcatStatus.value = `Imported ${result.imported} categories (${result.imported_kindle} Kindle, ${result.imported_books} Books). Skipped ${result.skipped_other_department} other departments, ${result.skipped_unparseable} unparseable.`;
       lastImportedAt = result.imported_at;
       if (result.stale_count > 0) {
         showStaleRow.value = true;
         const word = result.stale_count === 1 ? 'y was' : 'ies were';
-        staleStatus.value = `${result.stale_count} categor${word} in the catalog from a previous import but missing from this one — possibly retired or renamed by Amazon.`;
+        staleStatus.value = `${result.stale_count} categor${word} missing from this import — possibly retired by Amazon.`;
       }
     } else {
       winningcatStatus.value = result.error || 'Import failed.';
@@ -40,7 +40,7 @@ function onRemoveStale(): void {
   if (!lastImportedAt) return;
   dialog.warning({
     title: 'Remove stale categories?',
-    content: 'Remove these stale categories from the catalog? This only affects reference data — no story data is touched.',
+    content: 'This only affects reference catalog data — no story data is touched.',
     positiveText: 'Remove Stale',
     negativeText: 'Cancel',
     onPositiveClick: async () => {
@@ -48,7 +48,7 @@ function onRemoveStale(): void {
         const result = await invoke<StaleCleanupResult>('remove_stale_kdp_categories', { since: lastImportedAt });
         if (result.success) {
           const word = result.removed === 1 ? 'y' : 'ies';
-          staleStatus.value = `✓ Removed ${result.removed} stale categor${word}.`;
+          staleStatus.value = `Removed ${result.removed} stale categor${word}.`;
           showStaleRow.value = false;
         } else {
           staleStatus.value = result.error || 'Cleanup failed.';
@@ -62,23 +62,26 @@ function onRemoveStale(): void {
 </script>
 
 <template>
-  <n-space vertical :size="12">
-    <n-text depth="3">
-      Import the WinningCat category catalog CSV to enable category matching.
-      Use the full Amazon categories export — it must include both
-      <strong>Kindle Store</strong> and <strong>Books</strong> departments.
-      Print and ebook browse trees are separate on KDP.
-    </n-text>
+  <n-space vertical :size="16">
+    <n-alert type="info" :bordered="false" title="WinningCat catalog">
+      Import the full Amazon categories CSV with both <strong>Kindle Store</strong> and
+      <strong>Books</strong> departments. Print and ebook browse trees are separate on KDP.
+    </n-alert>
 
-    <n-button :disabled="importDisabled" @click="onImportWinningCat">Import CSV</n-button>
+    <n-card size="small">
+      <n-space vertical>
+        <n-button type="primary" :loading="importDisabled" @click="onImportWinningCat">
+          Import CSV
+        </n-button>
+        <n-alert v-if="winningcatStatus" :type="winningcatStatus.startsWith('Error') ? 'error' : 'info'" :bordered="false">
+          {{ winningcatStatus }}
+        </n-alert>
+      </n-space>
+    </n-card>
 
-    <n-text v-if="winningcatStatus" depth="3" style="font-size: 12px;">
-      {{ winningcatStatus }}
-    </n-text>
-
-    <n-alert v-if="showStaleRow" type="warning" :bordered="false">
-      <n-text style="font-size: 12px;">{{ staleStatus }}</n-text>
-      <n-button size="small" type="error" style="margin-top: 8px;" @click="onRemoveStale">
+    <n-alert v-if="showStaleRow" type="warning" title="Stale categories detected">
+      {{ staleStatus }}
+      <n-button size="small" type="error" style="margin-top: 12px;" @click="onRemoveStale">
         Remove Stale
       </n-button>
     </n-alert>

@@ -93,6 +93,37 @@ export function useDatabaseInspector() {
     });
   });
 
+  const tableMenuOptions = computed(() => {
+    if (!dbOverview.value) return [];
+    return dbOverview.value.tables.map(t => ({
+      label: t.name,
+      key: t.name,
+      extra: t.row_count.toLocaleString(),
+    }));
+  });
+
+  const dbPageCount = computed(() => {
+    if (!dbPreview.value || dbPreview.value.total_rows === 0) return 1;
+    return Math.ceil(dbPreview.value.total_rows / DB_PAGE_SIZE);
+  });
+
+  const dbPage = computed({
+    get: () => Math.floor(dbPageOffset.value / DB_PAGE_SIZE) + 1,
+    set: (page: number) => {
+      dbPageOffset.value = (page - 1) * DB_PAGE_SIZE;
+      void loadDbTablePreview();
+    },
+  });
+
+  const dbMetaItems = computed(() => {
+    if (!dbOverview.value) return [];
+    return [
+      { label: 'File', value: dbOverview.value.path },
+      { label: 'Size', value: formatBytes(dbOverview.value.file_size_bytes) },
+      { label: 'Tables', value: String(dbOverview.value.tables.length) },
+    ];
+  });
+
   async function loadDbOverview(): Promise<void> {
     dbLoading.value = true;
     dbError.value = '';
@@ -139,19 +170,6 @@ export function useDatabaseInspector() {
     void loadDbTablePreview();
   }
 
-  function dbPrevPage(): void {
-    if (!dbPreview.value) return;
-    dbPageOffset.value = Math.max(0, dbPageOffset.value - DB_PAGE_SIZE);
-    void loadDbTablePreview();
-  }
-
-  function dbNextPage(): void {
-    if (!dbPreview.value) return;
-    if (dbPageOffset.value + DB_PAGE_SIZE >= dbPreview.value.total_rows) return;
-    dbPageOffset.value += DB_PAGE_SIZE;
-    void loadDbTablePreview();
-  }
-
   function onDatabaseTabActivated(): void {
     void loadDbOverview();
     if (selectedDbTable.value) {
@@ -173,10 +191,12 @@ export function useDatabaseInspector() {
     schemaRows,
     previewColumns,
     previewRows,
+    tableMenuOptions,
+    dbMetaItems,
+    dbPage,
+    dbPageCount,
     loadDbOverview,
     selectDbTable,
-    dbPrevPage,
-    dbNextPage,
     onDatabaseTabActivated,
   };
 }
