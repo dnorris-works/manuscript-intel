@@ -5,6 +5,8 @@ export type SettingsTab =
   | 'canopy'
   | 'dataforseo'
   | 'winningcat'
+  | 'storydata'
+  | 'archived'
   | 'database';
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -14,5 +16,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'canopy', label: 'Canopy' },
   { id: 'dataforseo', label: 'DataForSEO' },
   { id: 'winningcat', label: 'WinningCat' },
+  { id: 'storydata', label: 'Story Data' },
+  { id: 'archived', label: 'Archived Reports' },
   { id: 'database', label: 'Database' },
 ];

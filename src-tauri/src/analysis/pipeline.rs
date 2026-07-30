@@ -11,7 +11,7 @@ use super::{emit, err, GenreResult, FolderRequest, AnalyzeStoryRequest};
 use crate::db;
 use crate::models::KeywordResult;
 
-use super::chapters::{collect_chapters, phase1_summaries, clean_for_ai, chapter_source_hash, save_chapter_summaries_document};
+use super::chapters::{collect_chapters, phase1_summaries, clean_for_ai, chapter_source_hash, compute_manuscript_fingerprint};
 use super::genres::{RankedGenre, ai_rank_genres, phase2_analyze, render_full_report};
 use super::categories::{match_categories_by_store, rank_by_discoverability};
 use super::bisac::ai_pick_bisac;
@@ -22,6 +22,12 @@ use super::keywords::{
 };
 
 // ── Types ────────────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct ReportFreshness {
+    pub doc_type: String,
+    pub status:   String,
+}
 
 #[derive(serde::Serialize)]
 pub struct AnalysisState {
@@ -47,8 +53,10 @@ pub struct AnalysisState {
     pub has_continuity_check:       bool,
     pub has_show_dont_tell:         bool,
     pub has_ai_isms:                bool,
-    /// All doc_types with at least one saved document (for generic exists checks).
+    /// All doc_types with a current saved document (for generic exists checks).
     pub existing_docs:              Vec<String>,
+    pub report_freshness:           Vec<ReportFreshness>,
+    pub manuscript_fingerprint:     String,
 }
 
 // ── Folder picker ────────────────────────────────────────────────────────────
@@ -78,8 +86,11 @@ pub async fn pick_manuscript_folder(
 pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisState {
     tokio::task::spawn_blocking(move || {
         let folder_path = PathBuf::from(&folder);
+        let current_fp = compute_manuscript_fingerprint(&folder_path);
         let database    = app.state::<db::Db>();
         let conn        = database.0.lock().unwrap();
+        let _ = db::sync_manuscript_state(&conn, &folder, &current_fp);
+
         let chapters    = collect_chapters(&folder_path);
         let summary_hashes = db::load_chapter_summary_hashes(&conn, &folder);
 
@@ -114,6 +125,35 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             }
         }
 
+        let report_doc_types = [
+            "genre_analysis",
+            "genre_ranking",
+            "kdp_categories",
+            "kdp_keywords",
+            "bisac_classification",
+            "mi_search_terms",
+            "discovery_keywords",
+            "analysis",
+            "keyword_search",
+            "competition_report",
+            "review_mining",
+            "author_analysis",
+            "zeigarnik_analysis",
+            "continuity_check",
+            "show_dont_tell",
+            "ai_isms",
+        ];
+        let report_freshness: Vec<ReportFreshness> = report_doc_types
+            .iter()
+            .map(|dt| ReportFreshness {
+                doc_type: dt.to_string(),
+                status: db::report_freshness_status(&conn, &folder, dt, &current_fp).as_str().to_string(),
+            })
+            .collect();
+
+        let genre_fresh = db::artifact_status(&conn, &folder, "genre_data", &current_fp) == db::Freshness::Fresh;
+        let ranking_fresh = db::artifact_status(&conn, &folder, "genre_ranking", &current_fp) == db::Freshness::Fresh;
+
         AnalysisState {
             has_folder:                 folder_path.exists(),
             summary_count:              db::chapter_summary_count(&conn, &folder) as usize,
@@ -122,22 +162,31 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             summary_stale_count,
             summary_missing_files,
             summary_stale_files,
-            has_genre_data:             db::load_genre_data(&conn, &folder).is_some(),
-            has_full_report:            db::get_document(&conn, &folder, "full_report").is_some(),
-            has_keywords:               db::load_kdp_keywords(&conn, &folder).is_some(),
-            has_search_terms:           !db::load_mi_search_terms(&conn, &folder).is_empty(),
-            has_competition:            db::get_document(&conn, &folder, "competition_report").is_some(),
-            has_categories:             db::has_category_results(&conn, &folder),
-            has_genre_ranking:          db::has_genre_rankings(&conn, &folder),
-            has_mapped_verified:        db::get_document(&conn, &folder, "mapped_categories").is_some(),
-            has_bisac:                  db::has_bisac_classifications(&conn, &folder),
-            has_discovery_keywords:     !db::load_discovery_keywords(&conn, &folder).is_empty(),
-            has_keyword_search_results: db::has_keyword_search_results(&conn, &folder),
-            has_zeigarnik:              db::has_zeigarnik_analysis(&conn, &folder),
-            has_continuity_check:       db::get_document(&conn, &folder, "continuity_check").is_some(),
-            has_show_dont_tell:         db::get_document(&conn, &folder, "show_dont_tell").is_some(),
-            has_ai_isms:                db::get_document(&conn, &folder, "ai_isms").is_some(),
+        has_genre_data:             db::load_genre_data(&conn, &folder).is_some() && genre_fresh,
+        has_full_report:            db::report_freshness_status(&conn, &folder, "analysis", &current_fp) == db::Freshness::Fresh,
+        has_keywords:               db::load_kdp_keywords(&conn, &folder).is_some()
+            && db::report_freshness_status(&conn, &folder, "kdp_keywords", &current_fp) == db::Freshness::Fresh,
+        has_search_terms:           !db::load_mi_search_terms(&conn, &folder).is_empty()
+            && db::report_freshness_status(&conn, &folder, "mi_search_terms", &current_fp) == db::Freshness::Fresh,
+        has_competition:            db::report_freshness_status(&conn, &folder, "competition_report", &current_fp) == db::Freshness::Fresh,
+        has_categories:             db::has_category_results(&conn, &folder)
+            && db::artifact_status(&conn, &folder, "categories", &current_fp) == db::Freshness::Fresh,
+        has_genre_ranking:          db::has_genre_rankings(&conn, &folder) && ranking_fresh,
+        has_mapped_verified:        db::report_freshness_status(&conn, &folder, "mapped_categories", &current_fp) == db::Freshness::Fresh,
+        has_bisac:                  db::has_bisac_classifications(&conn, &folder)
+            && db::artifact_status(&conn, &folder, "bisac", &current_fp) == db::Freshness::Fresh,
+        has_discovery_keywords:     !db::load_discovery_keywords(&conn, &folder).is_empty()
+            && db::report_freshness_status(&conn, &folder, "discovery_keywords", &current_fp) == db::Freshness::Fresh,
+        has_keyword_search_results: db::has_keyword_search_results(&conn, &folder)
+            && db::artifact_status(&conn, &folder, "keyword_search", &current_fp) == db::Freshness::Fresh,
+        has_zeigarnik:              db::has_zeigarnik_analysis(&conn, &folder)
+            && db::artifact_status(&conn, &folder, "zeigarnik", &current_fp) == db::Freshness::Fresh,
+            has_continuity_check:       db::report_freshness_status(&conn, &folder, "continuity_check", &current_fp) == db::Freshness::Fresh,
+            has_show_dont_tell:         db::report_freshness_status(&conn, &folder, "show_dont_tell", &current_fp) == db::Freshness::Fresh,
+            has_ai_isms:                db::report_freshness_status(&conn, &folder, "ai_isms", &current_fp) == db::Freshness::Fresh,
             existing_docs:              db::list_existing_doc_types(&conn, &folder),
+            report_freshness,
+            manuscript_fingerprint:     current_fp,
         }
     }).await.unwrap()
 }
@@ -583,6 +632,19 @@ fn wants_report(selected: &[String], report_id: &str, platform: &str) -> bool {
     selected.iter().any(|s| s == report_id) && report_allowed_on_platform(report_id, platform)
 }
 
+fn save_report_if_needed(
+    conn: &rusqlite::Connection,
+    story_folder: &str,
+    doc_type: &str,
+    content: &str,
+    timestamp: &str,
+    manuscript_fp: &str,
+) {
+    if !db::should_skip_report_save(conn, story_folder, doc_type, manuscript_fp) {
+        let _ = db::save_document_current(conn, story_folder, doc_type, content, timestamp, manuscript_fp);
+    }
+}
+
 #[tauri::command]
 pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> GenreResult {
     let cancel = crate::cancel_notify();
@@ -609,36 +671,12 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
 
     let database = app.state::<db::Db>();
     let run_ts = if request.run_time.is_empty() { chrono::Utc::now().to_rfc3339() } else { request.run_time.clone() };
-
-    // ── Step 1: Chapter fingerprints (Rust scan) ───────────────────────────
-    if wants_report(selected, "chapter_summaries", platform) || request.force_resummarize {
-        emit(&app, "Step 1: Scanning chapter fingerprints...");
-        {
-            let folder_path = PathBuf::from(&request.folder);
-            if !folder_path.exists() { return err("Folder does not exist."); }
-
-            crate::reset_cancel();
-
-            if request.force_resummarize {
-                emit(&app, "  Force re-scan — deleting existing fingerprints...");
-                let conn = database.0.lock().unwrap();
-                let _ = db::delete_chapter_summaries(&conn, &request.folder);
-            }
-
-            let chapters = collect_chapters(&folder_path);
-            if chapters.is_empty() { return err("No .md chapter files found."); }
-
-            let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
-            emit(&app, &format!("  ✓ {} scanned, {} skipped.", done, skipped));
-        }
-        // Save chapter summaries as a standalone report
-        {
-            let conn = database.0.lock().unwrap();
-            if save_chapter_summaries_document(&conn, &request.folder, &run_ts) {
-                emit(&app, "  ✓ Chapter fingerprints report saved.");
-            }
-        }
-        if crate::is_cancelled() { return err("Cancelled."); }
+    let folder_path = PathBuf::from(&request.folder);
+    if !folder_path.exists() { return err("Folder does not exist."); }
+    let manuscript_fp = compute_manuscript_fingerprint(&folder_path);
+    {
+        let conn = database.0.lock().unwrap();
+        let _ = db::sync_manuscript_state(&conn, &request.folder, &manuscript_fp);
     }
 
     let needs_genre_data = wants_report(selected, "genre_analysis", platform)
@@ -651,11 +689,44 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         || wants_report(selected, "keyword_search", platform)
         || wants_report(selected, "analysis", platform);
 
+    // ── Step 1: Chapter fingerprints (infrastructure) ─────────────────────
+    if needs_genre_data || request.force_resummarize {
+        let fp_status = {
+            let conn = database.0.lock().unwrap();
+            db::artifact_status(&conn, &request.folder, "fingerprints", &manuscript_fp)
+        };
+        if request.force_resummarize {
+            emit(&app, "  Force re-scan — deleting existing fingerprints...");
+            let conn = database.0.lock().unwrap();
+            let _ = db::delete_chapter_summaries(&conn, &request.folder);
+        }
+        if fp_status != db::Freshness::Fresh || request.force_resummarize {
+            emit(&app, "Step 1: Scanning chapter fingerprints...");
+            crate::reset_cancel();
+            let chapters = collect_chapters(&folder_path);
+            if chapters.is_empty() { return err("No .md chapter files found."); }
+            let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
+            emit(&app, &format!("  ✓ {} scanned, {} skipped.", done, skipped));
+            {
+                let conn = database.0.lock().unwrap();
+                let _ = db::record_artifact_built(&conn, &request.folder, "fingerprints", &manuscript_fp);
+            }
+        } else {
+            emit(&app, "Step 1: Chapter fingerprints up to date — skipping.");
+        }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
     // ── Step 2: Genre Analysis ─────────────────────────────────────────────
     if wants_report(selected, "genre_analysis", platform) {
         emit(&app, "Step 2: Genre analysis...");
-        let genre_data_existing = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
-        if genre_data_existing.is_none() {
+        let genre_fresh = {
+            let conn = database.0.lock().unwrap();
+            db::artifact_status(&conn, &request.folder, "genre_data", &manuscript_fp) == db::Freshness::Fresh
+        };
+        if genre_fresh {
+            emit(&app, "  Genre data up to date — skipping.");
+        } else {
             let summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
             if summaries.is_empty() { return err("No chapter summaries available."); }
             let r = phase2_analyze(
@@ -664,8 +735,10 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                 &request.genre_model,
             ).await;
             if !r.success { return err(&r.error); }
-        } else {
-            emit(&app, "  Genre data exists — skipping.");
+            {
+                let conn = database.0.lock().unwrap();
+                let _ = db::record_artifact_built(&conn, &request.folder, "genre_data", &manuscript_fp);
+            }
         }
         if crate::is_cancelled() { return err("Cancelled."); }
     }
@@ -689,6 +762,13 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
     let mut ranked: Vec<RankedGenre> = Vec::new();
     let mut genre_ranking_section = String::new();
     if wants_report(selected, "genre_ranking", platform) {
+        let ranking_fresh = {
+            let conn = database.0.lock().unwrap();
+            db::artifact_status(&conn, &request.folder, "genre_ranking", &manuscript_fp) == db::Freshness::Fresh
+        };
+        if ranking_fresh {
+            emit(&app, "Step 3: Genre ranking up to date — skipping.");
+        } else {
         emit(&app, "Step 3: Ranking genres...");
         ranked = {
             let master_list = crate::genre_taxonomy::master_genre_list(&database)
@@ -733,7 +813,8 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                     "genre": r.genre, "confidence": r.confidence, "reason": r.reason,
                 })).collect::<Vec<_>>(),
             }).to_string();
-            let _ = db::save_document_at(&conn, &request.folder, "genre_ranking", &ranking_json, &run_ts);
+            save_report_if_needed(&conn, &request.folder, "genre_ranking", &ranking_json, &run_ts, &manuscript_fp);
+            let _ = db::record_artifact_built(&conn, &request.folder, "genre_ranking", &manuscript_fp);
 
             ranked
         };
@@ -747,6 +828,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                 "reason": r.reason,
             })).collect::<Vec<_>>(),
         }).to_string();
+        }
     }
 
     let genre_terms: Vec<(String, u8)> = if !ranked.is_empty() {
@@ -814,7 +896,8 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                 let conn = database.0.lock().unwrap();
                 let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
                 let rendered = render_search_terms(&keywords);
-                let _ = db::save_document_at(&conn, &request.folder, "mi_search_terms", &rendered, &run_ts);
+                save_report_if_needed(&conn, &request.folder, "mi_search_terms", &rendered, &run_ts, &manuscript_fp);
+                let _ = db::record_artifact_built(&conn, &request.folder, "mi_search_terms", &manuscript_fp);
                 emit(&app, &format!("  ✓ {} search terms saved.", keywords.len()));
             }
             Err(e) => emit(&app, &format!("  ⚠ Search terms generation failed: {}", e)),
@@ -863,7 +946,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
             },
         });
         bisac_section = bisac_json.to_string();
-        { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "bisac_classification", &bisac_section, &run_ts); }
+        { let conn = database.0.lock().unwrap(); save_report_if_needed(&conn, &request.folder, "bisac_classification", &bisac_section, &run_ts, &manuscript_fp); let _ = db::record_artifact_built(&conn, &request.folder, "bisac", &manuscript_fp); }
         if crate::is_cancelled() { return err("Cancelled."); }
     }
 
@@ -898,7 +981,8 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                     "keyword": k.keyword, "searches": k.searches, "competition": k.competition, "earnings": k.estimated_earnings,
                 })).collect::<Vec<_>>(),
             }).to_string();
-            let _ = db::save_document_at(&conn, &request.folder, "keyword_search", &ks_json, &run_ts);
+            save_report_if_needed(&conn, &request.folder, "keyword_search", &ks_json, &run_ts, &manuscript_fp);
+            let _ = db::record_artifact_built(&conn, &request.folder, "keyword_search", &manuscript_fp);
         }
         if crate::is_cancelled() { return err("Cancelled."); }
     }
@@ -966,7 +1050,8 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                     "schema": "discovery_keywords_v1",
                     "keywords": enriched.iter().map(|e| serde_json::json!({ "phrase": e.phrase, "rationale": e.rationale })).collect::<Vec<_>>(),
                 }).to_string();
-                let _ = db::save_document_at(&conn, &request.folder, "discovery_keywords", &dk_json, &run_ts);
+                save_report_if_needed(&conn, &request.folder, "discovery_keywords", &dk_json, &run_ts, &manuscript_fp);
+                let _ = db::record_artifact_built(&conn, &request.folder, "discovery_keywords", &manuscript_fp);
                 emit(&app, &format!("  ✓ {} discovery keywords saved.", enriched.len()));
                 enriched
             }
@@ -1023,8 +1108,15 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         &positioning_section,
     );
 
-    { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "analysis", &report, &run_ts); }
-    emit(&app, "✓ Full analysis report saved.");
+    {
+        let conn = database.0.lock().unwrap();
+        if db::should_skip_report_save(&conn, &request.folder, "analysis", &manuscript_fp) {
+            emit(&app, "✓ Analysis report up to date — skipping save.");
+        } else {
+            let _ = db::save_document_current(&conn, &request.folder, "analysis", &report, &run_ts, &manuscript_fp);
+            emit(&app, "✓ Full analysis report saved.");
+        }
+    }
 
     GenreResult { success: true, report, error: String::new(), run_ts: run_ts.clone() }
 }
@@ -1115,7 +1207,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
         }
     }
 
-    // ── Chapter Summaries ─────────────────────────────────────────────────
+    // ── Chapter fingerprints (infrastructure — not saved as a report) ─────
     if request.selected.contains(&"chapter_summaries".to_string()) {
         emit(&app, "Scanning chapter fingerprints (deterministic — no AI)...");
         let chapters = collect_chapters(&folder);
@@ -1124,11 +1216,9 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
         let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
         emit(&app, &format!("✓ Chapter fingerprints complete ({} new, {} skipped).", done, skipped));
 
-        // Save as report
+        let manuscript_fp = compute_manuscript_fingerprint(&folder);
         let conn = database.0.lock().unwrap();
-        if save_chapter_summaries_document(&conn, &request.folder, &run_ts) {
-            emit(&app, "✓ Chapter fingerprints report saved.");
-        }
+        let _ = db::record_artifact_built(&conn, &request.folder, "fingerprints", &manuscript_fp);
 
         if crate::is_cancelled() { return err("Cancelled."); }
     }

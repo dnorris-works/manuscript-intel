@@ -41,6 +41,11 @@ export interface SummaryChapterProgress {
   status: 'started' | 'done' | 'skipped';
 }
 
+export interface ReportFreshness {
+  doc_type: string;
+  status: 'fresh' | 'stale' | 'missing';
+}
+
 export interface AnalysisState {
   has_folder: boolean;
   summary_count: number;
@@ -65,6 +70,36 @@ export interface AnalysisState {
   has_show_dont_tell: boolean;
   has_ai_isms: boolean;
   existing_docs: string[];
+  report_freshness: ReportFreshness[];
+  manuscript_fingerprint: string;
+}
+
+export interface ArchivedReportRow {
+  id: number;
+  doc_type: string;
+  label: string;
+  generated_at: string;
+  archived_at: string;
+  archive_reason: string;
+}
+
+export interface ChapterFingerprintRow {
+  file: string;
+  title: string;
+  word_count: number;
+  source_hash: string;
+  pov: string;
+  tense: string;
+  dialogue_pct: number;
+  updated_at: string;
+}
+
+export interface StoryArtifactStateResponse {
+  manuscript_fingerprint: string;
+  fingerprint_updated_at: string;
+  chapter_count: number;
+  chapters: ChapterFingerprintRow[];
+  artifacts: [string, string][];
 }
 
 export interface SeriesRow {

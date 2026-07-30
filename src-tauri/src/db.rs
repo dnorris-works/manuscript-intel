@@ -610,6 +610,7 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     seed_lookup_config(&conn)?;
     migrate_legacy_summaries_to_fingerprints(&conn)?;
     invalidate_incomplete_fingerprints(&conn)?;
+    migrate_artifact_architecture(&conn)?;
     backfill_books_kdp_catalog(&conn)?;
 
     Ok(Db(Mutex::new(conn)))
@@ -2084,6 +2085,248 @@ pub fn replace_keyword_search_results(
 }
 
 
+// ── Manuscript fingerprint + artifact state ──────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Freshness {
+    Missing,
+    Fresh,
+    Stale,
+}
+
+impl Freshness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Freshness::Missing => "missing",
+            Freshness::Fresh => "fresh",
+            Freshness::Stale => "stale",
+        }
+    }
+}
+
+fn migrate_artifact_architecture(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS story_manuscript_state (
+            story_folder TEXT PRIMARY KEY,
+            manuscript_fingerprint TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS story_artifact_state (
+            story_folder TEXT NOT NULL,
+            artifact_type TEXT NOT NULL,
+            built_from_manuscript_fingerprint TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (story_folder, artifact_type)
+        );",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let has_status: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('story_documents') WHERE name = 'status'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    if !has_status {
+        for sql in [
+            "ALTER TABLE story_documents ADD COLUMN status TEXT NOT NULL DEFAULT 'current'",
+            "ALTER TABLE story_documents ADD COLUMN manuscript_fingerprint_at_save TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE story_documents ADD COLUMN archived_at TEXT",
+            "ALTER TABLE story_documents ADD COLUMN archive_reason TEXT",
+        ] {
+            let _ = conn.execute(sql, []);
+        }
+
+        conn.execute_batch(
+            "UPDATE story_documents SET status = 'archived', archived_at = generated_at, archive_reason = 'migration'
+             WHERE id IN (
+               SELECT sd.id FROM story_documents sd
+               INNER JOIN (
+                 SELECT story_folder, doc_type, MAX(id) AS max_id
+                 FROM story_documents GROUP BY story_folder, doc_type
+               ) latest ON sd.story_folder = latest.story_folder AND sd.doc_type = latest.doc_type
+               WHERE sd.id != latest.max_id
+             );",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let _ = conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_story_docs_current
+         ON story_documents(story_folder, doc_type) WHERE status = 'current';",
+    );
+
+    let _ = conn.execute(
+        "ALTER TABLE report_types ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE report_types SET hidden = 1 WHERE id = 'chapter_summaries'",
+        [],
+    );
+
+    Ok(())
+}
+
+pub fn stored_manuscript_fingerprint(conn: &Connection, story_folder: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT manuscript_fingerprint FROM story_manuscript_state WHERE story_folder = ?1",
+        params![story_folder],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+fn upsert_manuscript_state(
+    conn: &Connection,
+    story_folder: &str,
+    fingerprint: &str,
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO story_manuscript_state (story_folder, manuscript_fingerprint, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(story_folder) DO UPDATE SET
+            manuscript_fingerprint = excluded.manuscript_fingerprint,
+            updated_at = excluded.updated_at",
+        params![story_folder, fingerprint, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn archive_current_reports(
+    conn: &Connection,
+    story_folder: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE story_documents SET status = 'archived', archived_at = ?1, archive_reason = ?2
+         WHERE story_folder = ?3 AND status = 'current'",
+        params![now, reason, story_folder],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn mark_artifacts_stale(conn: &Connection, story_folder: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM story_artifact_state WHERE story_folder = ?1",
+        params![story_folder],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn on_manuscript_changed(
+    conn: &Connection,
+    story_folder: &str,
+    new_fingerprint: &str,
+) -> Result<(), String> {
+    archive_current_reports(conn, story_folder, "manuscript_changed")?;
+    mark_artifacts_stale(conn, story_folder)?;
+    upsert_manuscript_state(conn, story_folder, new_fingerprint)
+}
+
+/// Returns true when the manuscript fingerprint changed (reports were archived).
+pub fn sync_manuscript_state(
+    conn: &Connection,
+    story_folder: &str,
+    current_fingerprint: &str,
+) -> Result<bool, String> {
+    let stored = stored_manuscript_fingerprint(conn, story_folder);
+    match stored.as_deref() {
+        Some(s) if s == current_fingerprint => Ok(false),
+        Some(_) => {
+            on_manuscript_changed(conn, story_folder, current_fingerprint)?;
+            Ok(true)
+        }
+        None => {
+            upsert_manuscript_state(conn, story_folder, current_fingerprint)?;
+            Ok(false)
+        }
+    }
+}
+
+pub fn artifact_status(
+    conn: &Connection,
+    story_folder: &str,
+    artifact_type: &str,
+    current_fp: &str,
+) -> Freshness {
+    let built: Option<String> = conn
+        .query_row(
+            "SELECT built_from_manuscript_fingerprint FROM story_artifact_state
+             WHERE story_folder = ?1 AND artifact_type = ?2",
+            params![story_folder, artifact_type],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten()
+        .filter(|s: &String| !s.is_empty());
+
+    match built {
+        None => Freshness::Missing,
+        Some(ref b) if b == current_fp => Freshness::Fresh,
+        _ => Freshness::Stale,
+    }
+}
+
+pub fn record_artifact_built(
+    conn: &Connection,
+    story_folder: &str,
+    artifact_type: &str,
+    fingerprint: &str,
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO story_artifact_state (story_folder, artifact_type, built_from_manuscript_fingerprint, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(story_folder, artifact_type) DO UPDATE SET
+            built_from_manuscript_fingerprint = excluded.built_from_manuscript_fingerprint,
+            updated_at = excluded.updated_at",
+        params![story_folder, artifact_type, fingerprint, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn report_freshness_status(
+    conn: &Connection,
+    story_folder: &str,
+    doc_type: &str,
+    current_fp: &str,
+) -> Freshness {
+    let saved_fp: Option<String> = conn
+        .query_row(
+            "SELECT manuscript_fingerprint_at_save FROM story_documents
+             WHERE story_folder = ?1 AND doc_type = ?2 AND status = 'current'",
+            params![story_folder, doc_type],
+            |r| r.get(0),
+        )
+        .ok()
+        .filter(|s: &String| !s.is_empty());
+
+    match saved_fp {
+        None => Freshness::Missing,
+        Some(ref fp) if fp == current_fp => Freshness::Fresh,
+        _ => Freshness::Stale,
+    }
+}
+
+pub fn should_skip_report_save(
+    conn: &Connection,
+    story_folder: &str,
+    doc_type: &str,
+    current_fp: &str,
+) -> bool {
+    report_freshness_status(conn, story_folder, doc_type, current_fp) == Freshness::Fresh
+}
+
 // ── Story documents (rendered markdown cache, read by the Reports panel) ─────
 
 /// Look up the display label for a doc_type from the report_types table.
@@ -2102,25 +2345,45 @@ pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, cont
 }
 
 pub fn save_document_at(conn: &Connection, story_folder: &str, doc_type: &str, content: &str, timestamp: &str) -> Result<(), String> {
+    let fp = stored_manuscript_fingerprint(conn, story_folder).unwrap_or_default();
+    save_document_current(conn, story_folder, doc_type, content, timestamp, &fp)
+}
+
+pub fn save_document_current(
+    conn: &Connection,
+    story_folder: &str,
+    doc_type: &str,
+    content: &str,
+    timestamp: &str,
+    manuscript_fingerprint: &str,
+) -> Result<(), String> {
     conn.execute(
-        "INSERT INTO story_documents (story_folder, doc_type, content, generated_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![story_folder, doc_type, content, timestamp],
-    ).map_err(|e| e.to_string())?;
+        "DELETE FROM story_documents WHERE story_folder = ?1 AND doc_type = ?2 AND status = 'current'",
+        params![story_folder, doc_type],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO story_documents (story_folder, doc_type, content, generated_at, status, manuscript_fingerprint_at_save)
+         VALUES (?1, ?2, ?3, ?4, 'current', ?5)",
+        params![story_folder, doc_type, content, timestamp, manuscript_fingerprint],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub fn get_document(conn: &Connection, story_folder: &str, doc_type: &str) -> Option<String> {
     conn.query_row(
-        "SELECT content FROM story_documents WHERE story_folder = ?1 AND doc_type = ?2 ORDER BY generated_at DESC LIMIT 1",
-        params![story_folder, doc_type], |r| r.get(0)
-    ).ok()
+        "SELECT content FROM story_documents WHERE story_folder = ?1 AND doc_type = ?2 AND status = 'current' LIMIT 1",
+        params![story_folder, doc_type],
+        |r| r.get(0),
+    )
+    .ok()
 }
 
-/// Distinct doc_types that have at least one saved document for this story.
+/// Distinct doc_types that have a current saved document for this story.
 pub fn list_existing_doc_types(conn: &Connection, story_folder: &str) -> Vec<String> {
     let mut stmt = match conn.prepare(
-        "SELECT DISTINCT doc_type FROM story_documents WHERE story_folder = ?1"
+        "SELECT DISTINCT doc_type FROM story_documents WHERE story_folder = ?1 AND status = 'current'",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -2152,8 +2415,12 @@ pub struct ReportEnvelope {
 
 pub fn list_documents(conn: &Connection, story_folder: &str) -> Vec<DocMeta> {
     let mut stmt = match conn.prepare(
-        "SELECT id, doc_type, generated_at FROM story_documents WHERE story_folder = ?1 ORDER BY generated_at DESC"
-    ) { Ok(s) => s, Err(_) => return Vec::new() };
+        "SELECT id, doc_type, generated_at FROM story_documents
+         WHERE story_folder = ?1 AND status = 'current' ORDER BY generated_at DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
 
     let rows: Vec<(i64, String, String)> = stmt.query_map(params![story_folder], |r| {
         Ok((r.get(0)?, r.get(1)?, r.get(2)?))
@@ -2252,7 +2519,7 @@ pub async fn list_report_types_cmd(db: tauri::State<'_, Db>) -> Result<Vec<Repor
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT id, label, description, platforms, depends_on, model_slot, min_tier
-         FROM report_types ORDER BY rowid"
+         FROM report_types WHERE COALESCE(hidden, 0) = 0 ORDER BY rowid",
     ).map_err(|e| e.to_string())?;
 
     let rows = stmt.query_map([], |r| {
@@ -2302,47 +2569,17 @@ pub async fn get_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<ReportE
     Ok(ReportEnvelope { id, doc_type, label, format: format.to_string(), content, generated_at })
 }
 
-// ── Delete a report version ────────────────────────
-
-/// Remove underlying analysis rows when the last saved document of a type is deleted.
-fn delete_report_source_data(conn: &Connection, story_folder: &str, doc_type: &str) -> Result<(), String> {
-    match doc_type {
-        "chapter_summaries" => delete_chapter_summaries(conn, story_folder),
-        _ => Ok(()),
-    }
-}
+// ── Delete a report snapshot ────────────────────────
 
 #[tauri::command]
 pub async fn delete_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-
-    let (story_folder, doc_type): (String, String) = conn
-        .query_row(
-            "SELECT story_folder, doc_type FROM story_documents WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(|_| "Report not found.".to_string())?;
-
     let affected = conn
         .execute("DELETE FROM story_documents WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     if affected == 0 {
         return Err("Report not found.".to_string());
     }
-
-    let remaining: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM story_documents WHERE story_folder = ?1 AND doc_type = ?2",
-            params![story_folder, doc_type],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-
-    if remaining == 0 {
-        delete_report_source_data(&conn, &story_folder, &doc_type)?;
-    }
-
     Ok(())
 }
 
@@ -2393,7 +2630,7 @@ pub async fn get_sidebar_reports(db: tauri::State<'_, Db>, folder: String, platf
       })
       .collect();
 
-    // Get all saved documents for this folder
+    // Get all saved current documents for this folder
     let docs = list_documents(&conn, &folder);
 
     // Group docs by doc_type, sorted newest first (already sorted by query)
@@ -2419,6 +2656,192 @@ pub async fn get_sidebar_reports(db: tauri::State<'_, Db>, folder: String, platf
         .collect();
 
     Ok(groups)
+}
+
+// ── Archived reports (Settings tab) ─────────────────────────────────────────
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct ArchivedReportRow {
+    pub id:            i64,
+    pub doc_type:      String,
+    pub label:         String,
+    pub generated_at:  String,
+    pub archived_at:   String,
+    pub archive_reason: String,
+}
+
+pub fn list_archived_reports(conn: &Connection, story_folder: &str) -> Vec<ArchivedReportRow> {
+    let mut stmt = match conn.prepare(
+        "SELECT id, doc_type, generated_at, archived_at, archive_reason
+         FROM story_documents
+         WHERE story_folder = ?1 AND status = 'archived'
+         ORDER BY archived_at DESC, id DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let raw: Vec<(i64, String, String, String, String)> = stmt
+        .query_map(params![story_folder], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            ))
+        })
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+
+    raw.into_iter()
+        .map(|(id, doc_type, generated_at, archived_at, archive_reason)| {
+            let label = label_for_doc_type(conn, &doc_type);
+            ArchivedReportRow {
+                id,
+                doc_type,
+                label,
+                generated_at,
+                archived_at,
+                archive_reason,
+            }
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn get_archived_reports(
+    db: tauri::State<'_, Db>,
+    folder: String,
+) -> Result<Vec<ArchivedReportRow>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(list_archived_reports(&conn, &folder))
+}
+
+// ── Story artifact state (Settings → Story Data) ─────────────────────────────
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct ChapterFingerprintRow {
+    pub file:          String,
+    pub title:         String,
+    pub word_count:    i64,
+    pub source_hash:   String,
+    pub pov:           String,
+    pub tense:         String,
+    pub dialogue_pct:  i64,
+    pub updated_at:    String,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct StoryArtifactStateResponse {
+    pub manuscript_fingerprint: String,
+    pub fingerprint_updated_at: String,
+    pub chapter_count:          usize,
+    pub chapters:               Vec<ChapterFingerprintRow>,
+    pub artifacts:              Vec<(String, String)>, // (artifact_type, status)
+}
+
+#[tauri::command]
+pub async fn get_story_artifact_state(
+    db: tauri::State<'_, Db>,
+    folder: String,
+) -> Result<StoryArtifactStateResponse, String> {
+    let folder_path = std::path::PathBuf::from(&folder);
+    let current_fp =
+        crate::analysis::chapters::compute_manuscript_fingerprint(&folder_path);
+
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let _ = sync_manuscript_state(&conn, &folder, &current_fp)?;
+
+    let (manuscript_fingerprint, fingerprint_updated_at) = conn
+        .query_row(
+            "SELECT manuscript_fingerprint, updated_at FROM story_manuscript_state WHERE story_folder = ?1",
+            params![folder],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .unwrap_or((current_fp.clone(), String::new()));
+
+    let chapters: Vec<ChapterFingerprintRow> = {
+        let mut ch_stmt = conn
+            .prepare(
+                "SELECT file, title, word_count, source_hash, pov, tense, dialogue_pct, updated_at
+                 FROM chapter_fingerprints WHERE story_folder = ?1 ORDER BY file COLLATE NOCASE",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = ch_stmt
+            .query_map(params![folder], |r| {
+                Ok(ChapterFingerprintRow {
+                    file:         r.get(0)?,
+                    title:        r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    word_count:   r.get(2)?,
+                    source_hash:  r.get(3)?,
+                    pov:          r.get(4)?,
+                    tense:        r.get(5)?,
+                    dialogue_pct: r.get(6)?,
+                    updated_at:   r.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let artifact_types = [
+        "fingerprints",
+        "genre_data",
+        "genre_ranking",
+        "categories",
+        "kdp_keywords",
+        "mi_search_terms",
+        "discovery_keywords",
+        "keyword_search",
+        "bisac",
+        "zeigarnik",
+    ];
+    let artifacts: Vec<(String, String)> = artifact_types
+        .iter()
+        .map(|t| (t.to_string(), artifact_status(&conn, &folder, t, &manuscript_fingerprint).as_str().to_string()))
+        .collect();
+
+    Ok(StoryArtifactStateResponse {
+        manuscript_fingerprint,
+        fingerprint_updated_at,
+        chapter_count: chapters.len(),
+        chapters,
+        artifacts,
+    })
+}
+
+#[tauri::command]
+pub async fn refresh_chapter_fingerprints(
+    app: tauri::AppHandle,
+    folder: String,
+) -> Result<String, String> {
+    let request = crate::analysis::FolderRequest {
+        folder,
+        provider: String::new(),
+        api_key: String::new(),
+        model: String::new(),
+        genre_model: String::new(),
+        canopy_api_key: String::new(),
+    };
+    let result = crate::analysis::chapters::generate_summaries(app, request).await;
+    if result.success {
+        Ok(result.report)
+    } else {
+        Err(result.error)
+    }
+}
+
+#[tauri::command]
+pub async fn clear_chapter_fingerprints(
+    db: tauri::State<'_, Db>,
+    folder: String,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    delete_chapter_summaries(&conn, &folder)?;
+    mark_artifacts_stale(&conn, &folder)?;
+    Ok(())
 }
 
 // ── BISAC classifications ──────────────────────────────────────────────
@@ -2623,13 +3046,16 @@ pub async fn inspect_database_table(
     let mut col_stmt = conn
         .prepare(&format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\"")))
         .map_err(|e| e.to_string())?;
-    let columns: Vec<String> = col_stmt
-        .query_map([], |r| r.get::<_, String>(1))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+    let mut columns: Vec<String> = vec!["rowid".to_string()];
+    columns.extend(
+        col_stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?,
+    );
 
-    if columns.is_empty() {
+    if columns.len() <= 1 {
         return Ok(DbTablePreview {
             table: table.clone(),
             columns,
@@ -2640,13 +3066,13 @@ pub async fn inspect_database_table(
         });
     }
 
-    let col_list = columns
+    let data_col_list = columns[1..]
         .iter()
         .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "SELECT {col_list} FROM \"{}\" LIMIT ?1 OFFSET ?2",
+        "SELECT rowid, {data_col_list} FROM \"{}\" LIMIT ?1 OFFSET ?2",
         table.replace('"', "\"\"")
     );
 
@@ -2698,4 +3124,146 @@ pub async fn inspect_database_table(
         offset,
         limit,
     })
+}
+
+#[derive(serde::Deserialize)]
+pub struct DbDeleteRowRequest {
+    pub table: String,
+    pub rowid: i64,
+}
+
+#[derive(serde::Deserialize)]
+pub struct DbUpdateRowRequest {
+    pub table:  String,
+    pub rowid:    i64,
+    pub values:   std::collections::HashMap<String, String>,
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let mut col_stmt = conn
+        .prepare(&format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\"")))
+        .map_err(|e| e.to_string())?;
+    let cols = col_stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(cols)
+}
+
+#[tauri::command]
+pub async fn delete_database_row_cmd(
+    db: tauri::State<'_, Db>,
+    request: DbDeleteRowRequest,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let allowed = list_user_table_names(&conn)?;
+    if !allowed.iter().any(|t| t == &request.table) {
+        return Err(format!("Unknown table: {}", request.table));
+    }
+    let sql = format!(
+        "DELETE FROM \"{}\" WHERE rowid = ?1",
+        request.table.replace('"', "\"\"")
+    );
+    let affected = conn
+        .execute(&sql, params![request.rowid])
+        .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err("Row not found.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_database_row_cmd(
+    db: tauri::State<'_, Db>,
+    request: DbUpdateRowRequest,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let allowed = list_user_table_names(&conn)?;
+    if !allowed.iter().any(|t| t == &request.table) {
+        return Err(format!("Unknown table: {}", request.table));
+    }
+
+    let table = &request.table;
+    let columns = table_columns(&conn, table)?;
+    if columns.is_empty() {
+        return Err("Table has no columns.".to_string());
+    }
+
+    if table == "app_settings" {
+        if let Some(key) = request.values.get("key") {
+            if is_sensitive_setting_key(key) {
+                return Err("Cannot edit sensitive settings keys via the database inspector.".to_string());
+            }
+        }
+        if request.values.contains_key("value") {
+            let current_key: String = conn
+                .query_row(
+                    &format!(
+                        "SELECT \"key\" FROM \"{}\" WHERE rowid = ?1",
+                        table.replace('"', "\"\"")
+                    ),
+                    params![request.rowid],
+                    |r| r.get(0),
+                )
+                .map_err(|_| "Row not found.".to_string())?;
+            if is_sensitive_setting_key(&current_key) {
+                return Err("Cannot edit sensitive settings values via the database inspector.".to_string());
+            }
+        }
+    }
+
+    let mut sets: Vec<String> = Vec::new();
+    let mut bind_values: Vec<String> = Vec::new();
+    for (col, val) in &request.values {
+        if col == "rowid" || !columns.iter().any(|c| c == col) {
+            continue;
+        }
+        sets.push(format!("\"{}\" = ?", col.replace('"', "\"\"")));
+        bind_values.push(val.clone());
+    }
+    if sets.is_empty() {
+        return Err("No valid columns to update.".to_string());
+    }
+
+    let sql = format!(
+        "UPDATE \"{}\" SET {} WHERE rowid = ?",
+        table.replace('"', "\"\""),
+        sets.join(", ")
+    );
+    let affected = match bind_values.len() {
+        1 => conn.execute(&sql, params![bind_values[0], request.rowid]),
+        2 => conn.execute(&sql, params![bind_values[0], bind_values[1], request.rowid]),
+        3 => conn.execute(&sql, params![bind_values[0], bind_values[1], bind_values[2], request.rowid]),
+        4 => conn.execute(
+            &sql,
+            params![
+                bind_values[0],
+                bind_values[1],
+                bind_values[2],
+                bind_values[3],
+                request.rowid
+            ],
+        ),
+        5 => conn.execute(
+            &sql,
+            params![
+                bind_values[0],
+                bind_values[1],
+                bind_values[2],
+                bind_values[3],
+                bind_values[4],
+                request.rowid
+            ],
+        ),
+        _ => {
+            return Err("Too many columns to update at once (max 5).".to_string());
+        }
+    }
+    .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err("Row not found or update failed.".to_string());
+    }
+    Ok(())
 }

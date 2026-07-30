@@ -93,6 +93,25 @@ export function useDatabaseInspector() {
     });
   });
 
+  async function deleteRow(rowid: number): Promise<void> {
+    if (!selectedDbTable.value) return;
+    await invoke<void>('delete_database_row_cmd', {
+      request: { table: selectedDbTable.value, rowid },
+    });
+    await loadDbTablePreview();
+    await loadDbOverview();
+  }
+
+  async function updateRow(rowid: number, values: Record<string, string>): Promise<void> {
+    if (!selectedDbTable.value) return;
+    const filtered = { ...values };
+    delete filtered.rowid;
+    await invoke<void>('update_database_row_cmd', {
+      request: { table: selectedDbTable.value, rowid, values: filtered },
+    });
+    await loadDbTablePreview();
+  }
+
   const tableMenuOptions = computed(() => {
     if (!dbOverview.value) return [];
     return dbOverview.value.tables.map(t => ({
@@ -198,5 +217,7 @@ export function useDatabaseInspector() {
     loadDbOverview,
     selectDbTable,
     onDatabaseTabActivated,
+    deleteRow,
+    updateRow,
   };
 }

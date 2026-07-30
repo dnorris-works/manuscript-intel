@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { watch } from 'vue';
+import { computed, h, ref, watch } from 'vue';
 import type { MenuOption } from 'naive-ui';
 import {
   NLayout, NLayoutSider, NLayoutContent, NMenu, NDescriptions, NDescriptionsItem,
   NButton, NSpace, NCard, NDataTable, NAlert, NSpin, NEmpty, NPagination, NCode,
+  NModal, NForm, NFormItem, NInput, useDialog, useMessage,
 } from 'naive-ui';
 import { useDatabaseInspector } from '../../../composables/useDatabaseInspector';
 
 const props = defineProps<{
   active?: boolean;
 }>();
+
+const dialog = useDialog();
+const message = useMessage();
 
 const {
   dbOverview,
@@ -21,7 +25,6 @@ const {
   selectedTableInfo,
   schemaColumns,
   schemaRows,
-  previewColumns,
   previewRows,
   tableMenuOptions,
   dbMetaItems,
@@ -30,7 +33,84 @@ const {
   loadDbOverview,
   selectDbTable,
   onDatabaseTabActivated,
+  deleteRow,
+  updateRow,
 } = useDatabaseInspector();
+
+const showEditModal = ref(false);
+const editingValues = ref<Record<string, string>>({});
+const editingRowid = ref<number | null>(null);
+const saving = ref(false);
+
+const previewColumns = computed(() => {
+  if (!dbPreview.value) return [];
+  const cols = dbPreview.value.columns.map(col => ({
+    title: col,
+    key: col,
+    ellipsis: { tooltip: true },
+  }));
+  cols.push({
+    title: 'Actions',
+    key: '_actions',
+    width: 140,
+    render: (row: Record<string, string>) => {
+      const rowid = Number(row.rowid);
+      return h(NSpace, { size: 8 }, {
+        default: () => [
+          h(NButton, { size: 'tiny', onClick: () => openEdit(row) }, { default: () => 'Edit' }),
+          h(NButton, { size: 'tiny', type: 'error', secondary: true, onClick: () => confirmDelete(rowid) }, { default: () => 'Delete' }),
+        ],
+      });
+    },
+  } as never);
+  return cols;
+});
+
+const editableColumns = computed(() => {
+  if (!dbPreview.value) return [];
+  return dbPreview.value.columns.filter(c => c !== 'rowid');
+});
+
+function openEdit(row: Record<string, string>): void {
+  editingRowid.value = Number(row.rowid);
+  const values: Record<string, string> = {};
+  for (const col of editableColumns.value) {
+    values[col] = row[col] ?? '';
+  }
+  editingValues.value = values;
+  showEditModal.value = true;
+}
+
+async function saveEdit(): Promise<void> {
+  if (editingRowid.value == null) return;
+  saving.value = true;
+  try {
+    await updateRow(editingRowid.value, editingValues.value);
+    showEditModal.value = false;
+    message.success('Row updated.');
+  } catch (e) {
+    message.error('Update failed: ' + String(e));
+  } finally {
+    saving.value = false;
+  }
+}
+
+function confirmDelete(rowid: number): void {
+  dialog.warning({
+    title: 'Delete row',
+    content: `Delete row ${rowid}? This cannot be undone.`,
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      try {
+        await deleteRow(rowid);
+        message.success('Row deleted.');
+      } catch (e) {
+        message.error('Delete failed: ' + String(e));
+      }
+    },
+  });
+}
 
 watch(() => props.active, (isActive) => {
   if (isActive) {
@@ -101,7 +181,7 @@ function onMenuUpdate(key: string): void {
                 :data="previewRows"
                 :bordered="false"
                 :single-line="false"
-                :scroll-x="Math.max(600, previewColumns.length * 140)"
+                :scroll-x="Math.max(700, previewColumns.length * 140)"
                 max-height="360"
                 :row-key="(row: Record<string, string>) => row._rowKey"
               />
@@ -120,5 +200,22 @@ function onMenuUpdate(key: string): void {
         <n-empty v-else description="Select a table to inspect" />
       </n-layout-content>
     </n-layout>
+
+    <n-modal v-model:show="showEditModal" preset="card" title="Edit row" style="width: 520px;">
+      <n-form v-if="editingRowid != null" label-placement="top">
+        <n-form-item label="rowid">
+          <n-input :value="String(editingRowid)" readonly />
+        </n-form-item>
+        <n-form-item v-for="col in editableColumns" :key="col" :label="col">
+          <n-input v-model:value="editingValues[col]" type="textarea" :autosize="{ minRows: 1, maxRows: 6 }" />
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showEditModal = false">Cancel</n-button>
+          <n-button type="primary" :loading="saving" @click="saveEdit">Save</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </n-space>
 </template>

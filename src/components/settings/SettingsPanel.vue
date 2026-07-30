@@ -12,6 +12,8 @@ import SettingsCanopyTab from './tabs/SettingsCanopyTab.vue';
 import SettingsDataForSeoTab from './tabs/SettingsDataForSeoTab.vue';
 import SettingsWinningCatTab from './tabs/SettingsWinningCatTab.vue';
 import SettingsDatabaseTab from './tabs/SettingsDatabaseTab.vue';
+import SettingsStoryDataTab from './tabs/SettingsStoryDataTab.vue';
+import SettingsArchivedReportsTab from './tabs/SettingsArchivedReportsTab.vue';
 
 const settingsCtx = inject(settingsKey)!;
 const showPanel = inject(showPanelKey)!;
@@ -19,7 +21,12 @@ const showPanel = inject(showPanelKey)!;
 const activeTab = ref<SettingsTab>('general');
 const savedMsg = ref('');
 
-const showSaveFooter = computed(() => activeTab.value !== 'winningcat' && activeTab.value !== 'database');
+const showSaveFooter = computed(() =>
+  activeTab.value !== 'winningcat'
+  && activeTab.value !== 'database'
+  && activeTab.value !== 'storydata'
+  && activeTab.value !== 'archived',
+);
 
 function onSave(): void {
   settingsCtx.saveSettings().then(() => {
@@ -61,6 +68,14 @@ function onSave(): void {
         <SettingsCanopyTab v-else-if="activeTab === 'canopy'" />
         <SettingsDataForSeoTab v-else-if="activeTab === 'dataforseo'" />
         <SettingsWinningCatTab v-else-if="activeTab === 'winningcat'" />
+        <SettingsStoryDataTab
+          v-else-if="activeTab === 'storydata'"
+          :active="activeTab === 'storydata'"
+        />
+        <SettingsArchivedReportsTab
+          v-else-if="activeTab === 'archived'"
+          :active="activeTab === 'archived'"
+        />
         <SettingsDatabaseTab
           v-else-if="activeTab === 'database'"
           :active="activeTab === 'database'"

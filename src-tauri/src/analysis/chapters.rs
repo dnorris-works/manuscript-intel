@@ -32,12 +32,12 @@ pub async fn generate_summaries(app: AppHandle, request: FolderRequest) -> Genre
     let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
 
     let run_ts = chrono::Utc::now().to_rfc3339();
-    let saved_report = {
+    {
+        let folder_path = PathBuf::from(&request.folder);
+        let manuscript_fp = compute_manuscript_fingerprint(&folder_path);
         let conn = database.0.lock().unwrap();
-        save_chapter_summaries_document(&conn, &request.folder, &run_ts)
-    };
-    if saved_report {
-        emit(&app, "✓ Chapter fingerprints report saved.");
+        let _ = db::record_artifact_built(&conn, &request.folder, "fingerprints", &manuscript_fp);
+        let _ = db::sync_manuscript_state(&conn, &request.folder, &manuscript_fp);
     }
 
     GenreResult {
@@ -136,26 +136,6 @@ pub(crate) async fn phase1_summaries(
     (done, skipped)
 }
 
-/// Writes the viewable chapter_summaries report from stored fingerprint rows.
-pub(crate) fn save_chapter_summaries_document(
-    conn: &rusqlite::Connection,
-    story_folder: &str,
-    run_ts: &str,
-) -> bool {
-    let summaries = db::load_chapter_summaries(conn, story_folder);
-    if summaries.is_empty() {
-        return false;
-    }
-    let cs_json = serde_json::json!({
-        "schema": "chapter_summaries_v1",
-        "chapters": summaries.iter().map(|s| serde_json::json!({
-            "file": s.file, "title": s.title, "signals": s.signals, "word_count": s.word_count,
-        })).collect::<Vec<_>>(),
-        "total_words": summaries.iter().map(|s| s.word_count).sum::<i64>(),
-    }).to_string();
-    db::save_document_at(conn, story_folder, "chapter_summaries", &cs_json, run_ts).is_ok()
-}
-
 fn emit_summary_progress(app: &AppHandle, filename: &str, status: &str) {
     let _ = app.emit(
         "summary:chapter-progress",
@@ -194,6 +174,34 @@ pub(crate) fn clean_for_ai(text: &str) -> String {
         .join(" ")
         .trim()
         .to_string()
+}
+
+/// Aggregate fingerprint over all manuscript chapters: sorted `file:hash` pairs, SHA-256.
+pub(crate) fn compute_manuscript_fingerprint(folder: &Path) -> String {
+    let chapters = collect_chapters(folder);
+    let mut pairs: Vec<String> = Vec::new();
+    for chapter_path in &chapters {
+        let fname = chapter_path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let source = fs::read_to_string(chapter_path).unwrap_or_default();
+        let cleaned = clean_for_ai(&source);
+        if cleaned.is_empty() {
+            continue;
+        }
+        let hash = chapter_source_hash(&cleaned);
+        pairs.push(format!("{fname}:{hash}"));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(pairs.join("\n").as_bytes());
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
 }
 
 pub(crate) fn chapter_source_hash(cleaned_text: &str) -> String {

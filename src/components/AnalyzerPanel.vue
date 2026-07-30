@@ -56,6 +56,16 @@ const continuitySeriesId = ref<number | null>(null);
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
+const freshnessMap = computed(() => {
+  const s = analysisCtx.analysisState.value;
+  const map: Record<string, 'fresh' | 'stale' | 'missing'> = {};
+  if (!s?.report_freshness) return map;
+  for (const r of s.report_freshness) {
+    map[r.doc_type] = r.status;
+  }
+  return map;
+});
+
 const existsMap = computed(() => {
   const state = analysisCtx.analysisState.value;
   if (!state) return {} as Record<string, boolean>;
@@ -93,6 +103,8 @@ const visibleReports = computed(() => {
     .map(r => ({
       ...r,
       exists: existsMap.value[r.id] ?? false,
+      freshness: freshnessMap.value[r.id]
+        ?? (existsMap.value[r.id] ? 'stale' as const : 'missing' as const),
     }));
 });
 
@@ -113,16 +125,9 @@ const summaryStatus = computed(() => {
       text: `Chapter fingerprints need refresh: ${parts.join(', ')}.`
     };
   }
-  const hasSummaryReport = (s.existing_docs || []).includes('chapter_summaries');
-  if (s.summary_count > 0 && !hasSummaryReport) {
-    return {
-      needsRefresh: true,
-      text: `Fingerprint data is current (${s.summary_count}/${s.summary_chapter_count}) but the report was deleted — click Refresh Fingerprints to restore it.`,
-    };
-  }
   return {
     needsRefresh: false,
-    text: `Chapter fingerprints are up to date (${s.summary_count}/${s.summary_chapter_count}).`
+    text: `Chapter fingerprints are up to date (${s.summary_count}/${s.summary_chapter_count}). Manage in Settings → Story Data.`,
   };
 });
 
@@ -611,8 +616,26 @@ function onStop(): void {
             <n-text depth="3" style="font-size: 12px; display: block; margin-top: 2px;">
               {{ reportCardDescription(report) }}
             </n-text>
-            <n-text v-if="report.exists" type="success" style="font-size: 11px; display: block; margin-top: 4px;">
-              ✓ exists
+            <n-text
+              v-if="report.freshness === 'fresh'"
+              type="success"
+              style="font-size: 11px; display: block; margin-top: 4px;"
+            >
+              ✓ up to date
+            </n-text>
+            <n-text
+              v-else-if="report.freshness === 'stale'"
+              type="warning"
+              style="font-size: 11px; display: block; margin-top: 4px;"
+            >
+              stale — re-run to refresh
+            </n-text>
+            <n-text
+              v-else
+              depth="3"
+              style="font-size: 11px; display: block; margin-top: 4px;"
+            >
+              not generated
             </n-text>
           </div>
         </n-space>
