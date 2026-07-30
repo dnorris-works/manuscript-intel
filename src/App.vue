@@ -9,6 +9,7 @@ import { useSettings } from './composables/useSettings';
 import { useReports } from './composables/useReports';
 import { useSeries } from './composables/useSeries';
 import { useCampaigns } from './composables/useCampaigns';
+import { useResizableWidth } from './composables/useResizableWidth';
 import {
   storiesKey, analysisKey, platformKey, settingsKey,
   reportsKey, seriesKey, campaignsKey, showPanelKey, openManuscriptEditorKey,
@@ -51,6 +52,13 @@ provide(campaignsKey, campaignsCtx);
 
 const naiveTheme = computed(() => (settingsCtx.theme.value === 'dark' ? darkTheme : null));
 const naiveThemeOverrides = computed(() => getNaiveThemeOverrides(settingsCtx.theme.value));
+
+const { width: sidebarWidth, startResize: startSidebarResize } = useResizableWidth({
+  storageKey: 'sidebar-width',
+  defaultWidth: 220,
+  min: 160,
+  max: 480,
+});
 
 // ── Top-level mode ────────────────────────────────────────────────────────────
 
@@ -302,13 +310,20 @@ onMounted(() => {
       <n-dialog-provider>
         <div id="app-root">
     <TitleBar />
-    <Sidebar
-      @open-story-form="openStoryForm"
-      @open-series-form="openSeriesForm"
-      @open-campaign-form="openCampaignForm"
-      @open-campaign-detail="openCampaignDetail"
-      @open-platform-accounts="openPlatformAccounts"
-    />
+    <div class="sidebar-column" :style="{ width: `${sidebarWidth}px` }">
+      <Sidebar
+        @open-story-form="openStoryForm"
+        @open-series-form="openSeriesForm"
+        @open-campaign-form="openCampaignForm"
+        @open-campaign-detail="openCampaignDetail"
+        @open-platform-accounts="openPlatformAccounts"
+      />
+      <div
+        class="sidebar-resizer"
+        title="Drag to resize"
+        @mousedown="startSidebarResize"
+      />
+    </div>
     <main id="main">
       <NewDocumentForm
         v-if="activePanel === 'new-document'"
@@ -375,7 +390,7 @@ onMounted(() => {
 #app-root {
   display: grid;
   grid-template-rows: var(--titlebar-h, 28px) 1fr;
-  grid-template-columns: 200px 1fr;
+  grid-template-columns: auto 1fr;
   grid-template-areas:
     "titlebar titlebar"
     "sidebar main";
@@ -383,10 +398,38 @@ onMounted(() => {
   overflow: hidden;
 }
 
+.sidebar-column {
+  grid-area: sidebar;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sidebar-column :deep(#sidebar) {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-resizer {
+  flex-shrink: 0;
+  width: 5px;
+  margin-right: -2px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  z-index: 2;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:active {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
 #main {
   grid-area: main;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0;
 }
 </style>

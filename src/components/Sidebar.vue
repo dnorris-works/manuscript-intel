@@ -191,17 +191,7 @@ async function loadFileTreeForFolder(folder: string): Promise<void> {
   fileTreeError.value = '';
   try {
     fileTree.value = await invoke<FileTreeEntry[]>('list_manuscript_files', { folder });
-    const expand: string[] = [];
-    function walk(entries: FileTreeEntry[]): void {
-      for (const e of entries) {
-        if (e.is_dir) {
-          expand.push(e.path);
-          walk(e.children);
-        }
-      }
-    }
-    walk(fileTree.value);
-    expandedDirs.value = expand;
+    expandedDirs.value = [];
   } catch (e) {
     console.error('list_manuscript_files:', e);
     fileTree.value = [];
@@ -604,11 +594,11 @@ const emptyStoriesHint = computed(() => {
 
 <style scoped>
 #sidebar {
-  grid-area: sidebar;
   background: var(--surface);
   border-right: 1px solid var(--border);
   overflow: hidden;
   height: 100%;
+  width: 100%;
 }
 
 .sidebar-inner {
