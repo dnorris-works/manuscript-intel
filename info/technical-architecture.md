@@ -651,8 +651,8 @@ Columns:
 
 | Command | Input | Output | Frontend Caller(s) | Side Effects | Errors |
 |---|---|---|---|---|---|
-| import_winningcat_csv | none (file picker) | ImportResult | src/components/SettingsPanel.vue | Imports/updates kdp_categories from CSV; updates stale markers | Dialog parse/import errors in result |
-| remove_stale_kdp_categories | since | StaleCleanupResult | src/components/SettingsPanel.vue | Deletes stale category rows older than last import marker | DB delete errors in result |
+| import_winningcat_csv | none (file picker) | ImportResult | src/components/settings/tabs/SettingsWinningCatTab.vue | Imports/updates kdp_categories from CSV; updates stale markers | Dialog parse/import errors in result |
+| remove_stale_kdp_categories | since | StaleCleanupResult | src/components/settings/tabs/SettingsWinningCatTab.vue | Deletes stale category rows older than last import marker | DB delete errors in result |
 | cancel_operation | none | void | src/composables/useAnalysis.ts | Sets global cancel flag and notifies waiters | N/A |
 
 ### 22.7 Canopy Integration Commands (canopy.rs)

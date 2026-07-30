@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { inject, ref, watch, computed, type Ref } from 'vue';
+import { inject, ref, watch, computed, h, type Ref, type VNodeChild } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { NButton, NButtonGroup, useDialog } from 'naive-ui';
+import {
+  NButton, NButtonGroup, NCollapse, NCollapseItem, NMenu, NTree, NText, NTag,
+  NEmpty, NScrollbar, useDialog, type MenuOption, type TreeOption,
+} from 'naive-ui';
 import { storiesKey, reportsKey, platformKey, showPanelKey, seriesKey, campaignsKey } from '../injectionKeys';
 import type { Story, Series, SeriesBook } from '../types';
 import FileTreeNodes, { type FileTreeEntry } from './FileTreeNodes.vue';
-
-// ── Injections ────────────────────────────────────────────────────────────────
 
 const storiesCtx = inject(storiesKey)!;
 const reportsCtx = inject(reportsKey)!;
@@ -23,8 +24,6 @@ const fileTreeTick = inject<Ref<number>>('fileTreeTick')!;
 const writingBrowseFolder = inject<Ref<string>>('writingBrowseFolder')!;
 const dialog = useDialog();
 
-// ── Emits ─────────────────────────────────────────────────────────────────────
-
 const emit = defineEmits<{
   (e: 'open-story-form', story: Story | null): void;
   (e: 'open-series-form', series: Series | null): void;
@@ -33,26 +32,13 @@ const emit = defineEmits<{
   (e: 'open-platform-accounts'): void;
 }>();
 
-// ── Sidebar mode toggle ───────────────────────────────────────────────────────
-
 type SidebarMode = 'files' | 'reports';
 const sidebarMode = ref<SidebarMode>('files');
 
-type SidebarSection = 'stories' | 'workspace' | 'series' | 'campaigns' | 'platformAccounts' | 'tools';
-const sectionOpen = ref<Record<SidebarSection, boolean>>({
-  stories: true,
-  workspace: true,
-  series: true,
-  campaigns: true,
-  platformAccounts: true,
-  tools: true,
-});
+const expandedSections = ref<string[]>([
+  'stories', 'workspace', 'series', 'campaigns', 'platformAccounts', 'tools',
+]);
 
-function toggleSection(section: SidebarSection): void {
-  sectionOpen.value[section] = !sectionOpen.value[section];
-}
-
-/** Story folders linked to any series — shown under Series, not in the flat Stories list (writing mode). */
 const seriesBookFolders = computed(() => {
   const folders = new Set<string>();
   for (const s of seriesCtx.series.value) {
@@ -64,16 +50,12 @@ const seriesBookFolders = computed(() => {
 });
 
 const standaloneStories = computed(() => {
-  if (appMode.value !== 'writing') {
-    return storiesCtx.stories.value;
-  }
+  if (appMode.value !== 'writing') return storiesCtx.stories.value;
   return storiesCtx.stories.value.filter(s => {
     const folder = s.folder.replace(/[/\\]+$/, '');
     return !seriesBookFolders.value.has(folder);
   });
 });
-
-const expandedSeriesIds = ref<Set<number>>(new Set());
 
 const effectiveBrowseFolder = computed(() => {
   if (appMode.value === 'writing' && writingBrowseFolder.value) {
@@ -82,22 +64,13 @@ const effectiveBrowseFolder = computed(() => {
   return storiesCtx.activeFolder.value;
 });
 
-function toggleSeriesExpand(seriesId: number): void {
-  const next = new Set(expandedSeriesIds.value);
-  if (next.has(seriesId)) next.delete(seriesId);
-  else next.add(seriesId);
-  expandedSeriesIds.value = next;
-}
-
 function findStoryByFolder(folder: string): Story | undefined {
   const norm = folder.replace(/[/\\]+$/, '');
   return storiesCtx.stories.value.find(s => s.folder.replace(/[/\\]+$/, '') === norm);
 }
 
-// ── File tree state ───────────────────────────────────────────────────────────
-
 const fileTree = ref<FileTreeEntry[]>([]);
-const expandedDirs = ref<Set<string>>(new Set());
+const expandedDirs = ref<string[]>([]);
 const fileTreeError = ref('');
 
 function relativeLocation(absolutePath: string): string {
@@ -121,23 +94,15 @@ async function loadFileTree(): Promise<void> {
 
 function switchSidebarMode(mode: SidebarMode): void {
   sidebarMode.value = mode;
-  sectionOpen.value.workspace = true;
+  if (!expandedSections.value.includes('workspace')) {
+    expandedSections.value = [...expandedSections.value, 'workspace'];
+  }
   if (mode === 'files' && effectiveBrowseFolder.value) {
     void loadFileTree();
   }
 }
 
-function toggleDir(path: string): void {
-  const s = new Set(expandedDirs.value);
-  if (s.has(path)) s.delete(path); else s.add(path);
-  expandedDirs.value = s;
-}
-
 function onFileClick(entry: FileTreeEntry): void {
-  if (entry.is_dir) {
-    toggleDir(entry.path);
-    return;
-  }
   openInWritingMode(entry.path, entry.name.replace(/\.md$/, ''));
 }
 
@@ -152,38 +117,34 @@ function onAddDocument(): void {
 watch(() => storiesCtx.activeFolder.value, (folder) => {
   if (folder) {
     writingBrowseFolder.value = '';
-    loadFileTree();
+    void loadFileTree();
   } else if (!writingBrowseFolder.value) {
     fileTree.value = [];
   }
 }, { immediate: true });
 
 watch(fileTreeTick, () => {
-  if (effectiveBrowseFolder.value) loadFileTree();
+  if (effectiveBrowseFolder.value) void loadFileTree();
 });
 
 watch(sidebarMode, (mode) => {
-  if (mode === 'files' && effectiveBrowseFolder.value) loadFileTree();
+  if (mode === 'files' && effectiveBrowseFolder.value) void loadFileTree();
 });
 
-watch(() => sectionOpen.value.workspace, (open) => {
-  if (open && sidebarMode.value === 'files' && effectiveBrowseFolder.value) {
+watch(expandedSections, (names) => {
+  if (names.includes('workspace') && sidebarMode.value === 'files' && effectiveBrowseFolder.value) {
     void loadFileTree();
   }
-});
+}, { deep: true });
 
 watch(writingBrowseFolder, () => {
   if (writingBrowseFolder.value) void loadFileTree();
 });
 
-function onEditSeries(s: Series): void {
-  emit('open-series-form', s);
-}
-
 watch(appMode, (mode) => {
   if (mode === 'writing' && effectiveBrowseFolder.value) {
     sidebarMode.value = 'files';
-    loadFileTree();
+    void loadFileTree();
   }
   if (mode === 'marketing' && storiesCtx.activeFolder.value) {
     showPanel('campaigns');
@@ -191,22 +152,11 @@ watch(appMode, (mode) => {
   }
 });
 
-// If stories load with a saved selection, keep Files visible
 watch(() => storiesCtx.stories.value.length, (n) => {
   if (n > 0 && !storiesCtx.activeStoryId.value) {
     storiesCtx.setActiveStory(storiesCtx.stories.value[0].id);
   }
 });
-
-// ── Report expand/collapse state ──────────────────────────────────────────────
-
-const expanded = ref<string | null>(null);
-
-function toggleExpand(docType: string): void {
-  expanded.value = expanded.value === docType ? null : docType;
-}
-
-// ── Handlers ──────────────────────────────────────────────────────────────────
 
 function onStoryClick(story: Story): void {
   writingBrowseFolder.value = '';
@@ -233,13 +183,6 @@ function onSeriesBookClick(book: SeriesBook): void {
   void loadFileTree();
 }
 
-function isSeriesBookActive(book: SeriesBook): boolean {
-  const norm = book.story_folder.replace(/[/\\]+$/, '');
-  const story = findStoryByFolder(book.story_folder);
-  if (story) return story.id === storiesCtx.activeStoryId.value;
-  return writingBrowseFolder.value.replace(/[/\\]+$/, '') === norm;
-}
-
 async function loadFileTreeForFolder(folder: string): Promise<void> {
   if (!folder) {
     fileTree.value = [];
@@ -248,10 +191,13 @@ async function loadFileTreeForFolder(folder: string): Promise<void> {
   fileTreeError.value = '';
   try {
     fileTree.value = await invoke<FileTreeEntry[]>('list_manuscript_files', { folder });
-    const expand = new Set<string>();
-    function walk(entries: FileTreeEntry[]) {
+    const expand: string[] = [];
+    function walk(entries: FileTreeEntry[]): void {
       for (const e of entries) {
-        if (e.is_dir) { expand.add(e.path); walk(e.children); }
+        if (e.is_dir) {
+          expand.push(e.path);
+          walk(e.children);
+        }
       }
     }
     walk(fileTree.value);
@@ -269,6 +215,10 @@ function onEditStory(story: Story): void {
 
 function onNewStory(): void {
   emit('open-story-form', null);
+}
+
+function onEditSeries(s: Series): void {
+  emit('open-series-form', s);
 }
 
 function onNewSeries(): void {
@@ -292,8 +242,7 @@ async function onVersionClick(id: number): Promise<void> {
   showPanel('reports');
 }
 
-function onDeleteVersion(id: number, e: Event): void {
-  e.stopPropagation();
+function onDeleteVersion(id: number): void {
   dialog.warning({
     title: 'Delete report',
     content: 'Delete this report? This cannot be undone.',
@@ -316,278 +265,340 @@ function formatTimestamp(ts: string): string {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
 }
+
+function renderStoryLabel(option: MenuOption): VNodeChild {
+  const story = standaloneStories.value.find(s => s.id === option.key);
+  return h('div', { style: 'display:flex;align-items:center;gap:4px;width:100%;' }, [
+    h('span', { style: 'flex:1;overflow:hidden;text-overflow:ellipsis;' }, option.label as string),
+    story
+      ? h(NButton, {
+        size: 'tiny',
+        quaternary: true,
+        onClick: (e: MouseEvent) => {
+          e.stopPropagation();
+          onEditStory(story);
+        },
+      }, { default: () => '✎' })
+      : null,
+  ]);
+}
+
+function renderSeriesLabel(option: MenuOption): VNodeChild {
+  const series = seriesCtx.series.value.find(s => String(s.id) === option.key);
+  return h('div', { style: 'display:flex;align-items:center;gap:6px;width:100%;' }, [
+    h('span', { style: 'flex:1;overflow:hidden;text-overflow:ellipsis;' }, option.label as string),
+    series
+      ? h(NTag, { size: 'small', round: true }, { default: () => String(series.books.length) })
+      : null,
+    series
+      ? h(NButton, {
+        size: 'tiny',
+        quaternary: true,
+        onClick: (e: MouseEvent) => {
+          e.stopPropagation();
+          onEditSeries(series);
+        },
+      }, { default: () => '✎' })
+      : null,
+  ]);
+}
+
+function renderReportLabel(option: MenuOption): VNodeChild {
+  if (String(option.key).startsWith('report-')) {
+    const id = Number(String(option.key).replace('report-', ''));
+    return h('div', { style: 'display:flex;align-items:center;gap:4px;width:100%;' }, [
+      h('span', { style: 'flex:1;' }, option.label as string),
+      h(NButton, {
+        size: 'tiny',
+        quaternary: true,
+        type: 'error',
+        onClick: (e: MouseEvent) => {
+          e.stopPropagation();
+          onDeleteVersion(id);
+        },
+      }, { default: () => '×' }),
+    ]);
+  }
+  const group = reportsCtx.sidebarGroups.value.find(g => g.doc_type === option.key);
+  return h('div', { style: 'display:flex;align-items:center;gap:6px;width:100%;' }, [
+    h('span', { style: 'flex:1;overflow:hidden;text-overflow:ellipsis;' }, option.label as string),
+    group ? h(NTag, { size: 'small', round: true }, { default: () => String(group.count) }) : null,
+  ]);
+}
+
+const storyMenuOptions = computed<MenuOption[]>(() =>
+  standaloneStories.value.map(story => ({
+    key: story.id,
+    label: story.name,
+  })),
+);
+
+const seriesMenuOptions = computed<MenuOption[]>(() =>
+  seriesCtx.series.value.map(s => ({
+    key: String(s.id),
+    label: s.name,
+  })),
+);
+
+const seriesTreeData = computed<TreeOption[]>(() =>
+  seriesCtx.series.value.map(s => ({
+    key: `series-${s.id}`,
+    label: s.name,
+    children: s.books.map(book => ({
+      key: book.story_folder,
+      label: `${book.book_order}. ${book.story_name}`,
+      isLeaf: true,
+    })),
+  })),
+);
+
+const campaignMenuOptions = computed<MenuOption[]>(() =>
+  campaignsCtx.campaigns.value.map(c => ({
+    key: String(c.id),
+    label: c.name,
+    extra: () => h(NTag, { size: 'small', round: true }, { default: () => c.status }),
+  })),
+);
+
+const reportMenuOptions = computed<MenuOption[]>(() =>
+  reportsCtx.sidebarGroups.value.map(type => ({
+    key: type.doc_type,
+    label: type.label,
+    children: type.versions.map(version => ({
+      key: `report-${version.id}`,
+      label: formatTimestamp(version.generated_at),
+    })),
+  })),
+);
+
+function onStoryMenuSelect(key: string): void {
+  const story = standaloneStories.value.find(s => s.id === key);
+  if (story) onStoryClick(story);
+}
+
+function onSeriesMenuSelect(key: string): void {
+  const series = seriesCtx.series.value.find(s => String(s.id) === key);
+  if (series) onEditSeries(series);
+}
+
+function onCampaignMenuSelect(key: string): void {
+  onCampaignClick(Number(key));
+}
+
+function onReportMenuSelect(key: string): void {
+  if (key.startsWith('report-')) {
+    void onVersionClick(Number(key.replace('report-', '')));
+  }
+}
+
+function onSeriesTreeSelect(keys: Array<string | number>): void {
+  const key = keys[0] as string | undefined;
+  if (!key || key.startsWith('series-')) return;
+  const book = seriesCtx.series.value
+    .flatMap(s => s.books)
+    .find(b => b.story_folder === key);
+  if (book) onSeriesBookClick(book);
+}
+
+const seriesTreeSelectedKeys = computed(() => {
+  for (const s of seriesCtx.series.value) {
+    for (const book of s.books) {
+      const story = findStoryByFolder(book.story_folder);
+      if (story && story.id === storiesCtx.activeStoryId.value) {
+        return [book.story_folder];
+      }
+      const norm = book.story_folder.replace(/[/\\]+$/, '');
+      if (writingBrowseFolder.value.replace(/[/\\]+$/, '') === norm) {
+        return [book.story_folder];
+      }
+    }
+  }
+  return [];
+});
+
+const emptyStoriesHint = computed(() => {
+  if (appMode.value === 'writing' && seriesCtx.series.value.length > 0) {
+    return 'No standalone stories. Open a book under Series below.';
+  }
+  return 'No stories yet. Click + to add one.';
+});
 </script>
 
 <template>
   <aside id="sidebar">
-    <div class="nav-section mode-tabs">
-      <n-button-group style="width: 100%;">
-        <n-button
-          :type="appMode === 'analyzer' ? 'primary' : 'default'"
-          style="flex: 1;"
-          @click="setAppMode('analyzer'); showPanel('analyzer')"
-        >Analyzer</n-button>
-        <n-button
-          :type="appMode === 'writing' ? 'primary' : 'default'"
-          style="flex: 1;"
-          @click="setAppMode('writing'); sidebarMode = 'files'"
-        >Writing</n-button>
-        <n-button
-          :type="appMode === 'marketing' ? 'primary' : 'default'"
-          style="flex: 1;"
-          @click="setAppMode('marketing')"
-        >Marketing</n-button>
-      </n-button-group>
-    </div>
+    <n-scrollbar style="height: 100%;">
+      <div class="sidebar-inner">
+        <n-button-group class="mode-tabs">
+          <n-button
+            :type="appMode === 'analyzer' ? 'primary' : 'default'"
+            @click="setAppMode('analyzer'); showPanel('analyzer')"
+          >Analyzer</n-button>
+          <n-button
+            :type="appMode === 'writing' ? 'primary' : 'default'"
+            @click="setAppMode('writing'); sidebarMode = 'files'"
+          >Writing</n-button>
+          <n-button
+            :type="appMode === 'marketing' ? 'primary' : 'default'"
+            @click="setAppMode('marketing')"
+          >Marketing</n-button>
+        </n-button-group>
 
-    <section class="sidebar-block">
-      <button class="section-header" @click="toggleSection('stories')">
-        <span class="section-title">Stories</span>
-        <span class="section-chevron" :class="{ open: sectionOpen.stories }">&#8250;</span>
-      </button>
-      <div v-show="sectionOpen.stories" class="section-content stories-section">
-        <div class="nav-label-row">
-          <span class="nav-label">Library</span>
-          <n-button size="tiny" quaternary @click.stop="onNewStory">+</n-button>
-        </div>
-        <div class="stories-list">
-          <div
-            v-if="standaloneStories.length === 0"
-            class="sidebar-hint"
-          >
-            <template v-if="appMode === 'writing' && seriesCtx.series.value.length > 0">
-              No standalone stories. Open a book under Series below.
+        <n-collapse v-model:expanded-names="expandedSections" display-directive="show">
+          <n-collapse-item name="stories" title="Stories">
+            <template #header-extra>
+              <n-button size="tiny" quaternary @click.stop="onNewStory">+</n-button>
             </template>
+            <n-text depth="3" class="sub-label">Library</n-text>
+            <n-empty v-if="standaloneStories.length === 0" :description="emptyStoriesHint" size="small" />
+            <n-menu
+              v-else
+              :value="storiesCtx.activeStoryId.value"
+              :options="storyMenuOptions"
+              :render-label="renderStoryLabel"
+              @update:value="onStoryMenuSelect"
+            />
+          </n-collapse-item>
+
+          <n-collapse-item
+            v-if="appMode !== 'marketing'"
+            name="workspace"
+            title="Workspace"
+            :disabled="!effectiveBrowseFolder && appMode === 'analyzer'"
+          >
+            <n-text v-if="!effectiveBrowseFolder" depth="3" class="hint">
+              Select a story or series book to browse files.
+            </n-text>
+
             <template v-else>
-              No stories yet. Click + to add one.
+              <div v-if="appMode === 'analyzer'" class="workspace-toolbar">
+                <n-button-group style="flex: 1;">
+                  <n-button
+                    :type="sidebarMode === 'files' ? 'primary' : 'default'"
+                    style="flex: 1;"
+                    @click="switchSidebarMode('files')"
+                  >Files</n-button>
+                  <n-button
+                    :type="sidebarMode === 'reports' ? 'primary' : 'default'"
+                    style="flex: 1;"
+                    @click="switchSidebarMode('reports')"
+                  >Reports</n-button>
+                </n-button-group>
+                <n-button
+                  v-if="sidebarMode === 'files' && storiesCtx.activeFolder.value"
+                  size="tiny"
+                  quaternary
+                  title="New document"
+                  @click="onAddDocument"
+                >+</n-button>
+              </div>
+
+              <div v-if="sidebarMode === 'files' || appMode === 'writing'" class="workspace-panel">
+                <div v-if="appMode === 'writing'" class="workspace-toolbar">
+                  <n-text depth="3" class="sub-label">Files</n-text>
+                  <n-button size="tiny" quaternary title="New document" @click="onAddDocument">+</n-button>
+                </div>
+                <n-text v-if="fileTreeError" depth="3" class="hint">{{ fileTreeError }}</n-text>
+                <n-empty
+                  v-else-if="fileTree.length === 0"
+                  description="No documents yet. Click + to create one."
+                  size="small"
+                />
+                <FileTreeNodes
+                  v-else
+                  :entries="fileTree"
+                  :expanded-keys="expandedDirs"
+                  @update:expanded-keys="expandedDirs = $event"
+                  @open="onFileClick"
+                  @add="onAddInFolder"
+                />
+              </div>
+
+              <div v-if="sidebarMode === 'reports' && appMode === 'analyzer'" class="workspace-panel">
+                <n-empty
+                  v-if="!storiesCtx.activeFolder.value"
+                  description="Select a story to see reports."
+                  size="small"
+                />
+                <n-empty
+                  v-else-if="reportsCtx.sidebarGroups.value.length === 0"
+                  description="No saved reports yet."
+                  size="small"
+                />
+                <n-menu
+                  v-else
+                  :options="reportMenuOptions"
+                  :render-label="renderReportLabel"
+                  @update:value="onReportMenuSelect"
+                />
+              </div>
             </template>
-          </div>
-          <div
-            v-for="story in standaloneStories"
-            :key="story.id"
-            class="story-item"
-            :class="{ active: story.id === storiesCtx.activeStoryId.value }"
-            :title="story.folder"
-            @click="onStoryClick(story)"
+          </n-collapse-item>
+
+          <n-collapse-item v-if="appMode === 'marketing'" name="campaigns" title="Campaigns">
+            <template #header-extra>
+              <n-button
+                size="tiny"
+                quaternary
+                title="New campaign"
+                :disabled="!storiesCtx.activeFolder.value"
+                @click.stop="onNewCampaign"
+              >+</n-button>
+            </template>
+            <n-text depth="3" class="sub-label">For this story</n-text>
+            <n-empty v-if="!storiesCtx.activeFolder.value" description="Select a story first." size="small" />
+            <n-empty
+              v-else-if="campaignsCtx.campaigns.value.length === 0"
+              description="No campaigns yet."
+              size="small"
+            />
+            <n-menu
+              v-else
+              :options="campaignMenuOptions"
+              @update:value="onCampaignMenuSelect"
+            />
+          </n-collapse-item>
+
+          <n-collapse-item v-if="appMode === 'marketing'" name="platformAccounts" title="Platform Accounts">
+            <n-button block quaternary @click="onPlatformAccounts">Manage accounts</n-button>
+          </n-collapse-item>
+
+          <n-collapse-item
+            v-if="appMode === 'analyzer' || appMode === 'writing'"
+            name="series"
+            title="Series"
           >
-            <span class="story-item-name">{{ story.name }}</span>
-            <button
-              class="story-item-edit"
-              :title="'Edit story'"
-              @click.stop="onEditStory(story)"
-            >&#x270E;</button>
-          </div>
-        </div>
+            <template v-if="appMode === 'analyzer'" #header-extra>
+              <n-button size="tiny" quaternary title="New series" @click.stop="onNewSeries">+</n-button>
+            </template>
+            <n-text depth="3" class="sub-label">Collections</n-text>
+            <n-empty
+              v-if="seriesCtx.series.value.length === 0"
+              description="No series yet. Click + to add one."
+              size="small"
+            />
+            <n-menu
+              v-else-if="appMode === 'analyzer'"
+              :options="seriesMenuOptions"
+              :render-label="renderSeriesLabel"
+              @update:value="onSeriesMenuSelect"
+            />
+            <n-tree
+              v-else
+              block-line
+              selectable
+              :data="seriesTreeData"
+              :selected-keys="seriesTreeSelectedKeys"
+              @update:selected-keys="onSeriesTreeSelect"
+            />
+          </n-collapse-item>
+
+          <n-collapse-item name="tools" title="Utilities">
+            <n-button block quaternary @click="showPanel('help')">Help</n-button>
+            <n-button block quaternary @click="showPanel('settings')">Settings</n-button>
+          </n-collapse-item>
+        </n-collapse>
       </div>
-    </section>
-
-    <section v-if="appMode !== 'marketing'" class="sidebar-block" :class="{ disabled: !effectiveBrowseFolder }">
-      <button class="section-header" @click="toggleSection('workspace')">
-        <span class="section-title">Workspace</span>
-        <span class="section-chevron" :class="{ open: sectionOpen.workspace }">&#8250;</span>
-      </button>
-
-      <div v-show="sectionOpen.workspace" class="section-content workspace-section">
-        <div v-if="!effectiveBrowseFolder" class="sidebar-hint files-hint">
-          Select a story or series book to browse files.
-        </div>
-
-        <div v-if="appMode === 'analyzer'" class="mode-toggle-row">
-          <n-button-group style="flex: 1;">
-            <n-button :type="sidebarMode === 'files' ? 'primary' : 'default'" style="flex: 1;" @click="switchSidebarMode('files')">Files</n-button>
-            <n-button :type="sidebarMode === 'reports' ? 'primary' : 'default'" style="flex: 1;" @click="switchSidebarMode('reports')">Reports</n-button>
-          </n-button-group>
-          <n-button
-            v-if="sidebarMode === 'files' && storiesCtx.activeFolder.value"
-            size="tiny"
-            quaternary
-            title="New document"
-            @click="onAddDocument"
-          >+</n-button>
-        </div>
-
-        <div v-if="(sidebarMode === 'files' || appMode === 'writing') && effectiveBrowseFolder" class="files-section">
-          <div v-if="appMode === 'writing'" class="nav-label-row files-header">
-            <span class="nav-label">Files</span>
-            <n-button size="tiny" quaternary title="New document" @click="onAddDocument">+</n-button>
-          </div>
-          <div v-if="fileTreeError" class="sidebar-hint">{{ fileTreeError }}</div>
-          <div v-else-if="fileTree.length === 0" class="sidebar-hint">No documents yet. Click + to create one.</div>
-          <FileTreeNodes
-            v-else
-            :entries="fileTree"
-            :expanded="expandedDirs"
-            @toggle="toggleDir"
-            @open="onFileClick"
-            @add="onAddInFolder"
-          />
-        </div>
-
-        <div v-if="sidebarMode === 'reports' && appMode === 'analyzer'" class="reports-section">
-          <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint">
-            Select a story to see reports.
-          </div>
-          <div v-else-if="reportsCtx.sidebarGroups.value.length === 0" class="sidebar-hint">
-            No saved reports yet.
-          </div>
-          <template v-else>
-            <div
-              v-for="type in reportsCtx.sidebarGroups.value"
-              :key="type.doc_type"
-              class="report-type"
-            >
-              <div
-                class="report-type-header"
-                :title="type.description"
-                @click="toggleExpand(type.doc_type)"
-              >
-                <span class="report-type-label">{{ type.label }}</span>
-                <span class="report-count">{{ type.count }}</span>
-              </div>
-
-              <div
-                v-if="expanded === type.doc_type && type.versions.length > 0"
-                class="report-versions"
-              >
-                <div
-                  v-for="version in type.versions"
-                  :key="version.id"
-                  class="report-version-item"
-                  @click="onVersionClick(version.id)"
-                >
-                  <span class="version-label">{{ formatTimestamp(version.generated_at) }}</span>
-                  <button class="version-delete" @click="onDeleteVersion(version.id, $event)" title="Delete this report">&times;</button>
-                </div>
-              </div>
-            </div>
-          </template>
-        </div>
-      </div>
-    </section>
-
-    <section v-if="appMode === 'marketing'" class="sidebar-block" :class="{ disabled: !storiesCtx.activeFolder.value }">
-      <button class="section-header" @click="toggleSection('campaigns')">
-        <span class="section-title">Campaigns</span>
-        <span class="section-chevron" :class="{ open: sectionOpen.campaigns }">&#8250;</span>
-      </button>
-      <div v-show="sectionOpen.campaigns" class="section-content campaigns-section">
-        <div class="nav-label-row">
-          <span class="nav-label">For this story</span>
-          <n-button size="tiny" quaternary title="New campaign" :disabled="!storiesCtx.activeFolder.value" @click.stop="onNewCampaign">+</n-button>
-        </div>
-        <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint">Select a story first.</div>
-        <div v-else-if="campaignsCtx.campaigns.value.length === 0" class="sidebar-hint">No campaigns yet.</div>
-        <div
-          v-for="c in campaignsCtx.campaigns.value"
-          :key="c.id"
-          class="story-item"
-          @click="onCampaignClick(c.id)"
-        >
-          <span class="story-item-name">{{ c.name }}</span>
-          <span class="series-book-count">{{ c.status }}</span>
-        </div>
-      </div>
-    </section>
-
-    <section v-if="appMode === 'marketing'" class="sidebar-block">
-      <button class="section-header" @click="toggleSection('platformAccounts')">
-        <span class="section-title">Platform Accounts</span>
-        <span class="section-chevron" :class="{ open: sectionOpen.platformAccounts }">&#8250;</span>
-      </button>
-      <div v-show="sectionOpen.platformAccounts" class="section-content">
-        <n-button block quaternary @click="onPlatformAccounts">Manage accounts</n-button>
-      </div>
-    </section>
-
-    <section v-if="appMode === 'analyzer' || appMode === 'writing'" class="sidebar-block">
-      <button class="section-header" @click="toggleSection('series')">
-        <span class="section-title">Series</span>
-        <span class="section-chevron" :class="{ open: sectionOpen.series }">&#8250;</span>
-      </button>
-      <div v-show="sectionOpen.series" class="section-content series-section">
-        <div class="nav-label-row">
-          <span class="nav-label">Collections</span>
-          <n-button
-            v-if="appMode === 'analyzer'"
-            size="tiny"
-            quaternary
-            title="New series"
-            @click.stop="onNewSeries"
-          >+</n-button>
-        </div>
-        <div class="series-list">
-          <div
-            v-if="seriesCtx.series.value.length === 0"
-            class="sidebar-hint"
-          >
-            No series yet. Click + to add one.
-          </div>
-
-          <!-- Analyzer: tap series to edit -->
-          <template v-if="appMode === 'analyzer'">
-            <div
-              v-for="s in seriesCtx.series.value"
-              :key="s.id"
-              class="story-item"
-              @click="onEditSeries(s)"
-            >
-              <span class="story-item-name">{{ s.name }}</span>
-              <span class="series-book-count">{{ s.books.length }}</span>
-              <button
-                class="story-item-edit"
-                title="Edit series"
-                @click.stop="onEditSeries(s)"
-              >&#x270E;</button>
-            </div>
-          </template>
-
-          <!-- Writing: expand series to browse books -->
-          <template v-else>
-            <div v-for="s in seriesCtx.series.value" :key="s.id" class="series-group">
-              <div
-                class="story-item series-header"
-                :class="{ open: expandedSeriesIds.has(s.id) }"
-                @click="toggleSeriesExpand(s.id)"
-              >
-                <span class="series-expand-chevron" :class="{ open: expandedSeriesIds.has(s.id) }">&#8250;</span>
-                <span class="story-item-name">{{ s.name }}</span>
-                <span class="series-book-count">{{ s.books.length }}</span>
-              </div>
-              <div v-if="expandedSeriesIds.has(s.id)" class="series-books">
-                <div
-                  v-if="s.books.length === 0"
-                  class="sidebar-hint series-books-hint"
-                >
-                  No books in this series yet.
-                </div>
-                <div
-                  v-for="book in s.books"
-                  :key="book.story_folder"
-                  class="story-item series-book-item"
-                  :class="{ active: isSeriesBookActive(book) }"
-                  :title="book.story_folder"
-                  @click="onSeriesBookClick(book)"
-                >
-                  <span class="series-book-order">{{ book.book_order }}</span>
-                  <span class="story-item-name">{{ book.story_name }}</span>
-                </div>
-              </div>
-            </div>
-          </template>
-        </div>
-      </div>
-    </section>
-
-    <section class="sidebar-block settings-section">
-      <button class="section-header" @click="toggleSection('tools')">
-        <span class="section-title">Utilities</span>
-        <span class="section-chevron" :class="{ open: sectionOpen.tools }">&#8250;</span>
-      </button>
-      <div v-show="sectionOpen.tools" class="section-content nav-section">
-        <n-button block quaternary @click="showPanel('help')">Help</n-button>
-        <n-button block quaternary @click="showPanel('settings')">Settings</n-button>
-      </div>
-    </section>
+    </n-scrollbar>
   </aside>
 </template>
 
@@ -596,496 +607,63 @@ function formatTimestamp(ts: string): string {
   grid-area: sidebar;
   background: var(--surface);
   border-right: 1px solid var(--border);
-  padding: 12px 0;
-  overflow-y: auto;
+  overflow: hidden;
+  height: 100%;
+}
+
+.sidebar-inner {
+  padding: 12px 10px 16px;
   display: flex;
   flex-direction: column;
+  gap: 8px;
 }
 
-.nav-section {
-  padding: 0 12px 8px;
-}
-
-.sidebar-block {
-  margin: 0 8px 8px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--surface) 85%, black 15%);
-  overflow: hidden;
-}
-
-.sidebar-block.disabled {
-  opacity: 0.88;
-}
-
-.section-header {
+.mode-tabs {
   width: 100%;
-  border: 0;
-  background: color-mix(in srgb, var(--surface2) 65%, transparent 35%);
-  color: var(--text);
+}
+
+.mode-tabs :deep(.n-button) {
+  flex: 1;
+}
+
+.sub-label {
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0 0 6px 4px;
+}
+
+.hint {
+  display: block;
+  font-size: 11px;
+  padding: 4px;
+}
+
+.workspace-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  cursor: pointer;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 
-.section-header:hover {
-  background: color-mix(in srgb, var(--surface2) 80%, transparent 20%);
+.workspace-panel {
+  max-height: 36vh;
+  overflow-y: auto;
 }
 
-.section-title {
+#sidebar :deep(.n-collapse-item__header) {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text-muted);
 }
 
-.section-chevron {
-  font-size: 16px;
-  color: var(--text-muted);
-  transform: rotate(90deg);
-  transition: transform 0.16s ease;
-}
-
-.section-chevron.open {
-  transform: rotate(270deg);
-}
-
-.section-content {
-  padding-bottom: 6px;
-  padding-right: 0;
-  overflow-y: auto;
-  max-height: 28vh;
-}
-
-.section-content,
-.stories-section,
-.files-section,
-.reports-section,
-.series-section {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 55%, transparent 45%) transparent;
-}
-
-.section-content::-webkit-scrollbar,
-.stories-section::-webkit-scrollbar,
-.files-section::-webkit-scrollbar,
-.reports-section::-webkit-scrollbar,
-.series-section::-webkit-scrollbar {
-  width: 6px;
-}
-
-.section-content::-webkit-scrollbar-track,
-.stories-section::-webkit-scrollbar-track,
-.files-section::-webkit-scrollbar-track,
-.reports-section::-webkit-scrollbar-track,
-.series-section::-webkit-scrollbar-track {
-  background: transparent;
-  margin: 4px 0;
-}
-
-.section-content::-webkit-scrollbar-thumb,
-.stories-section::-webkit-scrollbar-thumb,
-.files-section::-webkit-scrollbar-thumb,
-.reports-section::-webkit-scrollbar-thumb,
-.series-section::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--text-muted) 55%, transparent 45%);
-  border-radius: 999px;
-}
-
-.section-content::-webkit-scrollbar-thumb:hover,
-.stories-section::-webkit-scrollbar-thumb:hover,
-.files-section::-webkit-scrollbar-thumb:hover,
-.reports-section::-webkit-scrollbar-thumb:hover,
-.series-section::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--text-muted) 72%, transparent 28%);
-}
-
-.workspace-section {
-  max-height: 44vh;
-}
-
-.series-section {
-  max-height: 20vh;
-}
-
-.settings-section .section-content {
-  max-height: 16vh;
-}
-
-.mode-tabs {
-  display: flex;
-  gap: 0;
-  padding: 8px 10px;
-}
-
-.mode-tab {
-  flex: 1;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 6px 0;
-  cursor: pointer;
-  text-align: center;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.mode-tab:hover {
-  color: var(--text);
-}
-
-.mode-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
-.settings-section {
-  margin-top: 0;
-}
-
-.nav-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-muted);
-  padding: 0 4px 0;
-}
-
-.nav-label-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px 4px;
-}
-
-.nav-item {
-  display: block;
-  width: 100%;
-  background: none;
-  border: none;
-  border-radius: var(--radius);
-  color: var(--text-muted);
-  cursor: pointer;
+#sidebar :deep(.n-menu-item-content) {
   font-size: 13px;
-  padding: 7px 10px;
-  text-align: left;
-  transition: background 0.15s, color 0.15s;
 }
 
-.nav-item:hover {
-  background: var(--surface2);
-  color: var(--text);
-}
-
-.btn-new-story {
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  flex-shrink: 0;
-}
-
-.btn-new-story:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.stories-section {
-  padding: 0 0 4px;
-  flex: 0 0 auto;
-  min-height: 0;
-}
-
-.stories-list {
-  padding: 0 8px 8px;
-}
-
-.files-section {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: 0 0 0 8px;
-  min-height: 120px;
-}
-
-.workspace-section {
-  display: flex;
-  flex-direction: column;
-  min-height: 120px;
-}
-
-.files-header {
-  padding: 4px 8px 6px;
-}
-
-.series-section {
-  padding: 0 0 4px;
-  flex: 0 0 auto;
-}
-
-.story-item {
-  padding: 8px 10px;
-  border-radius: var(--radius);
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.story-item:hover {
-  background: var(--surface2);
-  color: var(--text);
-}
-
-.story-item.active {
-  background: var(--surface2);
-  color: var(--text);
-  font-weight: 600;
-  border-left: 2px solid var(--accent);
-  padding-left: 8px;
-}
-
-.story-item-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.story-item-edit {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 11px;
-  color: var(--text-muted);
-  opacity: 0;
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 2px 4px;
-}
-
-.story-item:hover .story-item-edit {
-  opacity: 1;
-}
-
-.mode-toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 6px 10px 8px;
-}
-
-.mode-toggle {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-
-.mode-btn {
-  flex: 1;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 600;
-  padding: 5px 0;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.mode-btn:first-child {
-  border-right: 1px solid var(--border);
-}
-
-.mode-btn.active {
-  background: var(--accent);
-  color: #fff;
-}
-
-.mode-btn:not(.active):hover {
-  background: var(--surface2);
-  color: var(--text);
-}
-
-.reports-section {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
-  padding: 0 0 6px 8px;
-}
-
-.report-type {
-  margin: 0;
-}
-
-.report-type-header {
-  padding: 6px 10px;
+#sidebar :deep(.n-tree-node-content__text) {
   font-size: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  border-radius: var(--radius);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.report-type-header:hover {
-  background: var(--surface2);
-}
-
-.report-type-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text);
-}
-
-.report-count {
-  background: var(--surface2);
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 8px;
-  min-width: 18px;
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.report-versions {
-  padding: 2px 0 4px 18px;
-}
-
-.report-version-item {
-  display: flex;
-  align-items: center;
-  padding: 4px 10px;
-  font-size: 11px;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: var(--radius);
-}
-
-.report-version-item .version-label {
-  flex: 1;
-}
-
-.report-version-item .version-delete {
-  display: none;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 4px;
-  border-radius: 3px;
-}
-
-.report-version-item:hover .version-delete {
-  display: inline;
-}
-
-.report-version-item .version-delete:hover {
-  color: #e74c3c;
-  background: var(--surface2);
-}
-
-.report-version-item:hover {
-  background: var(--surface2);
-  color: var(--accent);
-}
-
-.sidebar-hint {
-  padding: 8px 10px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.files-hint {
-  flex: 1;
-}
-
-.series-list {
-  padding: 0 8px 8px;
-}
-
-.series-book-count {
-  font-size: 10px;
-  color: var(--text-muted);
-  background: var(--surface2);
-  padding: 1px 5px;
-  border-radius: 6px;
-  margin-left: auto;
-}
-
-.series-group {
-  margin-bottom: 2px;
-}
-
-.series-header {
-  cursor: pointer;
-}
-
-.series-header .story-item-name {
-  flex: 1;
-}
-
-.series-expand-chevron {
-  display: inline-block;
-  font-size: 12px;
-  color: var(--text-muted);
-  transition: transform 0.15s ease;
-  flex-shrink: 0;
-  width: 12px;
-}
-
-.series-expand-chevron.open {
-  transform: rotate(90deg);
-}
-
-.series-books {
-  padding-left: 14px;
-}
-
-.series-books-hint {
-  padding: 4px 10px 8px;
-}
-
-.series-book-item {
-  padding-left: 8px;
-  gap: 6px;
-}
-
-.series-book-order {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--text-muted);
-  min-width: 14px;
-  text-align: center;
-  flex-shrink: 0;
 }
 </style>
