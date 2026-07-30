@@ -39,10 +39,6 @@ function formatTs(ts: string): string {
   });
 }
 
-function reportTitle(row: ArchivedReportRow): string {
-  return `${row.label} — ${formatTs(row.generated_at)}`;
-}
-
 async function onRead(row: ArchivedReportRow): Promise<void> {
   try {
     await reportsCtx.openReport(row.id);
@@ -55,7 +51,7 @@ async function onRead(row: ArchivedReportRow): Promise<void> {
 function onDelete(row: ArchivedReportRow): void {
   dialog.warning({
     title: 'Delete archived report',
-    content: `Delete "${reportTitle(row)}"? This cannot be undone.`,
+    content: `Delete "${row.label}"? This cannot be undone.`,
     positiveText: 'Delete',
     negativeText: 'Cancel',
     onPositiveClick: async () => {
@@ -74,10 +70,10 @@ function onDelete(row: ArchivedReportRow): void {
 
 const columns = computed<DataTableColumns<ArchivedReportRow>>(() => [
   {
-    title: 'Title',
-    key: 'title',
+    title: 'Report',
+    key: 'label',
     ellipsis: { tooltip: true },
-    render: (row) => reportTitle(row),
+    render: (row) => row.label,
   },
   {
     title: 'Archived',

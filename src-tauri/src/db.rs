@@ -2583,27 +2583,19 @@ pub async fn delete_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<(), 
     Ok(())
 }
 
-// ── Sidebar data (grouped reports by platform) ─────────────────────────
+// ── Saved reports list (flat, by platform) ───────────────────────────────
 
 #[derive(serde::Serialize, Clone, Debug)]
-pub struct SidebarReportVersion {
+pub struct SidebarReport {
     pub id:           i64,
+    pub doc_type:     String,
+    pub label:        String,
     pub generated_at: String,
 }
 
-#[derive(serde::Serialize, Clone, Debug)]
-pub struct SidebarReportGroup {
-    pub doc_type:    String,
-    pub label:       String,
-    pub description: String,
-    pub count:       usize,
-    pub versions:    Vec<SidebarReportVersion>,
-}
-
-/// Returns reports grouped by type, filtered by platform, sorted newest-first.
-/// This is the single source of truth for the sidebar's report list.
+/// Returns current saved reports for a story, filtered by platform.
 #[tauri::command]
-pub async fn get_sidebar_reports(db: tauri::State<'_, Db>, folder: String, platform: String) -> Result<Vec<SidebarReportGroup>, String> {
+pub async fn get_sidebar_reports(db: tauri::State<'_, Db>, folder: String, platform: String) -> Result<Vec<SidebarReport>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
 
     // Get report types for this platform
@@ -2633,29 +2625,28 @@ pub async fn get_sidebar_reports(db: tauri::State<'_, Db>, folder: String, platf
     // Get all saved current documents for this folder
     let docs = list_documents(&conn, &folder);
 
-    // Group docs by doc_type, sorted newest first (already sorted by query)
-    let mut versions_by_type: std::collections::HashMap<String, Vec<SidebarReportVersion>> = std::collections::HashMap::new();
+    // Newest current doc per type (list_documents is already newest-first)
+    let mut doc_by_type: std::collections::HashMap<String, (i64, String)> = std::collections::HashMap::new();
     for doc in &docs {
-        versions_by_type.entry(doc.doc_type.clone()).or_default().push(SidebarReportVersion {
-            id: doc.id,
-            generated_at: doc.generated_at.clone(),
-        });
+        doc_by_type.entry(doc.doc_type.clone()).or_insert((doc.id, doc.generated_at.clone()));
     }
 
-    // Build result: only saved report types for the requested platform.
-    let groups: Vec<SidebarReportGroup> = all_types.into_iter()
-        .filter(|(id, _, _)| {
-            plat_map.get(id).map(|p| p.contains(&platform)).unwrap_or(false)
-        })
-        .map(|(id, label, description)| {
-            let versions = versions_by_type.remove(&id).unwrap_or_default();
-            let count = versions.len();
-            SidebarReportGroup { doc_type: id, label, description, count, versions }
-        })
-        .filter(|g| g.count > 0)
-        .collect();
+    let mut reports: Vec<SidebarReport> = Vec::new();
+    for (id, label, _description) in all_types {
+        let included = if platform == "saved" {
+            doc_by_type.contains_key(&id)
+        } else {
+            plat_map.get(&id).map(|p| p.contains(&platform)).unwrap_or(false)
+        };
+        if !included {
+            continue;
+        }
+        if let Some((doc_id, generated_at)) = doc_by_type.remove(&id) {
+            reports.push(SidebarReport { id: doc_id, doc_type: id, label, generated_at });
+        }
+    }
 
-    Ok(groups)
+    Ok(reports)
 }
 
 // ── Archived reports (Settings tab) ─────────────────────────────────────────

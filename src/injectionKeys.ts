@@ -6,7 +6,7 @@ import type {
   StoriesResult,
   AnalysisState,
   ReportEnvelope,
-  SidebarReportGroup,
+  SidebarReport,
   Series,
   LogLine,
   SummaryFileStatus,
@@ -63,9 +63,9 @@ export const analysisKey: InjectionKey<AnalysisContext> = Symbol('analysis');
 // ── Platform ──────────────────────────────────────────────────────────────────
 
 export interface PlatformContext {
-  platform: Ref<'kdp' | 'wide' | 'craft' | 'publish'>;
+  platform: Ref<'kdp' | 'wide' | 'craft' | 'publish' | 'saved'>;
   isKdp: ComputedRef<boolean>;
-  setPlatform: (p: 'kdp' | 'wide' | 'craft' | 'publish') => void;
+  setPlatform: (p: 'kdp' | 'wide' | 'craft' | 'publish' | 'saved') => void;
 }
 
 export const platformKey: InjectionKey<PlatformContext> = Symbol('platform');
@@ -104,9 +104,9 @@ export const settingsKey: InjectionKey<SettingsContext> = Symbol('settings');
 // ── Reports ───────────────────────────────────────────────────────────────────
 
 export interface ReportsContext {
-  sidebarGroups: Ref<SidebarReportGroup[]>;
+  savedReports: Ref<SidebarReport[]>;
   currentReport: Ref<ReportEnvelope | null>;
-  loadSidebarReports: (folder: string, platform: string) => Promise<void>;
+  loadSavedReports: (folder: string, platform?: string) => Promise<void>;
   openReport: (id: number) => Promise<ReportEnvelope>;
   deleteReport: (id: number) => Promise<void>;
   closeReport: () => void;

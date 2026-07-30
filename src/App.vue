@@ -19,6 +19,7 @@ import type { Story, Finding, Series } from './types';
 import TitleBar from './components/TitleBar.vue';
 import Sidebar from './components/Sidebar.vue';
 import AnalyzerPanel from './components/AnalyzerPanel.vue';
+import SavedReportsPanel from './components/SavedReportsPanel.vue';
 import ReportsViewer from './components/ReportsViewer.vue';
 import SettingsPanel from './components/settings/SettingsPanel.vue';
 import HelpPanel from './components/HelpPanel.vue';
@@ -255,29 +256,33 @@ function openPlatformAccounts(): void {
 
 // ── Watchers ──────────────────────────────────────────────────────────────────
 
+function refreshSavedReports(folder: string): void {
+  void reportsCtx.loadSavedReports(folder);
+}
+
 watch(() => storiesCtx.activeStoryId.value, (id) => {
   if (id && storiesCtx.activeFolder.value) {
     analysisCtx.refreshState(storiesCtx.activeFolder.value);
-    reportsCtx.loadSidebarReports(storiesCtx.activeFolder.value, platformCtx.platform.value);
+    refreshSavedReports(storiesCtx.activeFolder.value);
     void campaignsCtx.loadCampaigns(storiesCtx.activeFolder.value);
     void campaignsCtx.loadLandingPages(storiesCtx.activeFolder.value);
   } else {
     analysisCtx.refreshState('');
-    reportsCtx.loadSidebarReports('', platformCtx.platform.value);
+    refreshSavedReports('');
     void campaignsCtx.loadCampaigns('');
   }
 });
 
 watch(() => platformCtx.platform.value, () => {
-  if (storiesCtx.activeFolder.value) {
-    reportsCtx.loadSidebarReports(storiesCtx.activeFolder.value, platformCtx.platform.value);
+  if (storiesCtx.activeFolder.value && platformCtx.platform.value === 'saved') {
+    void reportsCtx.loadSavedReports(storiesCtx.activeFolder.value);
   }
 });
 
 watch(() => analysisCtx.isWorking.value, (working, wasWorking) => {
   if (wasWorking && !working && storiesCtx.activeFolder.value) {
     analysisCtx.refreshState(storiesCtx.activeFolder.value);
-    reportsCtx.loadSidebarReports(storiesCtx.activeFolder.value, platformCtx.platform.value);
+    void reportsCtx.loadSavedReports(storiesCtx.activeFolder.value);
   }
 });
 
@@ -296,7 +301,7 @@ onMounted(() => {
     const folder = storiesCtx.activeFolder.value;
     if (folder) {
       analysisCtx.refreshState(folder);
-      reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
+      void reportsCtx.loadSavedReports(folder);
     }
   });
   seriesCtx.loadSeries();
@@ -368,7 +373,8 @@ onMounted(() => {
 
       <!-- Analyzer mode panels -->
       <template v-else-if="appMode === 'analyzer'">
-        <AnalyzerPanel v-if="activePanel === 'analyzer'" />
+        <SavedReportsPanel v-if="activePanel === 'analyzer' && platformCtx.platform.value === 'saved'" />
+        <AnalyzerPanel v-else-if="activePanel === 'analyzer'" />
         <ReportsViewer v-if="activePanel === 'reports'" />
         <StoryForm v-if="activePanel === 'story-form'" :story="editingStory" />
         <ManuscriptViewer

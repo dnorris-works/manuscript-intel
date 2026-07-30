@@ -1,10 +1,12 @@
 # Loremetry Desktop — Report Reference
 
-This guide explains every report you can run from the Analyzer. Reports are grouped by platform tab. Some reports appear on more than one tab (for example Chapter Summaries on both KDP and Wide). Running a report once stores it for that story; the same result is visible wherever that report type is listed.
+This guide explains every report you can run from the Analyzer, how saved reports are stored and viewed, and where to manage supporting story data.
 
 ---
 
 ## How platforms work
+
+Use the tabs at the top of the Analyzer to switch context:
 
 | Tab | Purpose |
 |---|---|
@@ -12,18 +14,63 @@ This guide explains every report you can run from the Analyzer. Reports are grou
 | **Wide** | Non-Amazon stores — discovery keywords, BISAC, and shared genre work |
 | **Craft** | Structural and prose craft audits |
 | **Publish** | Reader experience, polish, and formatter prep |
+| **Saved Reports** | Read or delete reports you have already generated for the active story |
+
+On **KDP**, **Wide**, **Craft**, and **Publish**, select reports with the checkboxes and run them. On **Saved Reports**, click a report name to open it.
 
 Dependencies: some reports need others first (shown in the Analyzer). Selecting a report auto-selects its dependencies when required.
 
 ---
 
+## Saved reports
+
+When you run a report, Loremetry stores a snapshot for that story. Your **current** copy of each report type is listed on the **Saved Reports** tab as a flat list of report names — one row per report, no expandable groups.
+
+- **Open** — click the report name.
+- **Delete** — click **×** on the row. This removes only that saved snapshot; it does not delete underlying analysis data.
+- **Date** — the generated date is shown inside the report when you open it, not in the list.
+
+The report viewer header shows the report name only. Use **Copy**, **Delete**, or **Close** from the toolbar.
+
+### Freshness on the Analyzer
+
+Each report card on KDP / Wide / Craft / Publish shows a status:
+
+| Status | Meaning |
+|---|---|
+| **up to date** | Current saved report matches the manuscript |
+| **stale — re-run to refresh** | The manuscript changed since this report was saved; re-run to replace it |
+| *(no badge)* | No saved report yet for this type |
+
+When you edit manuscript chapters, older saved snapshots are **archived** automatically (see below). The Analyzer then shows affected reports as stale until you re-run them.
+
+### Archived reports
+
+When the manuscript changes, Loremetry archives the previous current report for each affected type. Archived copies are not shown on **Saved Reports**.
+
+Open **Settings → Archived Reports** to browse them in a table. Use **Read** to open a snapshot or **Delete** to remove one row. The table shows the report name, when it was archived, and the reason (typically a manuscript change).
+
+### Chapter fingerprints (Story Data)
+
+**Chapter Summaries** are no longer listed as a report you open from Saved Reports. They are **story infrastructure**: per-chapter fingerprint data that other reports depend on.
+
+Manage them in **Settings → Story Data**:
+
+- View fingerprint status per chapter
+- **Refresh fingerprints** after you edit chapters (instant, no AI)
+- **Clear fingerprints** if you need to reset
+
+The Analyzer shows fingerprint status before you run reports that depend on them and can prompt you to refresh when needed.
+
+---
+
 ## Shared (KDP + Wide)
 
-### Chapter Summaries
+### Chapter fingerprints
 
 Reads each manuscript chapter and extracts **genre signals** — setting, tone, themes, conflict type, romance/faith/supernatural markers, pacing, POV, and tropes — not a plot synopsis.
 
-Use this as the foundation for genre analysis, ranking, categories, and keywords. Re-run with “Force re-summarize” if chapters changed substantially.
+This is the foundation for genre analysis, ranking, categories, and keywords. Refresh fingerprints in **Settings → Story Data** (or from the Analyzer prompt) when chapters change. Re-run dependent reports after a manuscript edit so saved results stay current.
 
 ### Genre Analysis
 
@@ -197,7 +244,8 @@ Per-chapter pace and drag-risk scores so you can see where the manuscript slows 
 
 ## Tips
 
-1. Start publishing work with **Chapter Summaries**, then genre/ranking, then platform-specific reports.
-2. Craft and Publish do not require summaries, but a story bible (and Characters / Locations folders) improves AI context when present.
-3. Series craft audits need a series with books in reading order and the series scope selected in the Analyzer.
-4. Cost estimates in the Analyzer use model prices from Settings; Free means no LLM call (Zeigarnik, Line Polish, Vellum prep).
+1. Start publishing work with **chapter fingerprints** (Settings → Story Data), then genre/ranking, then platform-specific reports.
+2. After editing the manuscript, check **Saved Reports** for stale items or open **Settings → Archived Reports** to read older snapshots.
+3. Craft and Publish do not require fingerprints for every report, but a story bible (and Characters / Locations folders) improves AI context when present.
+4. Series craft audits need a series with books in reading order and the series scope selected in the Analyzer.
+5. Cost estimates in the Analyzer use model prices from Settings; Free means no LLM call (Zeigarnik, Line Polish, Vellum prep).

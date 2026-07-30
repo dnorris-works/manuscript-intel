@@ -2,20 +2,17 @@
 import { inject, ref, watch, computed, h, type Ref, type VNodeChild } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  NButton, NButtonGroup, NCollapse, NCollapseItem, NMenu, NTree, NText, NTag,
-  NEmpty, NScrollbar, useDialog, type MenuOption, type TreeOption,
+  NButton, NCollapse, NCollapseItem, NMenu, NTree, NText, NTag,
+  NEmpty, NScrollbar, type MenuOption, type TreeOption,
 } from 'naive-ui';
-import { storiesKey, reportsKey, platformKey, showPanelKey, seriesKey, campaignsKey, analysisKey } from '../injectionKeys';
+import { storiesKey, showPanelKey, seriesKey, campaignsKey } from '../injectionKeys';
 import type { Story, Series, SeriesBook } from '../types';
 import FileTreeNodes, { type FileTreeEntry } from './FileTreeNodes.vue';
 
 const storiesCtx = inject(storiesKey)!;
-const reportsCtx = inject(reportsKey)!;
-const platformCtx = inject(platformKey)!;
 const showPanel = inject(showPanelKey)!;
 const seriesCtx = inject(seriesKey)!;
 const campaignsCtx = inject(campaignsKey)!;
-const analysisCtx = inject(analysisKey)!;
 
 const appMode = inject<Ref<'analyzer' | 'writing' | 'marketing'>>('appMode')!;
 const setAppMode = inject<(mode: 'analyzer' | 'writing' | 'marketing') => void>('setAppMode')!;
@@ -23,7 +20,6 @@ const openInWritingMode = inject<(filePath: string, title: string) => void>('ope
 const openNewDocumentForm = inject<(location?: string) => void>('openNewDocumentForm')!;
 const fileTreeTick = inject<Ref<number>>('fileTreeTick')!;
 const writingBrowseFolder = inject<Ref<string>>('writingBrowseFolder')!;
-const dialog = useDialog();
 
 const emit = defineEmits<{
   (e: 'open-story-form', story: Story | null): void;
@@ -32,9 +28,6 @@ const emit = defineEmits<{
   (e: 'open-campaign-detail', id: number): void;
   (e: 'open-platform-accounts'): void;
 }>();
-
-type SidebarMode = 'files' | 'reports';
-const sidebarMode = ref<SidebarMode>('files');
 
 const expandedSections = ref<string[]>([
   'stories', 'workspace', 'series', 'campaigns', 'platformAccounts', 'tools',
@@ -93,16 +86,6 @@ async function loadFileTree(): Promise<void> {
   await loadFileTreeForFolder(folder);
 }
 
-function switchSidebarMode(mode: SidebarMode): void {
-  sidebarMode.value = mode;
-  if (!expandedSections.value.includes('workspace')) {
-    expandedSections.value = [...expandedSections.value, 'workspace'];
-  }
-  if (mode === 'files' && effectiveBrowseFolder.value) {
-    void loadFileTree();
-  }
-}
-
 function onFileClick(entry: FileTreeEntry): void {
   openInWritingMode(entry.path, entry.name.replace(/\.md$/, ''));
 }
@@ -128,12 +111,8 @@ watch(fileTreeTick, () => {
   if (effectiveBrowseFolder.value) void loadFileTree();
 });
 
-watch(sidebarMode, (mode) => {
-  if (mode === 'files' && effectiveBrowseFolder.value) void loadFileTree();
-});
-
 watch(expandedSections, (names) => {
-  if (names.includes('workspace') && sidebarMode.value === 'files' && effectiveBrowseFolder.value) {
+  if (names.includes('workspace') && effectiveBrowseFolder.value) {
     void loadFileTree();
   }
 }, { deep: true });
@@ -144,7 +123,6 @@ watch(writingBrowseFolder, () => {
 
 watch(appMode, (mode) => {
   if (mode === 'writing' && effectiveBrowseFolder.value) {
-    sidebarMode.value = 'files';
     void loadFileTree();
   }
   if (mode === 'marketing' && storiesCtx.activeFolder.value) {
@@ -168,7 +146,7 @@ function onStoryClick(story: Story): void {
   } else if (appMode.value === 'writing') {
     void loadFileTree();
   } else {
-    switchSidebarMode('files');
+    void loadFileTree();
     showPanel('analyzer');
   }
 }
@@ -228,38 +206,6 @@ function onPlatformAccounts(): void {
   emit('open-platform-accounts');
 }
 
-async function onVersionClick(id: number): Promise<void> {
-  await reportsCtx.openReport(id);
-  showPanel('reports');
-}
-
-function onDeleteVersion(id: number): void {
-  dialog.warning({
-    title: 'Delete report',
-    content: 'Delete this report? This cannot be undone.',
-    positiveText: 'Delete',
-    negativeText: 'Cancel',
-    onPositiveClick: async () => {
-      try {
-        await reportsCtx.deleteReport(id);
-        const folder = storiesCtx.activeFolder.value;
-        if (folder) {
-          await analysisCtx.refreshState(folder);
-          await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    },
-  });
-}
-
-function formatTimestamp(ts: string): string {
-  return new Date(ts).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  });
-}
-
 function renderStoryLabel(option: MenuOption): VNodeChild {
   const story = standaloneStories.value.find(s => s.id === option.key);
   return h('div', { style: 'display:flex;align-items:center;gap:4px;width:100%;' }, [
@@ -297,29 +243,6 @@ function renderSeriesLabel(option: MenuOption): VNodeChild {
   ]);
 }
 
-function renderReportLabel(option: MenuOption): VNodeChild {
-  if (String(option.key).startsWith('report-')) {
-    const id = Number(String(option.key).replace('report-', ''));
-    return h('div', { style: 'display:flex;align-items:center;gap:4px;width:100%;' }, [
-      h('span', { style: 'flex:1;' }, option.label as string),
-      h(NButton, {
-        size: 'tiny',
-        quaternary: true,
-        type: 'error',
-        onClick: (e: MouseEvent) => {
-          e.stopPropagation();
-          onDeleteVersion(id);
-        },
-      }, { default: () => '×' }),
-    ]);
-  }
-  const group = reportsCtx.sidebarGroups.value.find(g => g.doc_type === option.key);
-  return h('div', { style: 'display:flex;align-items:center;gap:6px;width:100%;' }, [
-    h('span', { style: 'flex:1;overflow:hidden;text-overflow:ellipsis;' }, option.label as string),
-    group ? h(NTag, { size: 'small', round: true }, { default: () => String(group.count) }) : null,
-  ]);
-}
-
 const storyMenuOptions = computed<MenuOption[]>(() =>
   standaloneStories.value.map(story => ({
     key: story.id,
@@ -354,17 +277,6 @@ const campaignMenuOptions = computed<MenuOption[]>(() =>
   })),
 );
 
-const reportMenuOptions = computed<MenuOption[]>(() =>
-  reportsCtx.sidebarGroups.value.map(type => ({
-    key: type.doc_type,
-    label: type.label,
-    children: type.versions.map(version => ({
-      key: `report-${version.id}`,
-      label: formatTimestamp(version.generated_at),
-    })),
-  })),
-);
-
 function onStoryMenuSelect(key: string): void {
   const story = standaloneStories.value.find(s => s.id === key);
   if (story) onStoryClick(story);
@@ -377,12 +289,6 @@ function onSeriesMenuSelect(key: string): void {
 
 function onCampaignMenuSelect(key: string): void {
   onCampaignClick(Number(key));
-}
-
-function onReportMenuSelect(key: string): void {
-  if (key.startsWith('report-')) {
-    void onVersionClick(Number(key.replace('report-', '')));
-  }
 }
 
 function onSeriesTreeSelect(keys: Array<string | number>): void {
@@ -429,7 +335,7 @@ const emptyStoriesHint = computed(() => {
           >Analyzer</n-button>
           <n-button
             :type="appMode === 'writing' ? 'primary' : 'default'"
-            @click="setAppMode('writing'); sidebarMode = 'files'"
+            @click="setAppMode('writing')"
           >Writing</n-button>
           <n-button
             :type="appMode === 'marketing' ? 'primary' : 'default'"
@@ -465,20 +371,9 @@ const emptyStoriesHint = computed(() => {
 
             <template v-else>
               <div v-if="appMode === 'analyzer'" class="workspace-toolbar">
-                <n-button-group style="flex: 1;">
-                  <n-button
-                    :type="sidebarMode === 'files' ? 'primary' : 'default'"
-                    style="flex: 1;"
-                    @click="switchSidebarMode('files')"
-                  >Files</n-button>
-                  <n-button
-                    :type="sidebarMode === 'reports' ? 'primary' : 'default'"
-                    style="flex: 1;"
-                    @click="switchSidebarMode('reports')"
-                  >Reports</n-button>
-                </n-button-group>
+                <n-text depth="3" class="sub-label">Files</n-text>
                 <n-button
-                  v-if="sidebarMode === 'files' && storiesCtx.activeFolder.value"
+                  v-if="storiesCtx.activeFolder.value"
                   size="tiny"
                   quaternary
                   title="New document"
@@ -486,7 +381,7 @@ const emptyStoriesHint = computed(() => {
                 >+</n-button>
               </div>
 
-              <div v-if="sidebarMode === 'files' || appMode === 'writing'" class="workspace-panel">
+              <div class="workspace-panel">
                 <div v-if="appMode === 'writing'" class="workspace-toolbar">
                   <n-text depth="3" class="sub-label">Files</n-text>
                   <n-button size="tiny" quaternary title="New document" @click="onAddDocument">+</n-button>
@@ -504,25 +399,6 @@ const emptyStoriesHint = computed(() => {
                   @update:expanded-keys="expandedDirs = $event"
                   @open="onFileClick"
                   @add="onAddInFolder"
-                />
-              </div>
-
-              <div v-if="sidebarMode === 'reports' && appMode === 'analyzer'" class="workspace-panel">
-                <n-empty
-                  v-if="!storiesCtx.activeFolder.value"
-                  description="Select a story to see reports."
-                  size="small"
-                />
-                <n-empty
-                  v-else-if="reportsCtx.sidebarGroups.value.length === 0"
-                  description="No saved reports yet."
-                  size="small"
-                />
-                <n-menu
-                  v-else
-                  :options="reportMenuOptions"
-                  :render-label="renderReportLabel"
-                  @update:value="onReportMenuSelect"
                 />
               </div>
             </template>

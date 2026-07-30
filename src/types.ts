@@ -128,12 +128,11 @@ export interface DocMeta {
   generated_at: string;
 }
 
-export interface SavedReportMeta {
+export interface SidebarReport {
   id: number;
   doc_type: string;
-  version: number;
   label: string;
-  saved_at: string;
+  generated_at: string;
 }
 
 export interface ReportEnvelope {
@@ -149,19 +148,6 @@ export interface LogLine {
   type: string;
   icon: string;
   text: string;
-}
-
-export interface SidebarReportVersion {
-  id: number;
-  generated_at: string;
-}
-
-export interface SidebarReportGroup {
-  doc_type: string;
-  label: string;
-  description: string;
-  count: number;
-  versions: SidebarReportVersion[];
 }
 
 export interface Finding {

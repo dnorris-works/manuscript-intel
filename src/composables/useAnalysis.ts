@@ -110,11 +110,10 @@ function formatSetupBlock(issues: { message: string }[]): string {
   return issues.map(i => `• ${i.message}`).join('\n');
 }
 
-async function afterAnalysisRun(folder: string, platform?: string): Promise<void> {
+async function afterAnalysisRun(folder: string): Promise<void> {
   await refreshState(folder);
   if (!folder) return;
-  const plat = platform ?? usePlatform().platform.value;
-  await useReports().loadSidebarReports(folder, plat);
+  await useReports().loadSavedReports(folder);
 }
 
 async function runAnalyze(folder: string, forceResummarize: boolean, platform: string, selected: string[]): Promise<void> {
@@ -153,7 +152,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
     appendLog('✗ ' + String(e));
   } finally {
     isWorking.value = false;
-    await afterAnalysisRun(folder, platform);
+    await afterAnalysisRun(folder);
     saveLog(folder, runTime);
   }
 }

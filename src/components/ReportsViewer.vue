@@ -27,13 +27,7 @@ const renderedHtml = computed(() => {
   return renderReport(report.value, storyName);
 });
 
-const reportTitle = computed(() => {
-  if (!report.value) return '';
-  const ts = new Date(report.value.generated_at).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  });
-  return `${report.value.label} — ${ts}`;
-});
+const reportTitle = computed(() => report.value?.label ?? '');
 
 async function onCopy(): Promise<void> {
   if (!report.value) return;
@@ -55,7 +49,7 @@ function onDelete(): void {
         const folder = storiesCtx.activeFolder.value;
         if (folder) {
           await analysisCtx.refreshState(folder);
-          await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
+          await reportsCtx.loadSavedReports(folder);
         }
         reportsCtx.closeReport();
         showPanel('analyzer');

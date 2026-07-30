@@ -1,7 +1,7 @@
 import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
-export type PlatformId = 'kdp' | 'wide' | 'craft' | 'publish';
+export type PlatformId = 'kdp' | 'wide' | 'craft' | 'publish' | 'saved';
 
 interface AppStateRow {
   platform: string;
@@ -15,7 +15,7 @@ const isKdp = computed(() => platform.value === 'kdp');
 async function hydratePlatform(): Promise<void> {
   try {
     const state = await invoke<AppStateRow>('load_app_state');
-    if (state.platform === 'kdp' || state.platform === 'wide' || state.platform === 'craft' || state.platform === 'publish') {
+    if (state.platform === 'kdp' || state.platform === 'wide' || state.platform === 'craft' || state.platform === 'publish' || state.platform === 'saved') {
       platform.value = state.platform;
     }
   } catch {

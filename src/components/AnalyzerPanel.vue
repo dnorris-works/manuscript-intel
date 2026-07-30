@@ -2,9 +2,10 @@
 import { inject, ref, computed, watch, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  NText, NRadioGroup, NRadioButton, NRadio, NButton, NSpace, NAlert, NCheckbox,
+  NText, NRadio, NButton, NSpace, NAlert, NCheckbox,
   NCard, NSpin, NSelect, useDialog, useMessage,
 } from 'naive-ui';
+import AnalyzerPlatformTabs from './AnalyzerPlatformTabs.vue';
 import type { ContinuityScope } from '../composables/useAnalysis';
 import { useSettings } from '../composables/useSettings';
 import { storiesKey, analysisKey, seriesKey, platformKey, showPanelKey } from '../injectionKeys';
@@ -475,16 +476,7 @@ function onStop(): void {
       {{ storiesCtx.activeStory.value ? `Story: ${storiesCtx.activeStory.value.name}` : 'Select or create a story to begin.' }}
     </n-text>
 
-    <n-radio-group
-      :value="platformCtx.platform.value"
-      style="margin-bottom: 12px;"
-      @update:value="platformCtx.setPlatform"
-    >
-      <n-radio-button value="kdp">KDP</n-radio-button>
-      <n-radio-button value="wide">Wide</n-radio-button>
-      <n-radio-button value="craft">Craft</n-radio-button>
-      <n-radio-button value="publish">Publish</n-radio-button>
-    </n-radio-group>
+    <AnalyzerPlatformTabs />
 
     <n-alert v-if="setupIssues.length > 0" type="warning" title="Setup required before running reports" style="margin-bottom: 12px;">
       <ul style="margin: 8px 0; padding-left: 1.2em;">
