@@ -609,6 +609,7 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     seed_provider_models(&conn)?;
     seed_lookup_config(&conn)?;
     migrate_legacy_summaries_to_fingerprints(&conn)?;
+    invalidate_incomplete_fingerprints(&conn)?;
     backfill_books_kdp_catalog(&conn)?;
 
     Ok(Db(Mutex::new(conn)))
@@ -1614,6 +1615,44 @@ fn migrate_legacy_summaries_to_fingerprints(conn: &Connection) -> Result<(), Str
     Ok(())
 }
 
+/// Legacy AI-summary rows migrated without POV/tense must be rescanned.
+fn invalidate_incomplete_fingerprints(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE chapter_fingerprints SET source_hash = ''
+         WHERE trim(pov) = '' OR trim(tense) = ''",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE chapter_summaries SET source_hash = ''
+         WHERE EXISTS (
+           SELECT 1 FROM chapter_fingerprints f
+           WHERE f.story_folder = chapter_summaries.story_folder
+             AND f.file = chapter_summaries.file
+             AND (trim(f.pov) = '' OR trim(f.tense) = '')
+         )",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// True when the chapter has a full deterministic fingerprint (not a legacy stub).
+pub fn chapter_fingerprint_complete(
+    conn: &Connection,
+    story_folder: &str,
+    file: &str,
+) -> bool {
+    conn.query_row(
+        "SELECT pov, tense FROM chapter_fingerprints
+         WHERE story_folder = ?1 AND file = ?2",
+        params![story_folder, file],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    )
+    .map(|(pov, tense)| !pov.trim().is_empty() && !tense.trim().is_empty())
+    .unwrap_or(false)
+}
+
 fn fingerprint_row_to_summary(
     file: String,
     title: String,
@@ -2265,12 +2304,45 @@ pub async fn get_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<ReportE
 
 // ── Delete a report version ────────────────────────
 
+/// Remove underlying analysis rows when the last saved document of a type is deleted.
+fn delete_report_source_data(conn: &Connection, story_folder: &str, doc_type: &str) -> Result<(), String> {
+    match doc_type {
+        "chapter_summaries" => delete_chapter_summaries(conn, story_folder),
+        _ => Ok(()),
+    }
+}
+
 #[tauri::command]
 pub async fn delete_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let affected = conn.execute("DELETE FROM story_documents WHERE id = ?1", params![id])
+
+    let (story_folder, doc_type): (String, String) = conn
+        .query_row(
+            "SELECT story_folder, doc_type FROM story_documents WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| "Report not found.".to_string())?;
+
+    let affected = conn
+        .execute("DELETE FROM story_documents WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-    if affected == 0 { return Err("Report not found.".to_string()); }
+    if affected == 0 {
+        return Err("Report not found.".to_string());
+    }
+
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM story_documents WHERE story_folder = ?1 AND doc_type = ?2",
+            params![story_folder, doc_type],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    if remaining == 0 {
+        delete_report_source_data(&conn, &story_folder, &doc_type)?;
+    }
+
     Ok(())
 }
 

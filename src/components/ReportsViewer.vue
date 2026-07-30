@@ -5,7 +5,7 @@ import {
   NPageHeader, NScrollbar, NButton, NSpace, NEmpty, useDialog, useMessage,
 } from 'naive-ui';
 import { renderReport } from '../reportRenderer';
-import { storiesKey, reportsKey, platformKey, showPanelKey, openManuscriptEditorKey } from '../injectionKeys';
+import { storiesKey, reportsKey, platformKey, showPanelKey, openManuscriptEditorKey, analysisKey } from '../injectionKeys';
 import type { Finding } from '../types';
 
 const reportsCtx = inject(reportsKey)!;
@@ -13,6 +13,7 @@ const storiesCtx = inject(storiesKey)!;
 const platformCtx = inject(platformKey)!;
 const showPanel = inject(showPanelKey)!;
 const openManuscriptEditor = inject(openManuscriptEditorKey)!;
+const analysisCtx = inject(analysisKey)!;
 const dialog = useDialog();
 const message = useMessage();
 
@@ -52,7 +53,10 @@ function onDelete(): void {
       try {
         await reportsCtx.deleteReport(report.value!.id);
         const folder = storiesCtx.activeFolder.value;
-        if (folder) await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
+        if (folder) {
+          await analysisCtx.refreshState(folder);
+          await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
+        }
         reportsCtx.closeReport();
         showPanel('analyzer');
       } catch (e) {

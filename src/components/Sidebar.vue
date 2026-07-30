@@ -5,7 +5,7 @@ import {
   NButton, NButtonGroup, NCollapse, NCollapseItem, NMenu, NTree, NText, NTag,
   NEmpty, NScrollbar, useDialog, type MenuOption, type TreeOption,
 } from 'naive-ui';
-import { storiesKey, reportsKey, platformKey, showPanelKey, seriesKey, campaignsKey } from '../injectionKeys';
+import { storiesKey, reportsKey, platformKey, showPanelKey, seriesKey, campaignsKey, analysisKey } from '../injectionKeys';
 import type { Story, Series, SeriesBook } from '../types';
 import FileTreeNodes, { type FileTreeEntry } from './FileTreeNodes.vue';
 
@@ -15,6 +15,7 @@ const platformCtx = inject(platformKey)!;
 const showPanel = inject(showPanelKey)!;
 const seriesCtx = inject(seriesKey)!;
 const campaignsCtx = inject(campaignsKey)!;
+const analysisCtx = inject(analysisKey)!;
 
 const appMode = inject<Ref<'analyzer' | 'writing' | 'marketing'>>('appMode')!;
 const setAppMode = inject<(mode: 'analyzer' | 'writing' | 'marketing') => void>('setAppMode')!;
@@ -242,7 +243,10 @@ function onDeleteVersion(id: number): void {
       try {
         await reportsCtx.deleteReport(id);
         const folder = storiesCtx.activeFolder.value;
-        if (folder) await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
+        if (folder) {
+          await analysisCtx.refreshState(folder);
+          await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
+        }
       } catch (err) {
         console.error(err);
       }

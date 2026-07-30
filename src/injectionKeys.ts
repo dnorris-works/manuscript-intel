@@ -49,7 +49,7 @@ export interface AnalysisContext {
   logLines: Ref<LogLine[]>;
   summaryFileProgress: Ref<Record<string, SummaryFileStatus>>;
   refreshState: (folder: string) => Promise<void>;
-  runAnalyze: (folder: string, forceResummarize: boolean, platform: string) => Promise<void>;
+  runAnalyze: (folder: string, forceResummarize: boolean, platform: string, selected: string[]) => Promise<void>;
   runCraftAnalysis: (folder: string, selected: string[], continuityScope: ContinuityScope) => Promise<void>;
   runMarketIntel: (folder: string) => Promise<void>;
   runSummaries: (folder: string) => Promise<void>;

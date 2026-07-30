@@ -4,6 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 import type { AnalysisState, GenreResult, LogLine, SummaryChapterProgress, SummaryFileStatus } from '../types';
 
 import { useSettings } from './useSettings';
+import { useReports } from './useReports';
+import { usePlatform } from './usePlatform';
 
 const analysisState = ref<AnalysisState | null>(null);
 const isWorking = ref(false);
@@ -108,7 +110,14 @@ function formatSetupBlock(issues: { message: string }[]): string {
   return issues.map(i => `• ${i.message}`).join('\n');
 }
 
-async function runAnalyze(folder: string, forceResummarize: boolean, platform: string): Promise<void> {
+async function afterAnalysisRun(folder: string, platform?: string): Promise<void> {
+  await refreshState(folder);
+  if (!folder) return;
+  const plat = platform ?? usePlatform().platform.value;
+  await useReports().loadSidebarReports(folder, plat);
+}
+
+async function runAnalyze(folder: string, forceResummarize: boolean, platform: string, selected: string[]): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
   const s = useSettings();
   const setupIssues = s.checkPublishAnalyzeSetup();
@@ -134,6 +143,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
         dataforseo_login: dataforseoLogin,
         dataforseo_password: dataforseoPassword,
         run_time: runTime,
+        selected,
       },
     });
     if (!result.success) {
@@ -143,6 +153,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
     appendLog('✗ ' + String(e));
   } finally {
     isWorking.value = false;
+    await afterAnalysisRun(folder, platform);
     saveLog(folder, runTime);
   }
 }
@@ -190,6 +201,7 @@ async function runCraftAnalysis(folder: string, selected: string[], continuitySc
     appendLog('✗ ' + String(e));
   } finally {
     isWorking.value = false;
+    await afterAnalysisRun(folder);
     saveLog(folder, new Date().toISOString());
   }
 }
@@ -218,6 +230,7 @@ async function runMarketIntel(folder: string): Promise<void> {
     appendLog('✗ ' + String(e));
   } finally {
     isWorking.value = false;
+    await afterAnalysisRun(folder);
     saveLog(folder, new Date().toISOString());
   }
 }
@@ -249,7 +262,7 @@ async function runSummaries(folder: string): Promise<void> {
     appendLog('✗ ' + String(e));
   } finally {
     isWorking.value = false;
-    await refreshState(folder);
+    await afterAnalysisRun(folder);
     saveLog(folder, runTime);
   }
 }

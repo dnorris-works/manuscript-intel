@@ -31,11 +31,20 @@ pub async fn generate_summaries(app: AppHandle, request: FolderRequest) -> Genre
     let database = app.state::<db::Db>();
     let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
 
+    let run_ts = chrono::Utc::now().to_rfc3339();
+    let saved_report = {
+        let conn = database.0.lock().unwrap();
+        save_chapter_summaries_document(&conn, &request.folder, &run_ts)
+    };
+    if saved_report {
+        emit(&app, "✓ Chapter fingerprints report saved.");
+    }
+
     GenreResult {
         success: true,
         report:  format!("\u{2713} {} scanned, {} already up to date.", done, skipped),
         error:   String::new(),
-        run_ts:  String::new(),
+        run_ts,
     }
 }
 
@@ -82,11 +91,22 @@ pub(crate) async fn phase1_summaries(
         }
 
         let source_hash = chapter_source_hash(&cleaned_source);
-        if summary_hashes.get(&fname).map(|h| h == &source_hash).unwrap_or(false) {
+        let skip = match summary_hashes.get(&fname) {
+            Some(h) if !h.is_empty() && h == &source_hash => {
+                let conn = database.0.lock().unwrap();
+                db::chapter_fingerprint_complete(&conn, story_folder, &fname)
+            }
+            _ => false,
+        };
+        if skip {
             emit(app, &format!("  [{}/{}] SKIP: {}", i + 1, chapters.len(), fname));
             emit_summary_progress(app, &fname, "skipped");
             skipped += 1;
             continue;
+        }
+
+        if summary_hashes.get(&fname).is_some() {
+            emit(app, &format!("  [{}/{}] Re-scanning: {}", i + 1, chapters.len(), fname));
         }
 
         let title = extract_title(&content)
@@ -114,6 +134,26 @@ pub(crate) async fn phase1_summaries(
 
     emit(app, &format!("Phase 1 complete \u{2014} {} scanned, {} skipped.", done, skipped));
     (done, skipped)
+}
+
+/// Writes the viewable chapter_summaries report from stored fingerprint rows.
+pub(crate) fn save_chapter_summaries_document(
+    conn: &rusqlite::Connection,
+    story_folder: &str,
+    run_ts: &str,
+) -> bool {
+    let summaries = db::load_chapter_summaries(conn, story_folder);
+    if summaries.is_empty() {
+        return false;
+    }
+    let cs_json = serde_json::json!({
+        "schema": "chapter_summaries_v1",
+        "chapters": summaries.iter().map(|s| serde_json::json!({
+            "file": s.file, "title": s.title, "signals": s.signals, "word_count": s.word_count,
+        })).collect::<Vec<_>>(),
+        "total_words": summaries.iter().map(|s| s.word_count).sum::<i64>(),
+    }).to_string();
+    db::save_document_at(conn, story_folder, "chapter_summaries", &cs_json, run_ts).is_ok()
 }
 
 fn emit_summary_progress(app: &AppHandle, filename: &str, status: &str) {

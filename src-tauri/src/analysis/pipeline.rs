@@ -11,7 +11,7 @@ use super::{emit, err, GenreResult, FolderRequest, AnalyzeStoryRequest};
 use crate::db;
 use crate::models::KeywordResult;
 
-use super::chapters::{collect_chapters, phase1_summaries, clean_for_ai, chapter_source_hash};
+use super::chapters::{collect_chapters, phase1_summaries, clean_for_ai, chapter_source_hash, save_chapter_summaries_document};
 use super::genres::{RankedGenre, ai_rank_genres, phase2_analyze, render_full_report};
 use super::categories::{match_categories_by_store, rank_by_discoverability};
 use super::bisac::ai_pick_bisac;
@@ -102,7 +102,13 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             let source = std::fs::read_to_string(chapter).unwrap_or_default();
             let cleaned = clean_for_ai(&source);
             let current_hash = chapter_source_hash(&cleaned);
-            if cleaned.is_empty() || current_hash != *stored_hash {
+            if cleaned.is_empty() {
+                continue;
+            }
+            if current_hash != *stored_hash {
+                summary_stale_count += 1;
+                summary_stale_files.push(file);
+            } else if !db::chapter_fingerprint_complete(&conn, &folder, &file) {
                 summary_stale_count += 1;
                 summary_stale_files.push(file);
             }
@@ -558,6 +564,25 @@ pub(crate) fn render_combined_report(
 
 // ── analyze_story ─────────────────────────────────────────────────────────────
 
+/// Whether a publish-platform report may run on KDP or Wide.
+fn report_allowed_on_platform(report_id: &str, platform: &str) -> bool {
+    match report_id {
+        "chapter_summaries" | "genre_analysis" | "genre_ranking" => {
+            platform == "kdp" || platform == "wide"
+        }
+        "kdp_categories" | "kdp_keywords" | "mi_search_terms" | "keyword_search" | "analysis" => {
+            platform == "kdp"
+        }
+        "bisac_classification" | "discovery_keywords" => platform == "wide",
+        _ => false,
+    }
+}
+
+/// True when `report_id` is selected and allowed on the active platform.
+fn wants_report(selected: &[String], report_id: &str, platform: &str) -> bool {
+    selected.iter().any(|s| s == report_id) && report_allowed_on_platform(report_id, platform)
+}
+
 #[tauri::command]
 pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> GenreResult {
     let cancel = crate::cancel_notify();
@@ -568,6 +593,16 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
 }
 
 async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> GenreResult {
+    let selected = &request.selected;
+    let platform = request.platform.as_str();
+
+    if platform != "kdp" && platform != "wide" {
+        return err("Invalid platform — expected kdp or wide.");
+    }
+    if selected.is_empty() {
+        return err("No reports selected.");
+    }
+
     if let Err(msg) = crate::ai::ai_ready(&request.provider, &request.api_key, &request.model) {
         return err(&msg);
     }
@@ -576,125 +611,143 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
     let run_ts = if request.run_time.is_empty() { chrono::Utc::now().to_rfc3339() } else { request.run_time.clone() };
 
     // ── Step 1: Chapter fingerprints (Rust scan) ───────────────────────────
-    emit(&app, "Step 1: Scanning chapter fingerprints...");
-    {
-        let folder_path = PathBuf::from(&request.folder);
-        if !folder_path.exists() { return err("Folder does not exist."); }
+    if wants_report(selected, "chapter_summaries", platform) || request.force_resummarize {
+        emit(&app, "Step 1: Scanning chapter fingerprints...");
+        {
+            let folder_path = PathBuf::from(&request.folder);
+            if !folder_path.exists() { return err("Folder does not exist."); }
 
-        crate::reset_cancel();
+            crate::reset_cancel();
 
-        if request.force_resummarize {
-            emit(&app, "  Force re-scan — deleting existing fingerprints...");
+            if request.force_resummarize {
+                emit(&app, "  Force re-scan — deleting existing fingerprints...");
+                let conn = database.0.lock().unwrap();
+                let _ = db::delete_chapter_summaries(&conn, &request.folder);
+            }
+
+            let chapters = collect_chapters(&folder_path);
+            if chapters.is_empty() { return err("No .md chapter files found."); }
+
+            let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
+            emit(&app, &format!("  ✓ {} scanned, {} skipped.", done, skipped));
+        }
+        // Save chapter summaries as a standalone report
+        {
             let conn = database.0.lock().unwrap();
-            let _ = db::delete_chapter_summaries(&conn, &request.folder);
+            if save_chapter_summaries_document(&conn, &request.folder, &run_ts) {
+                emit(&app, "  ✓ Chapter fingerprints report saved.");
+            }
         }
-
-        let chapters = collect_chapters(&folder_path);
-        if chapters.is_empty() { return err("No .md chapter files found."); }
-
-        let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder).await;
-        emit(&app, &format!("  ✓ {} scanned, {} skipped.", done, skipped));
+        if crate::is_cancelled() { return err("Cancelled."); }
     }
-    // Save chapter summaries as a standalone report
-    {
-        let conn = database.0.lock().unwrap();
-        let summaries = db::load_chapter_summaries(&conn, &request.folder);
-        if !summaries.is_empty() {
-            let cs_json = serde_json::json!({
-                "schema": "chapter_summaries_v1",
-                "chapters": summaries.iter().map(|s| serde_json::json!({
-                    "file": s.file, "title": s.title, "signals": s.signals, "word_count": s.word_count,
-                })).collect::<Vec<_>>(),
-                "total_words": summaries.iter().map(|s| s.word_count).sum::<i64>(),
-            }).to_string();
-            let _ = db::save_document_at(&conn, &request.folder, "chapter_summaries", &cs_json, &run_ts);
-        }
-    }
-    if crate::is_cancelled() { return err("Cancelled."); }
+
+    let needs_genre_data = wants_report(selected, "genre_analysis", platform)
+        || wants_report(selected, "genre_ranking", platform)
+        || wants_report(selected, "kdp_categories", platform)
+        || wants_report(selected, "kdp_keywords", platform)
+        || wants_report(selected, "bisac_classification", platform)
+        || wants_report(selected, "mi_search_terms", platform)
+        || wants_report(selected, "discovery_keywords", platform)
+        || wants_report(selected, "keyword_search", platform)
+        || wants_report(selected, "analysis", platform);
 
     // ── Step 2: Genre Analysis ─────────────────────────────────────────────
-    emit(&app, "Step 2: Genre analysis...");
-    let genre_data_existing = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
-    if genre_data_existing.is_none() {
-        let summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
-        if summaries.is_empty() { return err("No chapter summaries available."); }
-        let r = phase2_analyze(
-        &app, &database, &request.folder, &summaries,
-        &request.provider, &request.api_key, &request.model,
-        &request.genre_model,
-    ).await;
-        if !r.success { return err(&r.error); }
-    } else {
-        emit(&app, "  Genre data exists — skipping.");
+    if wants_report(selected, "genre_analysis", platform) {
+        emit(&app, "Step 2: Genre analysis...");
+        let genre_data_existing = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+        if genre_data_existing.is_none() {
+            let summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
+            if summaries.is_empty() { return err("No chapter summaries available."); }
+            let r = phase2_analyze(
+                &app, &database, &request.folder, &summaries,
+                &request.provider, &request.api_key, &request.model,
+                &request.genre_model,
+            ).await;
+            if !r.success { return err(&r.error); }
+        } else {
+            emit(&app, "  Genre data exists — skipping.");
+        }
+        if crate::is_cancelled() { return err("Cancelled."); }
     }
-    if crate::is_cancelled() { return err("Cancelled."); }
 
-    let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
-    let genre_data = match genre_data {
-        Some(d) => d,
-        None    => return err("Could not produce genre data."),
+    let genre_data = if needs_genre_data {
+        let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+        match genre_data {
+            Some(d) => d,
+            None => return err("Genre analysis data is required. Run Genre Analysis first."),
+        }
+    } else {
+        return GenreResult {
+            success: true,
+            report: String::new(),
+            error: String::new(),
+            run_ts: run_ts.clone(),
+        };
     };
 
     // ── Step 3: Rank Genres ────────────────────────────────────────────────
-    emit(&app, "Step 3: Ranking genres...");
-    let ranked: Vec<RankedGenre> = {
-        let master_list = crate::genre_taxonomy::master_genre_list(&database)
-            .map_err(|e| format!("Could not load genre list from database: {}", e));
-        let master_list = match master_list {
-            Ok(l) => l,
-            Err(e) => return err(&e),
+    let mut ranked: Vec<RankedGenre> = Vec::new();
+    let mut genre_ranking_section = String::new();
+    if wants_report(selected, "genre_ranking", platform) {
+        emit(&app, "Step 3: Ranking genres...");
+        ranked = {
+            let master_list = crate::genre_taxonomy::master_genre_list(&database)
+                .map_err(|e| format!("Could not load genre list from database: {}", e));
+            let master_list = match master_list {
+                Ok(l) => l,
+                Err(e) => return err(&e),
+            };
+
+            let description = format!(
+                "{}\n\nKDP paths already identified: {}\n\n{}",
+                genre_data.industry_ebook, genre_data.kdp_ebook.join("; "), genre_data.genre_signals
+            );
+
+            let ai_ranked = match ai_rank_genres(
+                &database,
+                &request.provider,
+                &request.api_key,
+                &request.model,
+                &request.genre_model,
+                &description,
+                &master_list,
+            ).await {
+                Ok(r) => r,
+                Err(e) => return err(&format!("Genre ranking failed: {}", e)),
+            };
+
+            let mut ranked: Vec<RankedGenre> = ai_ranked.into_iter().map(|r| {
+                let kdp_paths = crate::genre_taxonomy::kdp_paths_for_genre(&database, &r.genre, "Kindle").unwrap_or_default();
+                RankedGenre { genre: r.genre, confidence: r.confidence, reason: r.reason, kdp_paths }
+            }).collect();
+            ranked.sort_by(|a, b| b.confidence.cmp(&a.confidence));
+
+            let conn = database.0.lock().unwrap();
+            let rows: Vec<(String, u8, String)> = ranked.iter().map(|r| (r.genre.clone(), r.confidence, r.reason.clone())).collect();
+            let _ = db::replace_genre_rankings(&conn, &request.folder, &rows);
+
+            // Save genre ranking as a standalone report
+            let ranking_json = serde_json::json!({
+                "schema": "genre_ranking_v1",
+                "genres": ranked.iter().map(|r| serde_json::json!({
+                    "genre": r.genre, "confidence": r.confidence, "reason": r.reason,
+                })).collect::<Vec<_>>(),
+            }).to_string();
+            let _ = db::save_document_at(&conn, &request.folder, "genre_ranking", &ranking_json, &run_ts);
+
+            ranked
         };
+        for r in &ranked { emit(&app, &format!("  {}% — {}", r.confidence, r.genre)); }
+        if crate::is_cancelled() { return err("Cancelled."); }
 
-        let description = format!(
-            "{}\n\nKDP paths already identified: {}\n\n{}",
-            genre_data.industry_ebook, genre_data.kdp_ebook.join("; "), genre_data.genre_signals
-        );
-
-        let ai_ranked = match ai_rank_genres(
-            &database,
-            &request.provider,
-            &request.api_key,
-            &request.model,
-            &request.genre_model,
-            &description,
-            &master_list,
-        ).await {
-            Ok(r) => r,
-            Err(e) => return err(&format!("Genre ranking failed: {}", e)),
-        };
-
-        let mut ranked: Vec<RankedGenre> = ai_ranked.into_iter().map(|r| {
-            let kdp_paths = crate::genre_taxonomy::kdp_paths_for_genre(&database, &r.genre, "Kindle").unwrap_or_default();
-            RankedGenre { genre: r.genre, confidence: r.confidence, reason: r.reason, kdp_paths }
-        }).collect();
-        ranked.sort_by(|a, b| b.confidence.cmp(&a.confidence));
-
-        let conn = database.0.lock().unwrap();
-        let rows: Vec<(String, u8, String)> = ranked.iter().map(|r| (r.genre.clone(), r.confidence, r.reason.clone())).collect();
-        let _ = db::replace_genre_rankings(&conn, &request.folder, &rows);
-
-        // Save genre ranking as a standalone report
-        let ranking_json = serde_json::json!({
-            "schema": "genre_ranking_v1",
+        genre_ranking_section = serde_json::json!({
             "genres": ranked.iter().map(|r| serde_json::json!({
-                "genre": r.genre, "confidence": r.confidence, "reason": r.reason,
+                "genre": r.genre,
+                "confidence": r.confidence,
+                "reason": r.reason,
             })).collect::<Vec<_>>(),
         }).to_string();
-        let _ = db::save_document_at(&conn, &request.folder, "genre_ranking", &ranking_json, &run_ts);
-
-        ranked
-    };
-    for r in &ranked { emit(&app, &format!("  {}% — {}", r.confidence, r.genre)); }
-    if crate::is_cancelled() { return err("Cancelled."); }
-
-    // Build genre ranking report section as JSON
-    let genre_ranking_section = serde_json::json!({
-        "genres": ranked.iter().map(|r| serde_json::json!({
-            "genre": r.genre,
-            "confidence": r.confidence,
-            "reason": r.reason,
-        })).collect::<Vec<_>>(),
-    }).to_string();
+    }
 
     let genre_terms: Vec<(String, u8)> = if !ranked.is_empty() {
         ranked.iter().filter(|r| r.confidence >= 30).take(6).map(|r| (r.genre.clone(), r.confidence)).collect()
@@ -702,68 +755,60 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         vec![(genre_data.industry_ebook.clone(), 100)]
     };
 
-    let is_wide = request.platform == "wide";
-
     // ── Step 4: KDP Categories (both stores) ───────────────────────────────
     let mut kindle_top_categories: Vec<String> = Vec::new();
     let mut print_top_categories: Vec<String> = Vec::new();
-    let kdp_categories_section: String;
-    let mut kdp_stores_json: Vec<serde_json::Value> = Vec::new();
+    let mut kdp_categories_section = serde_json::json!({ "stores": [] }).to_string();
+    if wants_report(selected, "kdp_categories", platform) {
+        emit(&app, "Step 4: Matching KDP categories...");
+        let base_description = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
+        let mut kdp_stores_json: Vec<serde_json::Value> = Vec::new();
 
-    if is_wide {
-        emit(&app, "Step 4: Skipping KDP categories (Wide distribution mode).");
-        kdp_categories_section = serde_json::json!({ "stores": [] }).to_string();
-    } else {
-    emit(&app, "Step 4: Matching KDP categories...");
-    let base_description = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
+        for (store, label, top_cats) in [
+            ("Kindle", "Kindle eBook", &mut kindle_top_categories as &mut Vec<String>),
+            ("Books", "Paperback", &mut print_top_categories as &mut Vec<String>),
+        ] {
+            let total_catalog = { let conn = database.0.lock().unwrap(); db::kdp_category_count(&conn, store) };
+            if total_catalog < 50 {
+                kdp_stores_json.push(serde_json::json!({ "store": label, "error": "Catalog nearly empty — import WinningCat data." }));
+                continue;
+            }
 
-    for (store, label, top_cats) in [
-        ("Kindle", "Kindle eBook", &mut kindle_top_categories as &mut Vec<String>),
-        ("Books", "Paperback", &mut print_top_categories as &mut Vec<String>),
-    ] {
-        let total_catalog = { let conn = database.0.lock().unwrap(); db::kdp_category_count(&conn, store) };
-        if total_catalog < 50 {
-            kdp_stores_json.push(serde_json::json!({ "store": label, "error": "Catalog nearly empty — import WinningCat data." }));
-            continue;
-        }
+            let result = match_categories_by_store(&app, &database, &request.folder, store, &base_description, &genre_terms, &request.provider, &request.api_key, &request.model).await;
 
-        let result = match_categories_by_store(&app, &database, &request.folder, store, &base_description, &genre_terms, &request.provider, &request.api_key, &request.model).await;
+            let final_cats = rank_by_discoverability(&app, store, result.qualifying, &request.canopy_api_key).await;
 
-        let final_cats = rank_by_discoverability(&app, store, result.qualifying, &request.canopy_api_key).await;
+            for q in final_cats.iter().take(3) {
+                top_cats.push(q.path.clone());
+            }
 
-        // Extract top 3 category paths for the KDP paste section
-        for q in final_cats.iter().take(3) {
-            top_cats.push(q.path.clone());
-        }
-
-        kdp_stores_json.push(serde_json::json!({
-            "store": label,
-            "categories": final_cats.iter().enumerate().map(|(i, q)| serde_json::json!({
-                "rank": i + 1,
-                "path": q.path,
-                "fit_confidence": q.fit_confidence,
-                "sales_to_ten": q.sales_to_ten,
-                "verified": q.verified,
-                "is_bonus": i >= 3,
-                "agreeing_genres": q.agreeing_genres,
-                "top_books": q.top_books.iter().map(|b| serde_json::json!({
-                    "title": b.title,
-                    "asin": b.asin,
-                    "image_url": b.image_url,
+            kdp_stores_json.push(serde_json::json!({
+                "store": label,
+                "categories": final_cats.iter().enumerate().map(|(i, q)| serde_json::json!({
+                    "rank": i + 1,
+                    "path": q.path,
+                    "fit_confidence": q.fit_confidence,
+                    "sales_to_ten": q.sales_to_ten,
+                    "verified": q.verified,
+                    "is_bonus": i >= 3,
+                    "agreeing_genres": q.agreeing_genres,
+                    "top_books": q.top_books.iter().map(|b| serde_json::json!({
+                        "title": b.title,
+                        "asin": b.asin,
+                        "image_url": b.image_url,
+                    })).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
-            })).collect::<Vec<_>>(),
-        }));
+            }));
 
+            if crate::is_cancelled() { return err("Cancelled."); }
+        }
+        kdp_categories_section = serde_json::json!({ "stores": kdp_stores_json }).to_string();
         if crate::is_cancelled() { return err("Cancelled."); }
     }
-    kdp_categories_section = serde_json::json!({ "stores": kdp_stores_json }).to_string();
-    } // end of if !is_wide for KDP categories
-    if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 5: Generate search terms (KDP only) ───────────────────────────
-    if !is_wide {
-    emit(&app, "Step 5: Generating competition search terms...");
-    {
+    if wants_report(selected, "mi_search_terms", platform) {
+        emit(&app, "Step 5: Generating competition search terms...");
         match generate_mi_search_terms(&database, &request.provider, &request.api_key, &request.model, &genre_data).await {
             Ok(keywords) => {
                 let conn = database.0.lock().unwrap();
@@ -774,12 +819,12 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
             }
             Err(e) => emit(&app, &format!("  ⚠ Search terms generation failed: {}", e)),
         }
+        if crate::is_cancelled() { return err("Cancelled."); }
     }
-    } // end of if !is_wide for search terms
-    if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 6: BISAC Classification (Wide only) ───────────────────────────
-    let bisac_section: String = if is_wide {
+    let mut bisac_section = String::new();
+    if wants_report(selected, "bisac_classification", platform) {
         emit(&app, "Step 6: BISAC classification...");
         let bisac_master = { let conn = database.0.lock().unwrap(); db::master_bisac_list(&conn) };
         let same_as_ebook = genre_data.industry_print.trim().eq_ignore_ascii_case(genre_data.industry_ebook.trim());
@@ -817,59 +862,52 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                 })).collect::<Vec<_>>()),
             },
         });
-        let section = bisac_json.to_string();
-        { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "bisac_classification", &section, &run_ts); }
-        section
-    } else {
-        emit(&app, "Step 6: Skipping BISAC classification (KDP mode).");
-        String::new()
-    };
-    if crate::is_cancelled() { return err("Cancelled."); }
+        bisac_section = bisac_json.to_string();
+        { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "bisac_classification", &bisac_section, &run_ts); }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
 
     // ── Step 7: Keyword Search (KDP only) ────────────────────────────────────
-    let keyword_pool: Vec<KeywordResult> = if is_wide {
-        emit(&app, "Step 7: Skipping keyword search (Wide distribution mode).");
-        Vec::new()
-    } else {
-    emit(&app, "Step 7: Keyword search...");
-    let top_cats_for_seeds: Vec<String> = kindle_top_categories.iter().take(2).cloned().collect();
-        let seeds = derive_keyword_seeds(&genre_data.industry_ebook, &top_cats_for_seeds);
-        if seeds.is_empty() {
-            emit(&app, "  ⚠ No seeds derived — skipping keyword search.");
-            Vec::new()
-        } else {
-            emit(&app, &format!("  Seeds: {:?}", seeds));
-            if !request.dataforseo_login.is_empty() && !request.dataforseo_password.is_empty() {
-                run_keyword_searches_dataforseo(&app, &request.folder, &seeds, &request.dataforseo_login, &request.dataforseo_password).await
-            } else if !request.canopy_api_key.is_empty() {
-                emit(&app, "⚠ DataForSEO credentials not set — falling back to Canopy for keyword search. Add DataForSEO login/password in Settings for real Amazon search volume data.");
-                run_keyword_searches_canopy(&app, &request.folder, &seeds, &request.canopy_api_key).await
-            } else {
-                emit(&app, "  ⚠ No DataForSEO or Canopy credentials — skipping keyword search.");
+    let mut keyword_pool: Vec<KeywordResult> = Vec::new();
+    if wants_report(selected, "keyword_search", platform) {
+        emit(&app, "Step 7: Keyword search...");
+        let top_cats_for_seeds: Vec<String> = kindle_top_categories.iter().take(2).cloned().collect();
+        keyword_pool = {
+            let seeds = derive_keyword_seeds(&genre_data.industry_ebook, &top_cats_for_seeds);
+            if seeds.is_empty() {
+                emit(&app, "  ⚠ No seeds derived — skipping keyword search.");
                 Vec::new()
+            } else {
+                emit(&app, &format!("  Seeds: {:?}", seeds));
+                if !request.dataforseo_login.is_empty() && !request.dataforseo_password.is_empty() {
+                    run_keyword_searches_dataforseo(&app, &request.folder, &seeds, &request.dataforseo_login, &request.dataforseo_password).await
+                } else if !request.canopy_api_key.is_empty() {
+                    emit(&app, "⚠ DataForSEO credentials not set — falling back to Canopy for keyword search. Add DataForSEO login/password in Settings for real Amazon search volume data.");
+                    run_keyword_searches_canopy(&app, &request.folder, &seeds, &request.canopy_api_key).await
+                } else {
+                    emit(&app, "  ⚠ No DataForSEO or Canopy credentials — skipping keyword search.");
+                    Vec::new()
+                }
             }
+        };
+        if !keyword_pool.is_empty() {
+            let conn = database.0.lock().unwrap();
+            let ks_json = serde_json::json!({
+                "schema": "keyword_search_v1",
+                "keywords": keyword_pool.iter().map(|k| serde_json::json!({
+                    "keyword": k.keyword, "searches": k.searches, "competition": k.competition, "earnings": k.estimated_earnings,
+                })).collect::<Vec<_>>(),
+            }).to_string();
+            let _ = db::save_document_at(&conn, &request.folder, "keyword_search", &ks_json, &run_ts);
         }
-    };
-    // Save keyword search as standalone report
-    if !keyword_pool.is_empty() {
-        let conn = database.0.lock().unwrap();
-        let ks_json = serde_json::json!({
-            "schema": "keyword_search_v1",
-            "keywords": keyword_pool.iter().map(|k| serde_json::json!({
-                "keyword": k.keyword, "searches": k.searches, "competition": k.competition, "earnings": k.estimated_earnings,
-            })).collect::<Vec<_>>(),
-        }).to_string();
-        let _ = db::save_document_at(&conn, &request.folder, "keyword_search", &ks_json, &run_ts);
+        if crate::is_cancelled() { return err("Cancelled."); }
     }
-    if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 8: KDP Keywords (KDP only) ────────────────────────────────────
-    let (kdp_keyword_entries, kdp_keyword_strategy) = if is_wide {
-        emit(&app, "Step 8: Skipping KDP keywords (Wide distribution mode).");
-        (Vec::new(), String::new())
-    } else {
-    emit(&app, "Step 8: Optimizing KDP keywords...");
-    {
+    let mut kdp_keyword_entries: Vec<db::KdpKeywordEntry> = Vec::new();
+    let mut kdp_keyword_strategy = String::new();
+    if wants_report(selected, "kdp_keywords", platform) {
+        emit(&app, "Step 8: Optimizing KDP keywords...");
         let res = call_keyword_optimizer_with_pool(&database, &request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals, &keyword_pool).await;
 
         match res {
@@ -882,25 +920,24 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                 let conn = database.0.lock().unwrap();
                 let _ = db::save_kdp_keywords(&conn, &request.folder, &entries, &strategy, source_note);
                 emit(&app, &format!("  ✓ {} KDP keyword strings saved.", entries.len()));
-                (entries, strategy)
+                kdp_keyword_entries = entries;
+                kdp_keyword_strategy = strategy;
             }
             Err(e) => {
                 emit(&app, &format!("  ⚠ KDP keyword optimization failed: {} — continuing.", e));
-                (Vec::new(), String::new())
             }
         }
+        if crate::is_cancelled() { return err("Cancelled."); }
     }
-    }; // end kdp_keyword_entries
-    if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 9: Discovery Keywords ─────────────────────────────────────────
-    emit(&app, "Step 9: Generating discovery keywords...");
-    let discovery_entries: Vec<db::DiscoveryKeywordEntry> = {
+    let mut discovery_entries: Vec<db::DiscoveryKeywordEntry> = Vec::new();
+    if wants_report(selected, "discovery_keywords", platform) {
+        emit(&app, "Step 9: Generating discovery keywords...");
         let res = generate_discovery_keywords(&database, &request.provider, &request.api_key, &request.model, &genre_data).await;
 
-        match res {
+        discovery_entries = match res {
             Ok(entries) => {
-                // Enrich with Google search volume from DataForSEO if credentials available
                 let enriched = if !request.dataforseo_login.is_empty() && !request.dataforseo_password.is_empty() && !entries.is_empty() {
                     emit(&app, "  Enriching with Google search volume via DataForSEO...");
                     let phrases: Vec<String> = entries.iter().map(|e| e.phrase.clone()).collect();
@@ -925,7 +962,6 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
 
                 let conn = database.0.lock().unwrap();
                 let _ = db::save_discovery_keywords(&conn, &request.folder, &enriched);
-                // Save as standalone report
                 let dk_json = serde_json::json!({
                     "schema": "discovery_keywords_v1",
                     "keywords": enriched.iter().map(|e| serde_json::json!({ "phrase": e.phrase, "rationale": e.rationale })).collect::<Vec<_>>(),
@@ -938,9 +974,14 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                 emit(&app, &format!("  ⚠ Discovery keywords failed: {} — continuing.", e));
                 Vec::new()
             }
-        }
-    };
-    if crate::is_cancelled() { return err("Cancelled."); }
+        };
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    if !wants_report(selected, "analysis", platform) {
+        emit(&app, "✓ Selected reports complete.");
+        return GenreResult { success: true, report: String::new(), error: String::new(), run_ts: run_ts.clone() };
+    }
 
     // ── Step 10: Assemble Combined Report ───────────────────────────────────
     emit(&app, "Step 10: Assembling combined report...");
@@ -1085,16 +1126,8 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
 
         // Save as report
         let conn = database.0.lock().unwrap();
-        let summaries = db::load_chapter_summaries(&conn, &request.folder);
-        if !summaries.is_empty() {
-            let cs_json = serde_json::json!({
-                "schema": "chapter_summaries_v1",
-                "chapters": summaries.iter().map(|s| serde_json::json!({
-                    "file": s.file, "title": s.title, "signals": s.signals, "word_count": s.word_count,
-                })).collect::<Vec<_>>(),
-                "total_words": summaries.iter().map(|s| s.word_count).sum::<i64>(),
-            }).to_string();
-            let _ = db::save_document_at(&conn, &request.folder, "chapter_summaries", &cs_json, &run_ts);
+        if save_chapter_summaries_document(&conn, &request.folder, &run_ts) {
+            emit(&app, "✓ Chapter fingerprints report saved.");
         }
 
         if crate::is_cancelled() { return err("Cancelled."); }

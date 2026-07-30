@@ -113,6 +113,13 @@ const summaryStatus = computed(() => {
       text: `Chapter fingerprints need refresh: ${parts.join(', ')}.`
     };
   }
+  const hasSummaryReport = (s.existing_docs || []).includes('chapter_summaries');
+  if (s.summary_count > 0 && !hasSummaryReport) {
+    return {
+      needsRefresh: true,
+      text: `Fingerprint data is current (${s.summary_count}/${s.summary_chapter_count}) but the report was deleted — click Refresh Fingerprints to restore it.`,
+    };
+  }
   return {
     needsRefresh: false,
     text: `Chapter fingerprints are up to date (${s.summary_count}/${s.summary_chapter_count}).`
@@ -165,7 +172,17 @@ function openSettings(): void {
 
 // ── Checkbox logic ────────────────────────────────────────────────────────────
 
+function isReportOnPlatform(reportId: string, plat: string): boolean {
+  const def = reportTypes.value.find(r => r.id === reportId);
+  return def ? def.platforms.includes(plat) : false;
+}
+
+function selectedForPlatform(plat: string): string[] {
+  return selected.value.filter(id => isReportOnPlatform(id, plat));
+}
+
 function toggleReport(id: string): void {
+  const plat = platformCtx.platform.value;
   const sel = new Set(selected.value);
   const dependants = getDependants(id);
 
@@ -176,10 +193,12 @@ function toggleReport(id: string): void {
       sel.delete(dep);
     }
   } else {
-    // Checking: add this and its dependants
+    // Checking: add this and its dependants (only those valid on this platform)
     sel.add(id);
     for (const dep of dependants) {
-      sel.add(dep);
+      if (isReportOnPlatform(dep, plat)) {
+        sel.add(dep);
+      }
     }
   }
 
@@ -408,8 +427,13 @@ async function onGetReports(): Promise<void> {
 
   hasRun.value = true;
   const plat = platformCtx.platform.value;
+  const reportsToRun = selectedForPlatform(plat);
+  if (reportsToRun.length === 0) {
+    message.warning('No reports selected for this platform.');
+    return;
+  }
   if (plat === 'craft' || plat === 'publish') {
-    const needsSeries = selected.value.some(id =>
+    const needsSeries = reportsToRun.some(id =>
       id === 'continuity_check'
       || id === 'cross_book_setup_payoff'
       || id === 'series_pacing_comparator'
@@ -418,9 +442,9 @@ async function onGetReports(): Promise<void> {
     const scope: ContinuityScope = needsSeries && continuityScopeMode.value === 'series' && continuitySeriesId.value != null
       ? { mode: 'series', seriesId: continuitySeriesId.value }
       : { mode: 'manuscript' };
-    await analysisCtx.runCraftAnalysis(folder, selected.value, scope);
+    await analysisCtx.runCraftAnalysis(folder, reportsToRun, scope);
   } else {
-    await analysisCtx.runAnalyze(folder, forceResummarize.value, plat);
+    await analysisCtx.runAnalyze(folder, forceResummarize.value, plat, reportsToRun);
   }
 }
 
