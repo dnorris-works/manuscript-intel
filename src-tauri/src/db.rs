@@ -501,13 +501,74 @@ CREATE INDEX IF NOT EXISTS idx_ad_audience_campaign ON ad_audience_notes(campaig
 
 pub struct Db(pub Mutex<Connection>);
 
-/// Open (or create) the app's SQLite database in the platform app-data
-/// directory, apply schema, and seed from JSON on first run only.
+const DATABASE_FILE: &str = "loremetry.db";
+const LEGACY_DATABASE_FILE: &str = "manuscript-intel.db";
+
+/// Shared Loremetry data directory: `<platform app-support>/loremetry/`
+fn database_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let base = app_data
+        .parent()
+        .ok_or_else(|| "Cannot resolve application data parent directory".to_string())?;
+    Ok(base.join("loremetry"))
+}
+
+pub fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(database_dir(app)?.join(DATABASE_FILE))
+}
+
+fn move_database_file(from: &PathBuf, to: &PathBuf) -> Result<(), String> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot create database directory: {}", e))?;
+    }
+    std::fs::rename(from, to).or_else(|rename_err| {
+        std::fs::copy(from, to).map_err(|copy_err| {
+            format!(
+                "Cannot move database from {} to {}: rename={}, copy={}",
+                from.display(),
+                to.display(),
+                rename_err,
+                copy_err
+            )
+        })?;
+        std::fs::remove_file(from).ok();
+        Ok::<(), String>(())
+    })
+}
+
+/// Move legacy database files into `loremetry/loremetry.db`.
+fn migrate_database_location(app: &AppHandle) -> Result<(), String> {
+    let new_path = database_path(app)?;
+    if new_path.exists() {
+        return Ok(());
+    }
+
+    let legacy_locations = [
+        database_dir(app)?.join(LEGACY_DATABASE_FILE),
+        app.path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join(LEGACY_DATABASE_FILE),
+    ];
+
+    for old_path in legacy_locations {
+        if old_path.exists() {
+            return move_database_file(&old_path, &new_path);
+        }
+    }
+
+    Ok(())
+}
+
+/// Open (or create) the app's SQLite database in the shared Loremetry
+/// app-data directory, apply schema, and seed from JSON on first run only.
 pub fn init(app: &AppHandle) -> Result<Db, String> {
-    let dir: PathBuf = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    migrate_database_location(app)?;
+    let dir = database_dir(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create app data dir: {}", e))?;
 
-    let db_path = dir.join("manuscript-intel.db");
+    let db_path = database_path(app)?;
     let conn = Connection::open(&db_path).map_err(|e| format!("Cannot open database: {}", e))?;
     conn.execute_batch(SCHEMA).map_err(|e| format!("Schema error: {}", e))?;
 
@@ -2892,11 +2953,6 @@ pub fn node_id_for_path(conn: &Connection, path: &str, store: &str) -> Option<St
 }
 
 // ── Database inspector (Settings → Database tab) ─────────────────────────────
-
-pub fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(dir.join("manuscript-intel.db"))
-}
 
 fn list_user_table_names(conn: &Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn

@@ -134,15 +134,6 @@ export function useDatabaseInspector() {
     },
   });
 
-  const dbMetaItems = computed(() => {
-    if (!dbOverview.value) return [];
-    return [
-      { label: 'File', value: dbOverview.value.path },
-      { label: 'Size', value: formatBytes(dbOverview.value.file_size_bytes) },
-      { label: 'Tables', value: String(dbOverview.value.tables.length) },
-    ];
-  });
-
   async function loadDbOverview(): Promise<void> {
     dbLoading.value = true;
     dbError.value = '';
@@ -211,7 +202,6 @@ export function useDatabaseInspector() {
     previewColumns,
     previewRows,
     tableMenuOptions,
-    dbMetaItems,
     dbPage,
     dbPageCount,
     loadDbOverview,

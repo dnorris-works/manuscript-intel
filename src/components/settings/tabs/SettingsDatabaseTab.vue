@@ -2,11 +2,11 @@
 import { computed, h, ref, watch } from 'vue';
 import type { MenuOption } from 'naive-ui';
 import {
-  NLayout, NLayoutSider, NLayoutContent, NMenu, NDescriptions, NDescriptionsItem,
-  NButton, NSpace, NCard, NDataTable, NAlert, NSpin, NEmpty, NPagination, NCode,
+  NLayout, NLayoutSider, NLayoutContent, NMenu,
+  NButton, NSpace, NCard, NDataTable, NAlert, NSpin, NEmpty, NPagination,
   NModal, NForm, NFormItem, NInput, useDialog, useMessage,
 } from 'naive-ui';
-import { useDatabaseInspector } from '../../../composables/useDatabaseInspector';
+import { useDatabaseInspector, formatBytes } from '../../../composables/useDatabaseInspector';
 
 const props = defineProps<{
   active?: boolean;
@@ -27,7 +27,6 @@ const {
   schemaRows,
   previewRows,
   tableMenuOptions,
-  dbMetaItems,
   dbPage,
   dbPageCount,
   loadDbOverview,
@@ -125,17 +124,23 @@ function onMenuUpdate(key: string): void {
 
 <template>
   <n-space vertical :size="16">
-    <n-space justify="space-between" align="center">
-      <n-descriptions v-if="dbOverview" :column="3" size="small" label-placement="top">
-        <n-descriptions-item
-          v-for="item in dbMetaItems"
-          :key="item.label"
-          :label="item.label"
-        >
-          <n-code v-if="item.label === 'File'" :code="item.value" />
-          <template v-else>{{ item.value }}</template>
-        </n-descriptions-item>
-      </n-descriptions>
+    <n-space justify="space-between" align="start" style="width: 100%;">
+      <table v-if="dbOverview" class="db-meta-table">
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Size</th>
+            <th>Tables</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="db-meta-file"><code>{{ dbOverview.path }}</code></td>
+            <td>{{ formatBytes(dbOverview.file_size_bytes) }}</td>
+            <td>{{ dbOverview.tables.length }}</td>
+          </tr>
+        </tbody>
+      </table>
       <n-button :loading="dbLoading" @click="loadDbOverview">Refresh</n-button>
     </n-space>
 
@@ -219,3 +224,40 @@ function onMenuUpdate(key: string): void {
     </n-modal>
   </n-space>
 </template>
+
+<style scoped>
+.db-meta-table {
+  width: 100%;
+  max-width: 720px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.db-meta-table th,
+.db-meta-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.db-meta-table th {
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-subtle, rgba(0, 0, 0, 0.03));
+  white-space: nowrap;
+}
+
+.db-meta-table td {
+  color: var(--text);
+}
+
+.db-meta-file {
+  word-break: break-all;
+}
+
+.db-meta-file code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+</style>
