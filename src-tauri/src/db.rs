@@ -609,6 +609,7 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     seed_provider_models(&conn)?;
     seed_lookup_config(&conn)?;
     migrate_legacy_summaries_to_fingerprints(&conn)?;
+    backfill_books_kdp_catalog(&conn)?;
 
     Ok(Db(Mutex::new(conn)))
 }
@@ -642,24 +643,52 @@ fn seed_if_empty(conn: &Connection) -> Result<(), String> {
 
         if let Some(paths) = kdp_map.get(&g.name) {
             for path in paths {
-                conn.execute(
-                    "INSERT OR IGNORE INTO kdp_categories (path, store, source, created_at)
-                     VALUES (?1, 'Kindle', 'manual', ?2)",
-                    params![path, now],
-                ).map_err(|e| e.to_string())?;
+                for store in ["Kindle", "Books"] {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO kdp_categories (path, store, source, created_at)
+                         VALUES (?1, ?2, 'manual', ?3)",
+                        params![path, store, now],
+                    ).map_err(|e| e.to_string())?;
 
-                let category_id: i64 = conn.query_row(
-                    "SELECT id FROM kdp_categories WHERE path = ?1 AND store = 'Kindle'",
-                    params![path], |r| r.get(0)
-                ).map_err(|e| e.to_string())?;
+                    let category_id: i64 = conn.query_row(
+                        "SELECT id FROM kdp_categories WHERE path = ?1 AND store = ?2",
+                        params![path, store], |r| r.get(0)
+                    ).map_err(|e| e.to_string())?;
 
-                conn.execute(
-                    "INSERT OR IGNORE INTO genre_kdp_links (genre_id, category_id) VALUES (?1, ?2)",
-                    params![genre_id, category_id],
-                ).map_err(|e| e.to_string())?;
+                    conn.execute(
+                        "INSERT OR IGNORE INTO genre_kdp_links (genre_id, category_id) VALUES (?1, ?2)",
+                        params![genre_id, category_id],
+                    ).map_err(|e| e.to_string())?;
+                }
             }
         }
     }
+
+    Ok(())
+}
+
+/// Mirror Kindle catalog paths into the Books (print) store when missing.
+/// Print browse paths often share the same text as Kindle; node IDs differ and
+/// are filled in on a full WinningCat re-import. This unblocks paperback
+/// category matching for DBs that only had Kindle rows.
+fn backfill_books_kdp_catalog(conn: &Connection) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR IGNORE INTO kdp_categories (path, store, source, created_at)
+         SELECT path, 'Books', 'print_path_mirror', ?1
+         FROM kdp_categories
+         WHERE store = 'Kindle'",
+        params![now],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO genre_kdp_links (genre_id, category_id)
+         SELECT gkl.genre_id, kc_books.id
+         FROM genre_kdp_links gkl
+         JOIN kdp_categories kc_kindle ON kc_kindle.id = gkl.category_id AND kc_kindle.store = 'Kindle'
+         JOIN kdp_categories kc_books ON kc_books.path = kc_kindle.path AND kc_books.store = 'Books'",
+        [],
+    ).map_err(|e| e.to_string())?;
 
     Ok(())
 }

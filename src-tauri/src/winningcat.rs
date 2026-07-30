@@ -24,6 +24,8 @@ use crate::db;
 pub struct ImportResult {
     pub success:                   bool,
     pub imported:                  usize,
+    pub imported_kindle:             usize,
+    pub imported_books:              usize,
     pub skipped_other_department:  usize,
     pub skipped_unparseable:       usize,
     pub stale_count:                usize,   // in the catalog from a previous import, missing from this one
@@ -32,7 +34,35 @@ pub struct ImportResult {
 }
 
 fn fail(msg: &str) -> ImportResult {
-    ImportResult { success: false, imported: 0, skipped_other_department: 0, skipped_unparseable: 0, stale_count: 0, imported_at: String::new(), error: msg.to_string() }
+    ImportResult {
+        success: false,
+        imported: 0,
+        imported_kindle: 0,
+        imported_books: 0,
+        skipped_other_department: 0,
+        skipped_unparseable: 0,
+        stale_count: 0,
+        imported_at: String::new(),
+        error: msg.to_string(),
+    }
+}
+
+/// Map the first CSV cell (Amazon department) to our `kdp_categories.store` value.
+/// WinningCat rows start with either "Books (...)" or "Kindle Store (...)".
+fn store_from_department(dept_name: &str) -> Option<&'static str> {
+    let dept = dept_name.trim().to_lowercase();
+    if dept == "kindle store" || dept == "kindle" || dept.starts_with("kindle store ") {
+        return Some("Kindle");
+    }
+    if dept == "books"
+        || dept == "book"
+        || dept == "books store"
+        || dept == "book store"
+        || dept.starts_with("books ")
+    {
+        return Some("Books");
+    }
+    None
 }
 
 #[tauri::command]
@@ -66,6 +96,8 @@ pub async fn import_winningcat_csv(app: AppHandle) -> ImportResult {
     let conn = database.0.lock().unwrap();
 
     let mut imported = 0usize;
+    let mut imported_kindle = 0usize;
+    let mut imported_books = 0usize;
     let mut skipped_dept = 0usize;
     let mut skipped_bad = 0usize;
 
@@ -88,10 +120,11 @@ pub async fn import_winningcat_csv(app: AppHandle) -> ImportResult {
             continue;
         }
 
-        let dept = parsed[0].0.to_lowercase();
-        let store = if dept == "kindle store" { "Kindle" }
-                    else if dept == "books"        { "Books" }
-                    else { skipped_dept += 1; continue; };
+        let dept = &parsed[0].0;
+        let store = match store_from_department(dept) {
+            Some(s) => s,
+            None => { skipped_dept += 1; continue; }
+        };
 
         let rest = &parsed[1..];
         if rest.is_empty() { skipped_bad += 1; continue; }
@@ -100,8 +133,11 @@ pub async fn import_winningcat_csv(app: AppHandle) -> ImportResult {
         let node_id = &rest.last().unwrap().1;
 
         match db::import_kdp_category(&conn, &path, store, node_id) {
-            Ok(())  => imported += 1,
-            Err(_)  => skipped_bad += 1,
+            Ok(()) => {
+                imported += 1;
+                if store == "Kindle" { imported_kindle += 1; } else { imported_books += 1; }
+            }
+            Err(_) => skipped_bad += 1,
         }
     }
 
@@ -110,6 +146,8 @@ pub async fn import_winningcat_csv(app: AppHandle) -> ImportResult {
     ImportResult {
         success: true,
         imported,
+        imported_kindle,
+        imported_books,
         skipped_other_department: skipped_dept,
         skipped_unparseable:      skipped_bad,
         stale_count: stale.len(),
@@ -172,4 +210,18 @@ fn parse_csv_line(line: &str) -> Vec<String> {
     }
     fields.push(current.trim().to_string());
     fields
+}
+
+#[cfg(test)]
+mod tests {
+    use super::store_from_department;
+
+    #[test]
+    fn store_from_department_maps_kindle_and_books() {
+        assert_eq!(store_from_department("Kindle Store"), Some("Kindle"));
+        assert_eq!(store_from_department("Books"), Some("Books"));
+        assert_eq!(store_from_department("books store"), Some("Books"));
+        assert_eq!(store_from_department("Book Store"), Some("Books"));
+        assert_eq!(store_from_department("Automotive"), None);
+    }
 }

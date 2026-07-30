@@ -146,6 +146,8 @@ export interface Finding {
 export interface WinningCatImportResult {
   success: boolean;
   imported: number;
+  imported_kindle: number;
+  imported_books: number;
   skipped_other_department: number;
   skipped_unparseable: number;
   stale_count: number;

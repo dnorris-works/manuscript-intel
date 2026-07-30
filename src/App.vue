@@ -19,7 +19,7 @@ import TitleBar from './components/TitleBar.vue';
 import Sidebar from './components/Sidebar.vue';
 import AnalyzerPanel from './components/AnalyzerPanel.vue';
 import ReportsViewer from './components/ReportsViewer.vue';
-import SettingsPanel from './components/SettingsPanel.vue';
+import SettingsPanel from './components/settings/SettingsPanel.vue';
 import HelpPanel from './components/HelpPanel.vue';
 import StoryForm from './components/StoryForm.vue';
 import SeriesForm from './components/SeriesForm.vue';
