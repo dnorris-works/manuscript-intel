@@ -21,3 +21,5 @@ export function useAiSpend() {
     refreshAiSpend,
   };
 }
+
+export { refreshAiSpend };

@@ -960,13 +960,16 @@ fn seed_provider_models(conn: &Connection) -> Result<(), String> {
     let models: Vec<SeedModel> = serde_json::from_str(SEED_PROVIDER_MODELS_JSON)
         .map_err(|e| format!("Cannot parse seed provider-models.json: {}", e))?;
 
-    conn.execute("DELETE FROM provider_models", [])
-        .map_err(|e| e.to_string())?;
-
     for m in &models {
         conn.execute(
             "INSERT INTO provider_models (id, provider, owned_by, input_price, output_price, sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                provider = excluded.provider,
+                owned_by = excluded.owned_by,
+                input_price = COALESCE(excluded.input_price, provider_models.input_price),
+                output_price = COALESCE(excluded.output_price, provider_models.output_price),
+                sort_order = excluded.sort_order",
             params![m.id, m.provider, m.owned_by, m.input_price, m.output_price, m.sort_order],
         ).map_err(|e| e.to_string())?;
     }
@@ -2500,6 +2503,33 @@ pub struct AiSpendTotals {
     pub ytd_usd:   f64,
 }
 
+/// Persist model pricing from the API catalog (merge — does not wipe seeded rows).
+pub fn upsert_provider_models_from_api(conn: &Connection, models: &[ProviderModelRow]) {
+    for m in models {
+        if m.input_price.is_none() && m.output_price.is_none() {
+            continue;
+        }
+        let _ = conn.execute(
+            "INSERT INTO provider_models (id, provider, owned_by, input_price, output_price, sort_order)
+             VALUES (?1, 'tokenmix', ?2, ?3, ?4, 9999)
+             ON CONFLICT(id) DO UPDATE SET
+                input_price = COALESCE(excluded.input_price, provider_models.input_price),
+                output_price = COALESCE(excluded.output_price, provider_models.output_price),
+                owned_by = CASE
+                    WHEN excluded.owned_by != '' THEN excluded.owned_by
+                    ELSE provider_models.owned_by
+                END",
+            params![m.id, m.owned_by, m.input_price, m.output_price],
+        );
+    }
+}
+
+fn usage_cost_usd(input_tokens: u32, output_tokens: u32, input_price: f64, output_price: f64) -> f64 {
+    let cost = (input_tokens as f64 / 1000.0 * input_price)
+        + (output_tokens as f64 / 1000.0 * output_price);
+    (cost * 10_000.0).round() / 10_000.0
+}
+
 /// Record one LLM call for spend tracking (prices per 1K tokens from provider_models).
 pub fn record_ai_usage(
     conn: &Connection,
@@ -2514,9 +2544,7 @@ pub fn record_ai_usage(
         return;
     }
     let (input_price, output_price) = lookup_model_prices(conn, model);
-    let cost_usd = (input_tokens as f64 / 1000.0 * input_price)
-        + (output_tokens as f64 / 1000.0 * output_price);
-    let cost_usd = (cost_usd * 10_000.0).round() / 10_000.0;
+    let cost_usd = usage_cost_usd(input_tokens, output_tokens, input_price, output_price);
     let now = chrono::Local::now().to_rfc3339();
     let _ = conn.execute(
         "INSERT INTO ai_usage_log (model, template_id, story_folder, input_tokens, output_tokens, cached_tokens, cost_usd, created_at)
@@ -2534,7 +2562,41 @@ pub fn record_ai_usage(
     );
 }
 
+/// Recompute zero-cost rows after model prices are imported.
+pub fn backfill_ai_usage_costs(conn: &Connection) {
+    let mut stmt = match conn.prepare(
+        "SELECT id, model, input_tokens, output_tokens FROM ai_usage_log WHERE cost_usd = 0",
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let rows = match stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i32>(2)?,
+            r.get::<_, i32>(3)?,
+        ))
+    }) {
+        Ok(r) => r.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+        Err(_) => return,
+    };
+
+    for (id, model, input_tokens, output_tokens) in rows {
+        let (input_price, output_price) = lookup_model_prices(conn, &model);
+        if input_price == 0.0 && output_price == 0.0 {
+            continue;
+        }
+        let cost_usd = usage_cost_usd(input_tokens as u32, output_tokens as u32, input_price, output_price);
+        let _ = conn.execute(
+            "UPDATE ai_usage_log SET cost_usd = ?1 WHERE id = ?2",
+            params![cost_usd, id],
+        );
+    }
+}
+
 pub fn ai_spend_totals(conn: &Connection) -> AiSpendTotals {
+    backfill_ai_usage_costs(conn);
     let now = chrono::Local::now();
     let month_start = chrono::Local
         .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
@@ -2600,6 +2662,22 @@ pub fn lookup_model_prices(conn: &Connection, model: &str) -> (f64, f64) {
             }
         }
     }
+
+    for key in model_price_keys(model) {
+        if let Ok((in_p, out_p)) = conn.query_row(
+            "SELECT input_price, output_price FROM provider_models
+             WHERE lower(id) LIKE '%' || ?1 || '%' OR ?1 LIKE '%' || lower(id) || '%'
+             ORDER BY length(id) DESC
+             LIMIT 1",
+            params![key],
+            |r| Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<f64>>(1)?)),
+        ) {
+            if in_p.is_some() || out_p.is_some() {
+                return (in_p.unwrap_or(0.0), out_p.unwrap_or(0.0));
+            }
+        }
+    }
+
     (0.0, 0.0)
 }
 

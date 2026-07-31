@@ -252,15 +252,40 @@ async fn fetch_tokenmix_models(db: &crate::db::Db, api_key: &str) -> ModelsResul
             })
             .collect::<Vec<_>>();
 
+        persist_model_catalog_prices(db, &merged);
+
         return ModelsResult { success: true, models: merged, error: String::new() };
     }
 
     // If TokenMix endpoint returns nothing, fall back to AIHubMix list.
     if !aihub_models.is_empty() {
+        persist_model_catalog_prices(db, &aihub_models);
         return ModelsResult { success: true, models: aihub_models, error: String::new() };
     }
 
-    tokenmix_models
+    let result = tokenmix_models;
+    if result.success {
+        persist_model_catalog_prices(db, &result.models);
+    }
+    result
+}
+
+fn persist_model_catalog_prices(db: &crate::db::Db, models: &[ModelInfo]) {
+    if models.is_empty() {
+        return;
+    }
+    let Ok(conn) = db.0.lock() else { return };
+    let rows: Vec<crate::db::ProviderModelRow> = models
+        .iter()
+        .map(|m| crate::db::ProviderModelRow {
+            id: m.id.clone(),
+            owned_by: m.owned_by.clone(),
+            input_price: m.input_price,
+            output_price: m.output_price,
+        })
+        .collect();
+    crate::db::upsert_provider_models_from_api(&conn, &rows);
+    crate::db::backfill_ai_usage_costs(&conn);
 }
 
 fn seeded_model_alias(seed_id: &str) -> Option<String> {

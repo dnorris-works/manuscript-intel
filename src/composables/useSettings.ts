@@ -2,6 +2,7 @@ import { ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { ModelInfo, ModelsResult } from '../types';
 import { applyThemeTokens, type ThemeMode } from '../theme/tokens';
+import { refreshAiSpend } from './useAiSpend';
 
 export type { ThemeMode };
 
@@ -186,6 +187,7 @@ async function fetchModels(): Promise<{ success: boolean; error: string }> {
     });
     if (result.success && result.models.length > 0) {
       models.value = result.models;
+      await refreshAiSpend();
       return { success: true, error: '' };
     }
     return { success: false, error: result.error || 'No models returned.' };

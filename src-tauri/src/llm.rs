@@ -143,9 +143,17 @@ fn parse_usage(response: &Value) -> LlmUsage {
         .as_u64()
         .or_else(|| usage["cached_tokens"].as_u64())
         .unwrap_or(0) as u32;
+    let input_tokens = usage["prompt_tokens"]
+        .as_u64()
+        .or_else(|| usage["input_tokens"].as_u64())
+        .unwrap_or(0) as u32;
+    let output_tokens = usage["completion_tokens"]
+        .as_u64()
+        .or_else(|| usage["output_tokens"].as_u64())
+        .unwrap_or(0) as u32;
     LlmUsage {
-        input_tokens:  usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-        output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
+        input_tokens,
+        output_tokens,
         cached_tokens: cached,
     }
 }

@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue';
+import { onMounted, onUnmounted, watch } from 'vue';
 import { NText } from 'naive-ui';
 import { useAiSpend } from '../composables/useAiSpend';
+import { useAnalysis } from '../composables/useAnalysis';
 
 const { totals, refreshAiSpend } = useAiSpend();
+const { isWorking } = useAnalysis();
 
 function formatUsd(amount: number): string {
   if (amount === 0) return '$0.00';
@@ -13,13 +15,33 @@ function formatUsd(amount: number): string {
 
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
+function startPolling(): void {
+  if (refreshTimer) return;
+  refreshTimer = setInterval(() => void refreshAiSpend(), 3000);
+}
+
+function stopPolling(): void {
+  if (!refreshTimer) return;
+  clearInterval(refreshTimer);
+  refreshTimer = undefined;
+}
+
 onMounted(() => {
   void refreshAiSpend();
-  refreshTimer = setInterval(() => void refreshAiSpend(), 30_000);
 });
 
+watch(isWorking, (working) => {
+  if (working) {
+    void refreshAiSpend();
+    startPolling();
+  } else {
+    stopPolling();
+    void refreshAiSpend();
+  }
+}, { immediate: true });
+
 onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer);
+  stopPolling();
 });
 
 defineExpose({ refreshAiSpend });

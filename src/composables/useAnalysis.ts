@@ -5,6 +5,7 @@ import type { AnalysisState, GenreResult, LogLine, SummaryChapterProgress, Summa
 
 import { useSettings } from './useSettings';
 import { useReports } from './useReports';
+import { refreshAiSpend } from './useAiSpend';
 
 const analysisState = ref<AnalysisState | null>(null);
 const isWorking = ref(false);
@@ -112,6 +113,7 @@ function formatSetupBlock(issues: { message: string }[]): string {
 
 async function afterAnalysisRun(folder: string): Promise<void> {
   await refreshState(folder);
+  await refreshAiSpend();
   if (!folder) return;
   await useReports().loadSavedReports(folder);
 }
