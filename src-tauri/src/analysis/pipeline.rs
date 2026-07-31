@@ -1725,19 +1725,19 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
 
     // ── Generic craft audits (StoryAuditor catalog) ───────────────────────
     let model_craft = model_continuity;
-    for audit_id in super::craft_audits::MANUSCRIPT_AUDITS {
-        if !request.selected.iter().any(|s| s == *audit_id) { continue; }
+    for audit_id in crate::craft_report_groups::manuscript_craft_audit_ids() {
+        if !request.selected.iter().any(|s| s == audit_id.as_str()) { continue; }
         let r = super::craft_audits::run_manuscript_craft_audit(
-            &app, &database, &request.folder, audit_id,
+            &app, &database, &request.folder, &audit_id,
             &request.provider, &request.api_key, model_craft, &request.bible_path,
         ).await;
         if !r.success { return r; }
         if crate::is_cancelled() { return err("Cancelled."); }
     }
-    for audit_id in super::craft_audits::SERIES_AUDITS {
-        if !request.selected.iter().any(|s| s == *audit_id) { continue; }
+    for audit_id in crate::craft_report_groups::series_report_ids() {
+        if !request.selected.iter().any(|s| s == audit_id.as_str()) { continue; }
         let r = super::craft_audits::run_series_craft_audit(
-            &app, &database, request.series_id, audit_id,
+            &app, &database, request.series_id, &audit_id,
             &request.provider, &request.api_key, model_craft, &request.bible_path,
         ).await;
         if !r.success { return r; }

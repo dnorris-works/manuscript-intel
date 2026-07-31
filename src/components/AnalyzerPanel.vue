@@ -11,7 +11,7 @@ import { useSettings } from '../composables/useSettings';
 import { storiesKey, analysisKey, seriesKey, platformKey, showPanelKey } from '../injectionKeys';
 import LogStream from './LogStream.vue';
 import { useReportTypes } from '../composables/useReportTypes';
-import { CRAFT_REPORT_GROUPS, SERIES_REPORT_IDS } from '../craftReportGroups';
+import { useCraftReportGroups } from '../composables/useCraftReportGroups';
 import { buildRunQueue, collectPrerequisites } from '../reportDependencies';
 import { isAiConfigured, resolveModelPrices } from '../reportCostPricing';
 import type { ReportTypeDef, Series } from '../types';
@@ -67,8 +67,10 @@ const needsContinuityScope = computed(() =>
 // ── Report types from DB ──────────────────────────────────────────────────────
 
 const { reportTypes, loadReportTypes } = useReportTypes();
+const { craftReportGroups, seriesReportIds, loadCraftReportGroups } = useCraftReportGroups();
 onMounted(() => {
   loadReportTypes();
+  loadCraftReportGroups();
   fetchCostEstimates();
 });
 
@@ -172,7 +174,7 @@ const reportSections = computed((): ReportSection[] => {
   }
 
   const byId = new Map(reports.map(r => [r.id, r]));
-  return CRAFT_REPORT_GROUPS
+  return craftReportGroups.value
     .map(group => {
       const availability = sectionAvailability(group.id);
       return {
@@ -359,7 +361,7 @@ watch(activeStorySeries, (series) => {
     continuitySeriesId.value = series.id;
     return;
   }
-  selected.value = selected.value.filter(id => !SERIES_REPORT_IDS.includes(id));
+  selected.value = selected.value.filter(id => !seriesReportIds.value.includes(id));
 }, { immediate: true });
 
 // ── Cost estimation ───────────────────────────────────────────────────────────
@@ -618,7 +620,7 @@ async function onGetReports(): Promise<void> {
     return;
   }
   if (plat === 'craft' || plat === 'publish') {
-    const hasSeriesReports = toRun.some(id => SERIES_REPORT_IDS.includes(id));
+    const hasSeriesReports = toRun.some(id => seriesReportIds.value.includes(id));
     const continuityInSeriesMode = toRun.includes('continuity_check')
       && continuityScopeMode.value === 'series'
       && continuitySeriesId.value != null;

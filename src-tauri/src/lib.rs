@@ -5,6 +5,7 @@ mod analysis;
 mod cancel;
 mod canopy;
 mod commands;
+mod craft_report_groups;
 mod competition_analyzer;
 mod dataforseo;
 mod db;
@@ -124,7 +125,9 @@ pub fn run() {
             stories::create_story_document,
             stories::delete_story_document,
             folder_structure::get_folder_structure,
+            folder_structure::get_default_folder_structure,
             folder_structure::save_folder_structure,
+            craft_report_groups::list_craft_report_groups_cmd,
             series::list_series,
             series::create_series,
             series::update_series,

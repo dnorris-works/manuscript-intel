@@ -50,42 +50,54 @@ interface UiSettingsRow {
   dataforseo_password: string;
 }
 
-const DEFAULT_FOLDER_STRUCTURE: FolderStructure = {
-  manuscript: 'Manuscript',
-  bible: 'Bible',
-  characters: 'Characters',
-  locations: 'Locations',
-  acts: ['Act-1', 'Act-2', 'Act-3'],
-  extra: ['Publishing/Cover', 'Research'],
+const EMPTY_FOLDER_STRUCTURE: FolderStructure = {
+  manuscript: '',
+  bible: '',
+  characters: '',
+  locations: '',
+  acts: [],
+  extra: [],
 };
 
-export function manuscriptActPaths(structure?: FolderStructure): string[] {
-  const s = structure || DEFAULT_FOLDER_STRUCTURE;
-  const root = (s.manuscript || 'Manuscript').trim() || 'Manuscript';
-  const acts = (Array.isArray(s.acts) && s.acts.length > 0)
-    ? s.acts
-    : DEFAULT_FOLDER_STRUCTURE.acts;
+let folderDefaults: FolderStructure | null = null;
+
+async function ensureFolderDefaults(): Promise<FolderStructure> {
+  if (!folderDefaults) {
+    try {
+      folderDefaults = await invoke<FolderStructure>('get_default_folder_structure');
+    } catch {
+      folderDefaults = { ...EMPTY_FOLDER_STRUCTURE };
+    }
+  }
+  return folderDefaults;
+}
+
+export function manuscriptActPaths(structure: FolderStructure): string[] {
+  const root = (structure.manuscript || 'Manuscript').trim() || 'Manuscript';
+  const acts = (Array.isArray(structure.acts) && structure.acts.length > 0)
+    ? structure.acts
+    : ['Act-1', 'Act-2', 'Act-3'];
   return acts
     .map(a => a.trim())
     .filter(Boolean)
     .map(act => `${root}/${act}`);
 }
 
-function cloneStructure(s: FolderStructure): FolderStructure {
-  const manuscript = s.manuscript || DEFAULT_FOLDER_STRUCTURE.manuscript;
+function cloneStructure(s: FolderStructure, defaults: FolderStructure): FolderStructure {
+  const manuscript = s.manuscript || defaults.manuscript;
   const acts = (Array.isArray(s.acts) && s.acts.length > 0)
     ? [...s.acts]
-    : [...DEFAULT_FOLDER_STRUCTURE.acts];
-  const rawExtra = Array.isArray(s.extra) ? [...s.extra] : [...DEFAULT_FOLDER_STRUCTURE.extra];
+    : [...defaults.acts];
+  const rawExtra = Array.isArray(s.extra) ? [...s.extra] : [...defaults.extra];
   const actSet = new Set(
-    manuscriptActPaths({ ...DEFAULT_FOLDER_STRUCTURE, manuscript, acts }).map(p => p.toLowerCase())
+    manuscriptActPaths({ ...defaults, manuscript, acts }).map(p => p.toLowerCase())
   );
   const extra = rawExtra.filter(p => !actSet.has(p.replace(/\\/g, '/').toLowerCase()));
   return {
     manuscript,
-    bible: s.bible || DEFAULT_FOLDER_STRUCTURE.bible,
-    characters: s.characters || DEFAULT_FOLDER_STRUCTURE.characters,
-    locations: s.locations || DEFAULT_FOLDER_STRUCTURE.locations,
+    bible: s.bible || defaults.bible,
+    characters: s.characters || defaults.characters,
+    locations: s.locations || defaults.locations,
     acts,
     extra,
   };
@@ -122,7 +134,7 @@ const canopyApiKey = ref('');
 const dataforseoLogin = ref('');
 const dataforseoPassword = ref('');
 const models = ref<ModelInfo[]>([]);
-const folderStructure = ref<FolderStructure>(cloneStructure(DEFAULT_FOLDER_STRUCTURE));
+const folderStructure = ref<FolderStructure>({ ...EMPTY_FOLDER_STRUCTURE });
 let modelsAutoLoadStarted = false;
 let settingsHydrated = false;
 let uiSettingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -249,11 +261,12 @@ async function autoLoadModelsIfConfigured(): Promise<void> {
 }
 
 async function loadFolderStructure(): Promise<void> {
+  const defaults = await ensureFolderDefaults();
   try {
     const result = await invoke<FolderStructure>('get_folder_structure');
-    folderStructure.value = cloneStructure(result);
+    folderStructure.value = cloneStructure(result, defaults);
   } catch {
-    folderStructure.value = cloneStructure(DEFAULT_FOLDER_STRUCTURE);
+    folderStructure.value = cloneStructure(defaults, defaults);
   }
 }
 
@@ -299,7 +312,9 @@ function scheduleFolderStructureSave(): void {
     void invoke<FolderStructure>('save_folder_structure', {
       structure: folderStructure.value,
     }).then((saved) => {
-      folderStructure.value = cloneStructure(saved);
+      void ensureFolderDefaults().then((defaults) => {
+        folderStructure.value = cloneStructure(saved, defaults);
+      });
     }).catch((e) => {
       console.error('save_folder_structure:', e);
     });
@@ -307,10 +322,11 @@ function scheduleFolderStructureSave(): void {
 }
 
 async function saveSettings(): Promise<void> {
+  const defaults = await ensureFolderDefaults();
   const saved = await invoke<FolderStructure>('save_folder_structure', {
     structure: folderStructure.value,
   });
-  folderStructure.value = cloneStructure(saved);
+  folderStructure.value = cloneStructure(saved, defaults);
 
   await persistUiSettings();
   await autoLoadModelsIfConfigured();

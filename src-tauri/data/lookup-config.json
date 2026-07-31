@@ -2,5 +2,11 @@
   "continuity.honorifics": [
     "mr", "mrs", "ms", "mx", "dr", "detective", "captain", "officer", "professor",
     "father", "sister", "aunt", "uncle", "sir", "lady", "sgt", "lieutenant", "lt", "reverend"
-  ]
+  ],
+  "analysis.thresholds": {
+    "category_fit_confidence_bar": 55,
+    "max_qualifying_per_store": 8,
+    "genre_coarse_bar": 15,
+    "genre_shortlist_max": 40
+  }
 }

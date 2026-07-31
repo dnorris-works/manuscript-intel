@@ -23,7 +23,6 @@ const SEED_GENRE_KDP_MAP_JSON: &str = include_str!("../data/genre-kdp-map.json")
 const SEED_BISAC_JSON:         &str = include_str!("../data/bisac-fiction.json");
 const SEED_ZEIGARNIK_CONFIG_JSON: &str = include_str!("../data/zeigarnik-config.json");
 const SEED_PROMPT_TEMPLATES_JSON: &str = include_str!("../data/prompt-templates.json");
-const SEED_PROVIDER_MODELS_JSON: &str = include_str!("../data/provider-models.json");
 const SEED_LOOKUP_CONFIG_JSON: &str = include_str!("../data/lookup-config.json");
 
 const SCHEMA: &str = r#"
@@ -251,7 +250,7 @@ CREATE TABLE IF NOT EXISTS report_types (
     min_tier          TEXT NOT NULL DEFAULT 'basic'      -- basic | capable | strong
 );
 
--- Static provider model catalogs for seeded pricing fallbacks. TokenMix is fetched live.
+-- Model pricing catalog populated from live TokenMix / AIHubMix API fetches.
 CREATE TABLE IF NOT EXISTS provider_models (
     id           TEXT PRIMARY KEY,
     provider     TEXT NOT NULL,
@@ -740,8 +739,9 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     );
     seed_prompt_templates(&conn)?;
     seed_zeigarnik_config_if_empty(&conn)?;
-    seed_provider_models(&conn)?;
     seed_lookup_config(&conn)?;
+    // Drop legacy Claude seed pricing — catalog is API-populated only.
+    let _ = conn.execute("DELETE FROM provider_models WHERE provider = 'claude'", []);
     migrate_legacy_summaries_to_fingerprints(&conn)?;
     invalidate_non_prose_summaries(&conn)?;
     migrate_artifact_architecture(&conn)?;
@@ -969,37 +969,6 @@ fn seed_prompt_templates(conn: &Connection) -> Result<(), String> {
             "INSERT INTO prompt_templates (id, label, system_prompt, user_template, max_tokens, json_mode, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
             params![t.id, t.label, t.system_prompt, t.user_template, t.max_tokens, t.json_mode],
-        ).map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
-}
-
-fn seed_provider_models(conn: &Connection) -> Result<(), String> {
-    #[derive(serde::Deserialize)]
-    struct SeedModel {
-        id: String,
-        provider: String,
-        owned_by: String,
-        input_price: Option<f64>,
-        output_price: Option<f64>,
-        sort_order: i64,
-    }
-
-    let models: Vec<SeedModel> = serde_json::from_str(SEED_PROVIDER_MODELS_JSON)
-        .map_err(|e| format!("Cannot parse seed provider-models.json: {}", e))?;
-
-    for m in &models {
-        conn.execute(
-            "INSERT INTO provider_models (id, provider, owned_by, input_price, output_price, sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(id) DO UPDATE SET
-                provider = excluded.provider,
-                owned_by = excluded.owned_by,
-                input_price = COALESCE(excluded.input_price, provider_models.input_price),
-                output_price = COALESCE(excluded.output_price, provider_models.output_price),
-                sort_order = excluded.sort_order",
-            params![m.id, m.provider, m.owned_by, m.input_price, m.output_price, m.sort_order],
         ).map_err(|e| e.to_string())?;
     }
 
@@ -2588,7 +2557,7 @@ pub struct AiSpendTotals {
     pub ytd_usd:   f64,
 }
 
-/// Persist model pricing from the API catalog (merge — does not wipe seeded rows).
+/// Persist model pricing from the API catalog (merge — does not wipe other rows).
 pub fn upsert_provider_models_from_api(conn: &Connection, models: &[ProviderModelRow]) {
     for m in models {
         if m.input_price.is_none() && m.output_price.is_none() {
@@ -2766,26 +2735,6 @@ pub fn lookup_model_prices(conn: &Connection, model: &str) -> (f64, f64) {
     (0.0, 0.0)
 }
 
-pub fn list_provider_models(conn: &Connection, provider: &str) -> Vec<ProviderModelRow> {
-    let mut stmt = match conn.prepare(
-        "SELECT id, owned_by, input_price, output_price FROM provider_models
-         WHERE provider = ?1 ORDER BY sort_order ASC, id ASC"
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    stmt.query_map(params![provider], |r| {
-        Ok(ProviderModelRow {
-            id: r.get(0)?,
-            owned_by: r.get(1)?,
-            input_price: r.get(2)?,
-            output_price: r.get(3)?,
-        })
-    }).ok()
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default()
-}
-
 /// Load a JSON string-array from lookup_config. Returns empty vec if missing/invalid.
 pub fn load_lookup_string_list(conn: &Connection, key: &str) -> Vec<String> {
     conn.query_row(
@@ -2796,6 +2745,51 @@ pub fn load_lookup_string_list(conn: &Connection, key: &str) -> Vec<String> {
     .ok()
     .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
     .unwrap_or_default()
+}
+
+#[derive(Debug, Clone)]
+pub struct AnalysisThresholds {
+    pub category_fit_confidence_bar: u8,
+    pub max_qualifying_per_store: usize,
+    pub genre_coarse_bar: u8,
+    pub genre_shortlist_max: usize,
+}
+
+impl Default for AnalysisThresholds {
+    fn default() -> Self {
+        Self {
+            category_fit_confidence_bar: 55,
+            max_qualifying_per_store: 8,
+            genre_coarse_bar: 15,
+            genre_shortlist_max: 40,
+        }
+    }
+}
+
+/// Tunable analysis gates from lookup_config (`analysis.thresholds` JSON object).
+pub fn load_analysis_thresholds(conn: &Connection) -> AnalysisThresholds {
+    let mut t = AnalysisThresholds::default();
+    let raw = conn.query_row(
+        "SELECT value FROM lookup_config WHERE key = ?1",
+        params!["analysis.thresholds"],
+        |r| r.get::<_, String>(0),
+    );
+    let Ok(json_str) = raw else { return t };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&json_str) else { return t };
+
+    if let Some(n) = v["category_fit_confidence_bar"].as_u64() {
+        t.category_fit_confidence_bar = n.min(100) as u8;
+    }
+    if let Some(n) = v["max_qualifying_per_store"].as_u64() {
+        t.max_qualifying_per_store = n as usize;
+    }
+    if let Some(n) = v["genre_coarse_bar"].as_u64() {
+        t.genre_coarse_bar = n.min(100) as u8;
+    }
+    if let Some(n) = v["genre_shortlist_max"].as_u64() {
+        t.genre_shortlist_max = n as usize;
+    }
+    t
 }
 
 #[tauri::command]

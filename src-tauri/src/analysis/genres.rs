@@ -308,8 +308,12 @@ pub(crate) async fn ai_rank_genres(
     let genre_m = crate::ai::resolve_slot_model(genre_model, model)?;
     crate::ai::ai_ready(provider, api_key, &genre_m)?;
 
-    const COARSE_BAR: u8 = 15;
-    const SHORTLIST_MAX: usize = 40;
+    let thresholds = {
+        let conn = database.0.lock().unwrap();
+        db::load_analysis_thresholds(&conn)
+    };
+    let coarse_bar = thresholds.genre_coarse_bar;
+    let shortlist_max = thresholds.genre_shortlist_max;
 
     let coarse_names: Vec<String> = master_list.iter().map(|g| g.name.clone()).collect();
     let coarse_list = coarse_names
@@ -339,8 +343,8 @@ pub(crate) async fn ai_rank_genres(
             serde_json::from_str::<Vec<AiGenreRankCoarse>>(clean)
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|r| r.confidence >= COARSE_BAR)
-                .take(SHORTLIST_MAX)
+                .filter(|r| r.confidence >= coarse_bar)
+                .take(shortlist_max)
                 .map(|r| r.genre)
                 .collect()
         }

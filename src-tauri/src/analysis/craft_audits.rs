@@ -1,6 +1,7 @@
 // analysis/craft_audits.rs — Generic manuscript/series craft audits from StoryAuditor catalog.
 //
 // Each audit uses a prompt_templates row with the same id. Output schema: craft_audit_v1.
+// Group membership and series scope come from craft_report_groups.json.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -8,39 +9,20 @@ use tauri::AppHandle;
 
 use super::chapters::{collect_chapters, extract_title, truncate_words};
 use super::{emit, err, extract_json_object, GenreResult};
+use crate::craft_report_groups;
 use crate::db;
 use crate::prompts;
 
-/// Manuscript-level craft audits (single book).
-pub const MANUSCRIPT_AUDITS: &[&str] = &[
-    "chekhovs_gun",
-    "red_herring_vs_abandoned",
-    "foreshadowing_twist_fairness",
-    "macguffin_clarity",
-    "want_vs_need",
-    "thematic_throughline",
-    "mirror_foil_character",
-    "pov_discipline",
-    "story_beat_placement",
-    "scene_sequel_balance",
-    "timeline_flashback",
-    "dramatic_irony",
-    "stakes_escalation",
-];
-
-/// Series-scope craft audits.
-pub const SERIES_AUDITS: &[&str] = &[
-    "cross_book_setup_payoff",
-    "series_pacing_comparator",
-    "recurring_motif_theme_series",
-];
-
 pub fn is_manuscript_audit(id: &str) -> bool {
-    MANUSCRIPT_AUDITS.contains(&id)
+    craft_report_groups::manuscript_craft_audit_ids()
+        .iter()
+        .any(|audit_id| audit_id == id)
 }
 
 pub fn is_series_audit(id: &str) -> bool {
-    SERIES_AUDITS.contains(&id)
+    craft_report_groups::series_report_ids()
+        .iter()
+        .any(|audit_id| audit_id == id)
 }
 
 pub fn is_craft_audit(id: &str) -> bool {

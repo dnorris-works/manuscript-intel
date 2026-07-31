@@ -60,9 +60,6 @@ pub struct VerifyMappedRequest {
     pub store:  String,
 }
 
-const FIT_CONFIDENCE_BAR: u8 = 55;
-const MAX_QUALIFYING_PER_STORE: usize = 8;
-
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -318,6 +315,13 @@ pub(crate) async fn match_categories_by_store(
     base_description: &str, genre_terms: &[(String, u8)],
     provider: &str, api_key: &str, model: &str,
 ) -> StoreMatchResult {
+    let thresholds = {
+        let conn = database.0.lock().unwrap();
+        db::load_analysis_thresholds(&conn)
+    };
+    let fit_bar = thresholds.category_fit_confidence_bar;
+    let max_qualifying = thresholds.max_qualifying_per_store;
+
     let mut per_genre: Vec<(String, u8, Vec<(String, u8, String)>)> = Vec::new();
     let mut path_genres: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     let mut path_conf: std::collections::HashMap<String, u8> = std::collections::HashMap::new();
@@ -407,13 +411,13 @@ pub(crate) async fn match_categories_by_store(
 
     emit(app, &format!(
         "  Fit gate (confidence ≥{}%, or 2+ genres agree): {} of {} candidates qualify for a discoverability check.",
-        FIT_CONFIDENCE_BAR, ranked_paths.iter().filter(|p| path_conf[*p] >= FIT_CONFIDENCE_BAR || path_genres[*p].len() >= 2).count(),
+        fit_bar, ranked_paths.iter().filter(|p| path_conf[*p] >= fit_bar || path_genres[*p].len() >= 2).count(),
         ranked_paths.len()
     ));
 
     let qualifying: Vec<(String, u8, Vec<String>)> = ranked_paths.into_iter()
-        .filter(|p| path_conf[p] >= FIT_CONFIDENCE_BAR || path_genres[p].len() >= 2)
-        .take(MAX_QUALIFYING_PER_STORE)
+        .filter(|p| path_conf[p] >= fit_bar || path_genres[p].len() >= 2)
+        .take(max_qualifying)
         .map(|path| {
             let conf = path_conf[&path];
             let genres = path_genres[&path].clone();

@@ -453,6 +453,11 @@ pub fn is_hidden_story_dir(name: &str) -> bool {
 }
 
 #[tauri::command]
+pub async fn get_default_folder_structure() -> FolderStructure {
+    FolderStructure::default()
+}
+
+#[tauri::command]
 pub async fn get_folder_structure(app: AppHandle) -> FolderStructure {
     load(&app)
 }
