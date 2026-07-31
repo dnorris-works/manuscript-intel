@@ -11,6 +11,30 @@ import { useSettings } from '../composables/useSettings';
 import { storiesKey, analysisKey, seriesKey, platformKey, showPanelKey } from '../injectionKeys';
 import LogStream from './LogStream.vue';
 import { useReportTypes } from '../composables/useReportTypes';
+import { CRAFT_REPORT_GROUPS, SERIES_REPORT_IDS } from '../craftReportGroups';
+import { buildRunQueue, collectPrerequisites } from '../reportDependencies';
+import type { ReportTypeDef, Series } from '../types';
+
+type VisibleReport = ReportTypeDef & {
+  exists: boolean;
+  freshness: 'fresh' | 'stale' | 'missing';
+};
+
+type DepRow = {
+  id: string;
+  label: string;
+  freshness: 'fresh' | 'stale' | 'missing';
+};
+
+type ReportSection = {
+  id: string;
+  label: string;
+  subtitle: string;
+  reports: VisibleReport[];
+  showHeader: boolean;
+  disabled: boolean;
+  disabledReason: string;
+};
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
@@ -41,7 +65,7 @@ const needsContinuityScope = computed(() =>
 
 // ── Report types from DB ──────────────────────────────────────────────────────
 
-const { reportTypes, loadReportTypes, getDependants } = useReportTypes();
+const { reportTypes, loadReportTypes } = useReportTypes();
 onMounted(() => {
   loadReportTypes();
   fetchCostEstimates();
@@ -50,6 +74,7 @@ onMounted(() => {
 // ── Local state ───────────────────────────────────────────────────────────────
 
 const selected = ref<string[]>([]);
+const depRunOverrides = ref<Record<string, boolean>>({});
 const forceResummarize = ref(false);
 const publishEbook = ref(true);
 const publishPrint = ref(true);
@@ -99,7 +124,7 @@ const existsMap = computed(() => {
   return map;
 });
 
-const visibleReports = computed(() => {
+const visibleReports = computed((): VisibleReport[] => {
   const plat = platformCtx.platform.value;
   return reportTypes.value
     .filter(r => r.platforms.includes(plat) && r.id !== 'chapter_summaries')
@@ -109,6 +134,59 @@ const visibleReports = computed(() => {
       freshness: freshnessMap.value[r.id]
         ?? (existsMap.value[r.id] ? 'stale' as const : 'missing' as const),
     }));
+});
+
+const activeStorySeries = computed((): Series | null => {
+  const folder = storiesCtx.activeFolder.value;
+  if (!folder) return null;
+  return seriesCtx.series.value.find(s =>
+    s.books.some(b => b.story_folder === folder),
+  ) ?? null;
+});
+
+function sectionAvailability(groupId: string): { disabled: boolean; reason: string } {
+  if (groupId === 'series') {
+    if (!storiesCtx.activeFolder.value) {
+      return { disabled: true, reason: 'Select a story first.' };
+    }
+    if (!activeStorySeries.value) {
+      return { disabled: true, reason: 'Add this story to a series in the Series panel.' };
+    }
+  }
+  return { disabled: false, reason: '' };
+}
+
+const reportSections = computed((): ReportSection[] => {
+  const reports = visibleReports.value;
+  if (platformCtx.platform.value !== 'craft') {
+    return [{
+      id: 'all',
+      label: '',
+      subtitle: '',
+      reports,
+      showHeader: false,
+      disabled: false,
+      disabledReason: '',
+    }];
+  }
+
+  const byId = new Map(reports.map(r => [r.id, r]));
+  return CRAFT_REPORT_GROUPS
+    .map(group => {
+      const availability = sectionAvailability(group.id);
+      return {
+        id: group.id,
+        label: group.label,
+        subtitle: availability.disabled ? availability.reason : group.subtitle,
+        reports: group.reportIds
+          .map(id => byId.get(id))
+          .filter((r): r is VisibleReport => r != null),
+        showHeader: true,
+        disabled: availability.disabled,
+        disabledReason: availability.reason,
+      };
+    })
+    .filter(group => group.reports.length > 0);
 });
 
 const summaryStatus = computed(() => {
@@ -160,7 +238,7 @@ function summaryFileMarker(filename: string): string {
 const getReportsDisabled = computed(() => {
   return analysisCtx.isWorking.value
     || !storiesCtx.activeFolder.value
-    || selected.value.length === 0
+    || reportsToRun.value.length === 0
     || setupIssues.value.length > 0;
 });
 
@@ -185,28 +263,80 @@ function isReportOnPlatform(reportId: string, plat: string): boolean {
   return def ? def.platforms.includes(plat) : false;
 }
 
-function selectedForPlatform(plat: string): string[] {
-  return selected.value.filter(id => isReportOnPlatform(id, plat));
+function getReportFreshness(reportId: string): 'fresh' | 'stale' | 'missing' {
+  if (reportId === 'chapter_summaries') {
+    const s = analysisCtx.analysisState.value;
+    if (!s || !storiesCtx.activeFolder.value) return 'missing';
+    if (s.summary_chapter_count === 0) return 'missing';
+    if (s.summary_missing_count > 0) return 'missing';
+    if (s.summary_stale_count > 0) return 'stale';
+    return 'fresh';
+  }
+  return freshnessMap.value[reportId]
+    ?? (existsMap.value[reportId] ? 'stale' : 'missing');
 }
 
-function toggleReport(id: string): void {
+function defaultDepRuns(depId: string): boolean {
+  return getReportFreshness(depId) !== 'fresh';
+}
+
+function isDepInRunQueue(depId: string): boolean {
+  if (depId in depRunOverrides.value) {
+    return depRunOverrides.value[depId];
+  }
+  return defaultDepRuns(depId);
+}
+
+function setDepRunOverride(depId: string, run: boolean): void {
+  depRunOverrides.value = { ...depRunOverrides.value, [depId]: run };
+}
+
+function prerequisitesForReport(reportId: string): DepRow[] {
+  return collectPrerequisites(reportId, reportTypes.value).map(id => ({
+    id,
+    label: reportTypes.value.find(r => r.id === id)?.label ?? id,
+    freshness: getReportFreshness(id),
+  }));
+}
+
+const reportsToRun = computed(() => {
   const plat = platformCtx.platform.value;
+  const primaries = selected.value.filter(id => isReportOnPlatform(id, plat));
+  return buildRunQueue(primaries, reportTypes.value, isDepInRunQueue);
+});
+
+function toggleReport(id: string, disabled = false): void {
+  if (disabled) return;
   const sel = new Set(selected.value);
-  const dependants = getDependants(id);
 
   if (sel.has(id)) {
-    // Unchecking: remove this and its dependants
     sel.delete(id);
-    for (const dep of dependants) {
-      sel.delete(dep);
-    }
   } else {
-    // Checking: add this and its dependants (only those valid on this platform)
     sel.add(id);
-    for (const dep of dependants) {
-      if (isReportOnPlatform(dep, plat)) {
-        sel.add(dep);
-      }
+  }
+
+  selected.value = [...sel];
+}
+
+function groupSelectionState(reports: VisibleReport[]): 'all' | 'some' | 'none' {
+  const ids = reports.map(r => r.id);
+  const count = ids.filter(id => selected.value.includes(id)).length;
+  if (count === 0) return 'none';
+  if (count === ids.length) return 'all';
+  return 'some';
+}
+
+function toggleGroupSelection(reports: VisibleReport[], disabled = false): void {
+  if (disabled) return;
+  const ids = reports.map(r => r.id);
+  const sel = new Set(selected.value);
+  const selectAll = groupSelectionState(reports) !== 'all';
+
+  for (const id of ids) {
+    if (selectAll) {
+      sel.add(id);
+    } else {
+      sel.delete(id);
     }
   }
 
@@ -216,7 +346,20 @@ function toggleReport(id: string): void {
 // Reset selection when platform changes
 watch(() => platformCtx.platform.value, () => {
   selected.value = [];
+  depRunOverrides.value = {};
 });
+
+watch(() => storiesCtx.activeFolder.value, () => {
+  depRunOverrides.value = {};
+});
+
+watch(activeStorySeries, (series) => {
+  if (series) {
+    continuitySeriesId.value = series.id;
+    return;
+  }
+  selected.value = selected.value.filter(id => !SERIES_REPORT_IDS.includes(id));
+}, { immediate: true });
 
 // ── Cost estimation ───────────────────────────────────────────────────────────
 
@@ -294,12 +437,13 @@ function hasSummaryDependency(reportId: string, visited = new Set<string>()): bo
 }
 
 function selectionNeedsSummaries(): boolean {
-  return selected.value.some(id => hasSummaryDependency(id));
+  return reportsToRun.value.includes('chapter_summaries')
+    || reportsToRun.value.some(id => hasSummaryDependency(id));
 }
 
 const totalEstimatedCost = computed(() => {
   let total = 0;
-  for (const id of selected.value) {
+  for (const id of reportsToRun.value) {
     total += costEstimates.value[id] || 0;
   }
   return total;
@@ -311,15 +455,23 @@ function formatCost(cost: number): string {
   return `~$${cost.toFixed(2)}`;
 }
 
-function reportCardDescription(report: { id: string; description: string; uses_ai?: boolean }): string {
-  if (report.uses_ai === false) {
-    return `${report.description} Estimated run cost: Free/run.`;
-  }
-  const estimate = costEstimates.value[report.id];
-  const costText = estimate == null
-    ? ' Estimated run cost: N/A.'
-    : ` Estimated run cost: ${formatCost(estimate)}/run.`;
-  return `${report.description}${costText}`;
+function reportRunCost(reportId: string, usesAi = true): string {
+  if (!usesAi) return 'Free';
+  const estimate = costEstimates.value[reportId];
+  if (estimate == null) return 'N/A';
+  return formatCost(estimate);
+}
+
+function depStatusLabel(freshness: 'fresh' | 'stale' | 'missing'): string {
+  if (freshness === 'fresh') return 'has run';
+  if (freshness === 'stale') return 'stale — re-run recommended';
+  return 'not run yet';
+}
+
+function depStatusType(freshness: 'fresh' | 'stale' | 'missing'): 'success' | 'warning' | 'default' {
+  if (freshness === 'fresh') return 'success';
+  if (freshness === 'stale') return 'warning';
+  return 'default';
 }
 
 async function maybeRefreshSummariesBeforeRun(folder: string): Promise<boolean> {
@@ -382,18 +534,31 @@ async function fetchCostEstimates(): Promise<void> {
     return;
   }
 
-  // Build model prices for each visible report
-  const modelPrices = visibleReports.value.map(r => {
-    const fnKey = reportToModelFn(r.id);
+  const costReportIds = new Set<string>();
+  for (const r of visibleReports.value) {
+    costReportIds.add(r.id);
+    for (const dep of collectPrerequisites(r.id, reportTypes.value)) {
+      costReportIds.add(dep);
+    }
+  }
+
+  const modelPrices = [...costReportIds].map(reportId => {
+    const def = reportTypes.value.find(r => r.id === reportId);
+    const fnKey = reportToModelFn(reportId);
     const modelId = settings.modelFor(fnKey);
     const modelInfo = settings.models.value.find(m => m.id === modelId);
-    const fallback = fallbackModelPrice(modelId) || fallbackModelPrice(estimateReportModel(r.id));
+    const fallback = fallbackModelPrice(modelId) || fallbackModelPrice(estimateReportModel(reportId));
     return {
-      report_id: r.id,
+      report_id: reportId,
       input_price: modelInfo?.input_price ?? fallback?.input_price ?? 0,
       output_price: modelInfo?.output_price ?? fallback?.output_price ?? 0,
+      uses_ai: def?.uses_ai ?? true,
     };
-  });
+  }).filter(r => r.uses_ai).map(({ report_id, input_price, output_price }) => ({
+    report_id,
+    input_price,
+    output_price,
+  }));
 
   try {
     const result = await invoke<{ success: boolean; estimates: { report_id: string; estimated_cost: number }[] }>('estimate_report_costs', {
@@ -446,24 +611,23 @@ async function onGetReports(): Promise<void> {
 
   hasRun.value = true;
   const plat = platformCtx.platform.value;
-  const reportsToRun = selectedForPlatform(plat);
-  if (reportsToRun.length === 0) {
+  const toRun = reportsToRun.value.filter(id => isReportOnPlatform(id, plat));
+  if (toRun.length === 0) {
     message.warning('No reports selected for this platform.');
     return;
   }
   if (plat === 'craft' || plat === 'publish') {
-    const needsSeries = reportsToRun.some(id =>
-      id === 'continuity_check'
-      || id === 'cross_book_setup_payoff'
-      || id === 'series_pacing_comparator'
-      || id === 'recurring_motif_theme_series'
-    );
-    const scope: ContinuityScope = needsSeries && continuityScopeMode.value === 'series' && continuitySeriesId.value != null
-      ? { mode: 'series', seriesId: continuitySeriesId.value }
+    const hasSeriesReports = toRun.some(id => SERIES_REPORT_IDS.includes(id));
+    const continuityInSeriesMode = toRun.includes('continuity_check')
+      && continuityScopeMode.value === 'series'
+      && continuitySeriesId.value != null;
+    const seriesId = continuitySeriesId.value ?? activeStorySeries.value?.id ?? null;
+    const scope: ContinuityScope = (hasSeriesReports || continuityInSeriesMode) && seriesId != null
+      ? { mode: 'series', seriesId }
       : { mode: 'manuscript' };
-    await analysisCtx.runCraftAnalysis(folder, reportsToRun, scope);
+    await analysisCtx.runCraftAnalysis(folder, toRun, scope);
   } else {
-    await analysisCtx.runAnalyze(folder, forceResummarize.value, plat, reportsToRun, {
+    await analysisCtx.runAnalyze(folder, forceResummarize.value, plat, toRun, {
       publishEbook: publishEbook.value,
       publishPrint: publishPrint.value,
     });
@@ -527,7 +691,7 @@ function onStop(): void {
       <n-button type="primary" :disabled="getReportsDisabled" @click="onGetReports">
         Get Reports
       </n-button>
-      <n-text v-if="selected.length > 0" depth="3">
+      <n-text v-if="reportsToRun.length > 0" depth="3">
         {{ formatCost(totalEstimatedCost) }}
       </n-text>
       <n-button
@@ -618,40 +782,113 @@ function onStop(): void {
     </n-card>
 
     <div class="report-cards">
-      <n-card
-        v-for="report in visibleReports"
-        :key="report.id"
-        size="small"
-        hoverable
-        class="report-card"
+      <section
+        v-for="section in reportSections"
+        :key="section.id"
+        class="report-section"
+        :class="{
+          'report-section--grouped': section.showHeader,
+          'report-section--disabled': section.disabled,
+        }"
       >
-        <n-space align="start" :size="10">
+        <header
+          v-if="section.showHeader"
+          class="craft-group-header"
+        >
           <n-checkbox
-            :checked="selected.includes(report.id)"
-            @update:checked="() => toggleReport(report.id)"
+            :checked="groupSelectionState(section.reports) === 'all'"
+            :indeterminate="groupSelectionState(section.reports) === 'some'"
+            :disabled="section.disabled"
+            @update:checked="() => toggleGroupSelection(section.reports, section.disabled)"
           />
-          <div style="min-width: 0;">
-            <n-text strong style="display: block;">{{ report.label }}</n-text>
+          <div class="craft-group-titles">
+            <n-text strong style="display: block;">{{ section.label }}</n-text>
             <n-text depth="3" style="font-size: 12px; display: block; margin-top: 2px;">
-              {{ reportCardDescription(report) }}
-            </n-text>
-            <n-text
-              v-if="report.freshness === 'fresh'"
-              type="success"
-              style="font-size: 11px; display: block; margin-top: 4px;"
-            >
-              ✓ up to date
-            </n-text>
-            <n-text
-              v-else-if="report.freshness === 'stale'"
-              type="warning"
-              style="font-size: 11px; display: block; margin-top: 4px;"
-            >
-              stale — re-run to refresh
+              {{ section.subtitle }}
             </n-text>
           </div>
-        </n-space>
-      </n-card>
+        </header>
+
+        <div class="report-section-cards">
+          <n-card
+            v-for="report in section.reports"
+            :key="report.id"
+            size="small"
+            hoverable
+            class="report-card"
+            :class="{
+              'report-card--disabled': section.disabled,
+              'report-card--selected': selected.includes(report.id),
+              'report-card--expanded': selected.includes(report.id)
+                && prerequisitesForReport(report.id).length > 0,
+            }"
+          >
+            <div class="report-card-main">
+              <n-checkbox
+                :checked="selected.includes(report.id)"
+                :disabled="section.disabled"
+                @update:checked="() => toggleReport(report.id, section.disabled)"
+              />
+              <div class="report-card-body">
+                <div class="report-card-title-row">
+                  <n-text strong>{{ report.label }}</n-text>
+                  <n-text depth="3" class="report-card-cost">
+                    {{ reportRunCost(report.id, report.uses_ai) }}
+                  </n-text>
+                </div>
+                <n-text depth="3" class="report-card-desc">
+                  {{ report.description }}
+                </n-text>
+                <n-text
+                  v-if="report.freshness === 'fresh'"
+                  type="success"
+                  class="report-card-status"
+                >
+                  has run
+                </n-text>
+                <n-text
+                  v-else-if="report.freshness === 'stale'"
+                  type="warning"
+                  class="report-card-status"
+                >
+                  stale — re-run to refresh
+                </n-text>
+              </div>
+            </div>
+
+            <div
+              v-if="selected.includes(report.id) && prerequisitesForReport(report.id).length > 0"
+              class="report-deps"
+            >
+              <n-text depth="3" class="report-deps-heading">Also runs</n-text>
+              <div
+                v-for="dep in prerequisitesForReport(report.id)"
+                :key="`${report.id}-${dep.id}`"
+                class="report-dep-row"
+              >
+                <n-checkbox
+                  :checked="isDepInRunQueue(dep.id)"
+                  @update:checked="(v: boolean) => setDepRunOverride(dep.id, v)"
+                />
+                <div class="report-dep-body">
+                  <div class="report-dep-title-row">
+                    <n-text style="font-size: 12px;">{{ dep.label }}</n-text>
+                    <n-text depth="3" class="report-dep-cost">
+                      {{ isDepInRunQueue(dep.id) ? reportRunCost(dep.id) : '—' }}
+                    </n-text>
+                  </div>
+                  <n-text
+                    :type="depStatusType(dep.freshness)"
+                    class="report-dep-status"
+                  >
+                    {{ depStatusLabel(dep.freshness) }}
+                  </n-text>
+                </div>
+              </div>
+            </div>
+          </n-card>
+        </div>
+      </section>
     </div>
 
     <n-space v-if="hasRun && analysisCtx.isWorking.value" align="center" style="margin: 8px 0;">
@@ -675,16 +912,121 @@ function onStop(): void {
 .report-cards {
   flex: 1;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding-right: 4px;
+}
+
+.report-section--disabled {
+  opacity: 0.55;
+}
+
+.craft-group-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.craft-group-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.report-section-cards {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
-  margin-bottom: 14px;
-  padding-right: 4px;
-  align-content: start;
 }
 
 .report-card {
   cursor: default;
+}
+
+.report-card--selected {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.report-card--expanded {
+  grid-column: 1 / -1;
+}
+
+.report-card-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.report-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.report-card-title-row,
+.report-dep-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.report-card-cost,
+.report-dep-cost {
+  font-size: 11px;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+
+.report-card-desc {
+  font-size: 12px;
+  display: block;
+  margin-top: 2px;
+}
+
+.report-card-status,
+.report-dep-status {
+  font-size: 11px;
+  display: block;
+  margin-top: 4px;
+}
+
+.report-deps {
+  margin-top: 10px;
+  margin-left: 28px;
+  padding-top: 10px;
+  padding-left: 12px;
+  border-top: 1px solid var(--border);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.report-deps-heading {
+  font-size: 11px;
+  display: block;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.report-dep-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.report-dep-row + .report-dep-row {
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.report-dep-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.report-card--disabled {
+  pointer-events: none;
 }
 
 .summary-issues {
