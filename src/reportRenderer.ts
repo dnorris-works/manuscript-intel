@@ -51,6 +51,12 @@ function renderBySchema(data: any, docType: string): string {
   if (schema === 'kdp_paste_v1') return renderKdpPaste(data);
   if (schema === 'chapter_summaries_v1') return renderChapterSummaries(data);
   if (schema === 'keyword_search_v1') return renderKeywordSearch(data);
+  if (schema === 'google_keyword_search_v1') return renderGoogleKeywordSearch(data);
+  if (schema === 'content_maturity_advisory_v1') return renderContentMaturityAdvisory(data);
+  if (schema === 'wide_paste_v1') return renderWidePaste(data);
+  if (schema === 'wide_analysis_v1') return renderWideCombinedAnalysis(data);
+  if (schema === 'blurb_builder_v1') return renderBlurbBuilder(data);
+  if (schema === 'print_production_v1') return renderPrintProduction(data);
   if (schema === 'genre_ranking_v1') return renderGenreRanking(data);
   if (schema === 'discovery_keywords_v1') return renderDiscoveryKeywords(data);
   if (schema === 'activity_log_v1') return renderActivityLog(data);
@@ -441,6 +447,101 @@ function renderCombinedAnalysis(data: any): string {
     } catch { html += renderRawSection('Positioning Context', sections.positioning); }
   }
 
+  if (sections.description) {
+    html += `<section class="report-section"><h3>Book Description</h3><p class="report-hint">From Blurb Builder — paste into KDP description field.</p><p>${esc(sections.description)}</p></section>`;
+  }
+
+  return html;
+}
+
+function renderWideCombinedAnalysis(data: any): string {
+  const sections = data.sections || {};
+  let html = '';
+
+  if (sections.genre_ranking) {
+    try {
+      html += renderGenreRanking(JSON.parse(sections.genre_ranking));
+    } catch { html += renderRawSection('Genre Ranking', sections.genre_ranking); }
+  }
+  if (sections.bisac) {
+    try {
+      html += renderBisacSection(JSON.parse(sections.bisac));
+    } catch { html += renderRawSection('BISAC Classification', sections.bisac); }
+  }
+  if (sections.discovery_keywords) {
+    try {
+      html += renderDiscoveryKeywords(JSON.parse(sections.discovery_keywords));
+    } catch { html += renderRawSection('Discovery Keywords', sections.discovery_keywords); }
+  }
+  if (sections.google_keywords) {
+    try {
+      html += renderGoogleKeywordSearch(JSON.parse(sections.google_keywords));
+    } catch { html += renderRawSection('Google Keyword Search', sections.google_keywords); }
+  }
+  if (sections.content_advisory) {
+    try {
+      html += renderContentMaturityAdvisory(JSON.parse(sections.content_advisory));
+    } catch { html += renderRawSection('Content Advisory', sections.content_advisory); }
+  }
+  if (sections.wide_paste) {
+    try {
+      html += renderWidePaste(JSON.parse(sections.wide_paste));
+    } catch { html += renderRawSection('Wide Paste', sections.wide_paste); }
+  }
+  if (sections.positioning) {
+    try {
+      html += renderPositioning(JSON.parse(sections.positioning));
+    } catch { html += renderRawSection('Positioning', sections.positioning); }
+  }
+
+  return html;
+}
+
+function renderBlurbBuilder(data: any): string {
+  const variants: any[] = data.variants || [];
+  let html = `<section class="report-section"><h3>Blurb Builder</h3>`;
+  html += `<p class="report-hint">Three angles for Amazon, wide retailers, and back-cover copy.</p>`;
+
+  for (const v of variants) {
+    html += `<h4>${esc(v.angle || 'Variant')}</h4>`;
+    html += `<p class="blurb-text">${esc(v.blurb || '')}</p>`;
+    const c = v.critique || {};
+    if (c.hook_strength) html += `<p><strong>Hook:</strong> ${esc(c.hook_strength)}</p>`;
+    if (c.promise_vs_manuscript) html += `<p><strong>Promise vs manuscript:</strong> ${esc(c.promise_vs_manuscript)}</p>`;
+  }
+
+  if (data.short_form) {
+    html += `<h4>Short form (~40 words)</h4><p>${esc(data.short_form)}</p>`;
+  }
+  if (data.bookbub_one_liner) {
+    html += `<h4>BookBub one-liner</h4><p>${esc(data.bookbub_one_liner)}</p>`;
+  }
+
+  html += `</section>`;
+  return html;
+}
+
+function renderPrintProduction(data: any): string {
+  let html = `<section class="report-section"><h3>Print Production</h3>`;
+  html += `<p><strong>Word count:</strong> ${(data.word_count || 0).toLocaleString()}</p>`;
+  html += `<p><strong>Estimated pages:</strong> ${data.estimated_pages || '—'} (at ~250 words/page)</p>`;
+  html += `<p><strong>Trim size:</strong> ${esc(data.trim_size || '')} — ${esc(data.trim_rationale || '')}</p>`;
+  html += `<p><strong>Spine width:</strong> ${esc(data.spine_inches || '')} in</p>`;
+  html += `<p><strong>Paper:</strong> ${esc(data.paper_color || '')} / <strong>Ink:</strong> ${esc(data.ink || 'black')}</p>`;
+
+  const ingram: string[] = data.ingram_checklist || [];
+  if (ingram.length) {
+    html += `<h4>Ingram / wide print checklist</h4><ul>`;
+    for (const item of ingram) html += `<li>${esc(item)}</li>`;
+    html += `</ul>`;
+  }
+  const kdp: string[] = data.kdp_print_checklist || [];
+  if (kdp.length) {
+    html += `<h4>KDP Print checklist</h4><ul>`;
+    for (const item of kdp) html += `<li>${esc(item)}</li>`;
+    html += `</ul>`;
+  }
+  html += `</section>`;
   return html;
 }
 
@@ -621,6 +722,19 @@ function renderKdpPaste(data: any): string {
     html += `</tbody></table>`;
   }
 
+  const bisacPrint = data.bisac_print;
+  if (Array.isArray(bisacPrint) && bisacPrint.length) {
+    html += `<h4>BISAC (print)</h4><ol class="category-list">`;
+    for (const b of bisacPrint) {
+      html += `<li><code>${esc(b.code)}</code> — ${esc(b.heading)}</li>`;
+    }
+    html += `</ol>`;
+  }
+
+  if (data.description_snippet) {
+    html += `<h4>Description snippet</h4><p>${esc(data.description_snippet)}</p>`;
+  }
+
   html += `</section>`;
   return html;
 }
@@ -675,7 +789,7 @@ function renderKeywordSearch(data: any): string {
   const keywords: any[] = data.keywords || [];
   if (!keywords.length) return '<p class="muted">No keyword search results available.</p>';
 
-  let html = `<p class="report-hint">${keywords.length} keywords analyzed</p>`;
+  let html = `<p class="report-hint">${keywords.length} keywords analyzed (Amazon)</p>`;
   html += `<table class="report-table"><thead><tr><th>Keyword</th><th>Est. Monthly Searches</th><th>Competition</th><th>Est. Earnings</th></tr></thead><tbody>`;
   for (const k of keywords) {
     const compClass = k.competition === 'Low' ? 'style="color:#27ae60"' :
@@ -688,6 +802,111 @@ function renderKeywordSearch(data: any): string {
     </tr>`;
   }
   html += `</tbody></table>`;
+  return html;
+}
+
+function renderGoogleKeywordSearch(data: any): string {
+  const keywords: any[] = data.keywords || [];
+  if (!keywords.length) return '<p class="muted">No Google keyword search results available. Add DataForSEO credentials in Settings.</p>';
+
+  let html = `<p class="report-hint">${keywords.length} keywords analyzed (Google search volume)</p>`;
+  html += `<table class="report-table"><thead><tr><th>Keyword</th><th>Est. Monthly Searches</th><th>Competition</th><th>CPC</th></tr></thead><tbody>`;
+  for (const k of keywords) {
+    const compClass = k.competition === 'LOW' ? 'style="color:#27ae60"' :
+                      k.competition === 'HIGH' ? 'style="color:#e74c3c"' : '';
+    html += `<tr>
+      <td class="keyword-cell">${esc(k.keyword)}</td>
+      <td>${esc(k.searches)}</td>
+      <td ${compClass}><strong>${esc(k.competition)}</strong></td>
+      <td>${esc(k.cpc || '')}</td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+
+function renderContentMaturityAdvisory(data: any): string {
+  let html = `<section class="report-section"><h3>Content &amp; Maturity Advisory</h3>`;
+  html += `<p class="report-hint">Use when filling content-rating and age-guidance fields on Apple Books, Kobo, Google Play, and Ingram.</p>`;
+
+  if (data.heat_level) {
+    html += `<p><strong>Heat level:</strong> ${esc(data.heat_level)}</p>`;
+  }
+  if (data.age_guidance) {
+    html += `<p><strong>Age guidance:</strong> ${esc(data.age_guidance)}</p>`;
+  }
+  if (data.maturity_rating_suggestion) {
+    html += `<p><strong>Overall:</strong> ${esc(data.maturity_rating_suggestion)}</p>`;
+  }
+
+  const warnings: string[] = data.content_warnings || [];
+  if (warnings.length) {
+    html += `<h4>Content warnings</h4><ul>`;
+    for (const w of warnings) html += `<li>${esc(w)}</li>`;
+    html += `</ul>`;
+  }
+
+  const notes = data.platform_notes || {};
+  const platforms = [
+    ['apple_books', 'Apple Books'],
+    ['kobo', 'Kobo'],
+    ['google_play', 'Google Play'],
+    ['ingram', 'Ingram / wide print'],
+  ] as const;
+  html += `<h4>Platform notes</h4>`;
+  for (const [key, label] of platforms) {
+    if (notes[key]) {
+      html += `<p><strong>${esc(label)}:</strong> ${esc(notes[key])}</p>`;
+    }
+  }
+  if (data.library_notes) {
+    html += `<p><strong>Library / OverDrive:</strong> ${esc(data.library_notes)}</p>`;
+  }
+
+  html += `</section>`;
+  return html;
+}
+
+function renderWidePaste(data: any): string {
+  const labels = data.genre_labels || {};
+  let html = `<section class="report-section"><h3>Wide Metadata &mdash; Ready to Paste</h3>`;
+  html += `<p class="report-hint">Copy into Draft2Digital, PublishDrive, IngramSpark, or store dashboards. Verify BISAC codes at bisg.org before submitting.</p>`;
+
+  if (labels.ebook || labels.print) {
+    html += `<div class="two-col">`;
+    if (labels.ebook) html += `<div><h4>Genre label (ebook)</h4><p>${esc(labels.ebook)}</p></div>`;
+    if (labels.print) html += `<div><h4>Genre label (print)</h4><p>${esc(labels.print)}</p></div>`;
+    html += `</div>`;
+  }
+
+  const renderBisacList = (title: string, items: any[]) => {
+    if (!items?.length) return '';
+    let block = `<h4>${esc(title)}</h4><ol class="category-list">`;
+    for (const b of items) {
+      block += `<li><code>${esc(b.code)}</code> — ${esc(b.heading)}</li>`;
+    }
+    block += `</ol>`;
+    return block;
+  };
+
+  html += renderBisacList('BISAC (ebook)', data.bisac_ebook || []);
+  html += renderBisacList('BISAC (print)', data.bisac_print || []);
+
+  const keywords: string[] = data.discovery_keywords || [];
+  if (keywords.length) {
+    html += `<h4>Discovery keywords</h4>`;
+    html += `<table class="report-table"><thead><tr><th>#</th><th>Phrase</th></tr></thead><tbody>`;
+    keywords.forEach((kw, i) => {
+      html += `<tr><td>${i + 1}</td><td class="keyword-cell">${esc(kw)}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+
+  if (data.content_note) {
+    html += `<h4>Content / maturity note</h4><p>${esc(data.content_note)}</p>`;
+  }
+
+  html += `</section>`;
   return html;
 }
 

@@ -56,7 +56,7 @@ pub async fn optimize_keywords(app: AppHandle, request: KeywordRequest) -> Genre
     let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
     let genre_data = match genre_data {
         Some(d) => d,
-        None    => return err("No genre data found. Run Full Analysis first."),
+        None    => return err("No genre data found. Run KDP Analysis first."),
     };
 
     emit(&app, "Extracting keyword material...");
@@ -672,5 +672,104 @@ pub(crate) async fn run_keyword_searches_dataforseo(
     }
 
     let _ = app.emit("cdp:log", &format!("✓ DataForSEO: {} total enriched keywords.", all_results.len()));
+    all_results
+}
+
+/// Build seeds for Google keyword research from genre data and optional discovery phrases.
+pub(crate) fn derive_wide_keyword_seeds(
+    industry_ebook: &str,
+    discovery_phrases: &[String],
+) -> Vec<String> {
+    let mut seeds = derive_keyword_seeds(industry_ebook, &[]);
+    for phrase in discovery_phrases.iter().take(5) {
+        let p = phrase.trim().to_lowercase();
+        if !p.is_empty() && !seeds.iter().any(|s| s.eq_ignore_ascii_case(&p)) {
+            seeds.push(p);
+        }
+    }
+    seeds
+}
+
+/// Google search volume research for wide-store SEO (DataForSEO only).
+pub(crate) async fn run_google_keyword_searches_dataforseo(
+    app: &AppHandle,
+    folder: &str,
+    seeds: &[String],
+    dataforseo_login: &str,
+    dataforseo_password: &str,
+) -> Vec<KeywordResult> {
+    if seeds.is_empty() {
+        return Vec::new();
+    }
+
+    let client = match crate::dataforseo::DataForSeoClient::new(dataforseo_login, dataforseo_password) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = app.emit("cdp:log", &format!("⚠ DataForSEO client error: {}", e));
+            return Vec::new();
+        }
+    };
+
+    let mut candidates: HashSet<String> = HashSet::new();
+    for seed in seeds {
+        candidates.insert(seed.trim().to_lowercase());
+    }
+
+    let _ = app.emit("cdp:log", &format!("DataForSEO: Expanding {} Google seed(s)...", seeds.len()));
+    if let Ok(suggestions) = client.google_autocomplete_suggestions(seeds, 15).await {
+        let _ = app.emit("cdp:log", &format!("  ✓ {} Google autocomplete suggestions.", suggestions.len()));
+        for s in suggestions {
+            let t = s.trim().to_lowercase();
+            if !t.is_empty() {
+                candidates.insert(t);
+            }
+        }
+    }
+
+    let keywords: Vec<String> = candidates.into_iter().take(80).collect();
+    if keywords.is_empty() {
+        return Vec::new();
+    }
+
+    let _ = app.emit("cdp:log", &format!("DataForSEO: Getting Google volume for {} keyword(s)...", keywords.len()));
+    let volumes = match client.google_search_volume(&keywords).await {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = app.emit("cdp:log", &format!("  ⚠ Google volume lookup failed: {}", e));
+            return Vec::new();
+        }
+    };
+
+    let mut all_results: Vec<KeywordResult> = volumes
+        .into_iter()
+        .map(|v| KeywordResult {
+            keyword: v.keyword,
+            searches: format!("{}", v.search_volume),
+            competition: v.competition,
+            estimated_earnings: if v.cpc > 0.0 {
+                format!("${:.2} CPC", v.cpc)
+            } else {
+                String::new()
+            },
+        })
+        .collect();
+
+    all_results.sort_by(|a, b| {
+        let av = a.searches.parse::<u64>().unwrap_or(0);
+        let bv = b.searches.parse::<u64>().unwrap_or(0);
+        bv.cmp(&av).then_with(|| a.keyword.cmp(&b.keyword))
+    });
+
+    if !all_results.is_empty() {
+        let database = app.state::<crate::db::Db>();
+        let conn = database.0.lock().unwrap();
+        let rows: Vec<(String, String, String, String)> = all_results
+            .iter()
+            .map(|r| (r.keyword.clone(), r.searches.clone(), r.competition.clone(), r.estimated_earnings.clone()))
+            .collect();
+        let _ = crate::db::replace_google_keyword_search_results(&conn, folder, &rows);
+    }
+
+    let _ = app.emit("cdp:log", &format!("✓ DataForSEO: {} Google keywords with volume data.", all_results.len()));
     all_results
 }

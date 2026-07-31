@@ -118,6 +118,89 @@ pub(crate) async fn ai_pick_bisac(
     Ok(resort_bisac_for_specificity(resolved))
 }
 
+/// Classify BISAC for ebook and/or print, persist rows, return JSON section text.
+pub(crate) async fn run_bisac_classification(
+    database: &db::Db,
+    story_folder: &str,
+    genre_data: &db::GenreDataRow,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    include_ebook: bool,
+    include_print: bool,
+) -> String {
+    let bisac_master = { let conn = database.0.lock().unwrap(); db::master_bisac_list(&conn) };
+    if bisac_master.is_empty() {
+        return String::new();
+    }
+
+    let same_as_ebook = genre_data.industry_print.trim().eq_ignore_ascii_case(genre_data.industry_ebook.trim());
+    let mut ebook_picks: Vec<(String, String, u8, String)> = Vec::new();
+
+    if include_ebook {
+        let ebook_desc = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
+        ebook_picks = ai_pick_bisac(database, provider, api_key, model, &ebook_desc, &bisac_master)
+            .await
+            .unwrap_or_default();
+        let conn = database.0.lock().unwrap();
+        let rows: Vec<(String, String, u8, String)> = ebook_picks
+            .iter()
+            .map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone()))
+            .collect();
+        let _ = db::replace_bisac_classifications(&conn, story_folder, "ebook", &rows);
+    }
+
+    let print_picks = if include_print {
+        if include_ebook && same_as_ebook {
+            let conn = database.0.lock().unwrap();
+            let rows: Vec<(String, String, u8, String)> = ebook_picks
+                .iter()
+                .map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone()))
+                .collect();
+            let _ = db::replace_bisac_classifications(&conn, story_folder, "print", &rows);
+            None
+        } else {
+            let print_desc = format!("{}\n\n{}", genre_data.industry_print, genre_data.genre_signals);
+            let picks = ai_pick_bisac(database, provider, api_key, model, &print_desc, &bisac_master)
+                .await
+                .unwrap_or_default();
+            let conn = database.0.lock().unwrap();
+            let rows: Vec<(String, String, u8, String)> = picks
+                .iter()
+                .map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone()))
+                .collect();
+            let _ = db::replace_bisac_classifications(&conn, story_folder, "print", &rows);
+            Some(picks)
+        }
+    } else {
+        None
+    };
+
+    if !include_ebook && include_print {
+        if let Some(ref picks) = print_picks {
+            ebook_picks = picks.clone();
+        }
+    }
+
+    serde_json::json!({
+        "ebook": if include_ebook {
+            serde_json::json!(ebook_picks.iter().map(|(code, heading, conf, reason)| serde_json::json!({
+                "code": code, "heading": heading, "confidence": conf, "reason": reason,
+            })).collect::<Vec<_>>())
+        } else {
+            serde_json::json!([])
+        },
+        "print": match &print_picks {
+            None if include_print && include_ebook && same_as_ebook => serde_json::json!("same_as_ebook"),
+            None => serde_json::json!([]),
+            Some(picks) => serde_json::json!(picks.iter().map(|(code, heading, conf, reason)| serde_json::json!({
+                "code": code, "heading": heading, "confidence": conf, "reason": reason,
+            })).collect::<Vec<_>>()),
+        },
+    })
+    .to_string()
+}
+
 /// When two codes are close in fit confidence (within 5 points), prefer a more
 /// specific heading over a catch-all "/ General" one. Only re-orders genuinely
 /// close calls — a clear fit winner from the AI is never overridden.

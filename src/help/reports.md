@@ -10,13 +10,12 @@ Use the tabs at the top of the Analyzer to switch context:
 
 | Tab | Purpose |
 |---|---|
-| **KDP** | Amazon Kindle Direct Publishing — categories, keywords, competition |
-| **Wide** | Non-Amazon stores — discovery keywords, BISAC, and shared genre work |
+| **KDP/Wide** | Amazon KDP and wide distribution — KDP Analysis, Wide Analysis, keywords, competition |
 | **Craft** | Structural and prose craft audits |
 | **Publish** | Reader experience, polish, and formatter prep |
 | **Saved Reports** | Read or delete reports you have already generated for the active story |
 
-On **KDP**, **Wide**, **Craft**, and **Publish**, select reports with the checkboxes and run them. On **Saved Reports**, click a report name to open it.
+On **KDP/Wide**, **Craft**, and **Publish**, select reports with the checkboxes and run them. On **Saved Reports**, click a report name to open it.
 
 Dependencies: some reports need others first (shown in the Analyzer). Selecting a report auto-selects its dependencies when required.
 
@@ -34,7 +33,7 @@ The report viewer header shows the report name only. Use **Copy**, **Delete**, o
 
 ### Freshness on the Analyzer
 
-Each report card on KDP / Wide / Craft / Publish shows a status:
+Each report card on KDP/Wide / Craft / Publish shows a status:
 
 | Status | Meaning |
 |---|---|
@@ -64,41 +63,33 @@ The Analyzer shows summary status before you run reports that depend on them and
 
 ---
 
-## Shared (KDP + Wide)
+## Shared infrastructure
 
 ### Chapter summaries
 
 Reads each manuscript chapter (up to 2000 words) and uses AI to extract **genre signals** — setting, tone, themes, conflict type, romance/faith/supernatural markers, pacing, and tropes — not a plot synopsis.
 
-This is the foundation for genre analysis, ranking, categories, and keywords. Refresh summaries in **Settings → Story Data** (or from the Analyzer prompt) when chapters change. Re-run dependent reports after a manuscript edit so saved results stay current.
-
-### Genre Analysis - KDP/Wide
-
-Uses chapter summaries to produce industry ebook/print genre labels, suggested KDP category paths, comparable titles, reader demographic, bookstore shelving notes, and marketing notes.
-
-### Genre Ranking - KDP/Wide
-
-Scores the manuscript independently against every genre in the app’s catalog (scores need not sum to 100). Helps spot cross-genre fit and confidence levels.
+This is the foundation for KDP Analysis, BISAC, discovery keywords, and other positioning reports. Refresh summaries in **Settings → Story Data** (or from the Analyzer prompt) when chapters change. Re-run dependent reports after a manuscript edit so saved results stay current.
 
 ---
 
 ## KDP only
 
-### KDP Categories
+### KDP Analysis
 
-Matches your book to real Amazon category paths (from your catalog / Winning Cat data) and ranks them for discoverability when stats are available.
+One report for Amazon Kindle and/or paperback listing metadata (use **Publishing formats** to run ebook-only, print-only, or both):
 
-### KDP Keywords
+- **Genre classification** — industry ebook/print labels, master-list ranking scores, comparable titles, reader demographic, and marketing notes
+- **KDP categories** — Kindle eBook and/or paperback browse paths (from your catalog / WinningCat data)
+- **Print BISAC** — subject codes for KDP paperback (when Print is selected)
+- **KDP keywords** — exactly seven keyword strings (≤50 characters each), shared across ebook and print
+- **Paste block** — categories, keywords, print BISAC, and description snippet (if Blurb Builder has been run)
 
-Produces exactly seven KDP keyword strings (≤50 characters each), with rationale and an overall strategy note. Can prefer measured search data when a keyword pool exists.
+Depends on chapter summaries. Optionally uses **Search Terms** and **Keyword Search Results** for measured Amazon demand.
 
 ### Search Terms
 
 Short Amazon-style phrases (about 2–4 words) for competition research — what a reader might type to find books like yours.
-
-### Full Analysis
-
-Combined packaging report: categories, keywords, and positioning in one document after the supporting reports have run.
 
 ### Keyword Search Results
 
@@ -116,17 +107,17 @@ Mines competitor reviews for what readers love and hate, their language, gap opp
 
 Looks at competitor catalogs: release cadence, pricing patterns, series vs standalone, review performance, and strategic takeaways.
 
----
+### Wide Analysis - Wide
 
-## Wide only
+One report for non-Amazon wide ebook and/or print distribution (use **Publishing formats** — Ebook / Print):
 
-### BISAC Classification
+- **BISAC** — ebook and/or print subject codes for Ingram, Apple, Kobo, and aggregators
+- **Discovery keywords** — ten wide-store SEO phrases (ebook)
+- **Google keyword search** — measured Google volume when DataForSEO is configured (ebook)
+- **Content & maturity advisory** — age ratings and platform notes (ebook)
+- **Wide paste sheet** — copy-ready metadata for Draft2Digital, PublishDrive, IngramSpark, etc.
 
-Picks 1–3 BISAC subject codes from the seeded fiction catalog for Ingram, wide distributors, and print metadata. Not used for KDP ebook listings (Amazon derives categories from browse nodes). Prefers specific headings over vague “General” codes when confidence is close.
-
-### Discovery Keywords
-
-Ten discovery phrases aimed at Apple Books, Kobo, Google Play, Barnes & Noble, BookBub, Goodreads, and web SEO — not Amazon KDP keyword fields. Rationales are AI-reasoned (not measured search volume).
+Depends on chapter summaries.
 
 ---
 
@@ -215,6 +206,14 @@ How stakes rise across the arc; plateaus or reversals that may cause disengageme
 ---
 
 ## Publish
+
+### Blurb Builder
+
+Three Amazon/back-cover description variants plus short-form and BookBub one-liners. Run before KDP Analysis to include a description snippet in the KDP paste block.
+
+### Print Production
+
+**No AI.** Estimates page count, trim size, spine width, and paper type from manuscript word count. Includes Ingram and KDP Print checklists.
 
 ### AI Beta Reader
 

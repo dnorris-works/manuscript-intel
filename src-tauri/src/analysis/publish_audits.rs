@@ -496,6 +496,130 @@ pub fn run_vellum_prep(app: &AppHandle, database: &db::Db, folder: &str) -> Genr
     GenreResult { success: true, report, error: String::new(), run_ts: chrono::Utc::now().to_rfc3339() }
 }
 
+// ── Blurb Builder ─────────────────────────────────────────────────────────────
+
+pub async fn run_blurb_builder(
+    app: &AppHandle,
+    database: &db::Db,
+    folder: &str,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+) -> GenreResult {
+    emit(app, "Building book description variants...");
+    let summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, folder) };
+    if summaries.is_empty() {
+        return err("Chapter summaries required. Refresh summaries in Settings → Story Data.");
+    }
+
+    let combined = super::chapters::build_combined_context(&summaries);
+    let genre_context = {
+        let conn = database.0.lock().unwrap();
+        db::load_genre_data(&conn, folder)
+            .map(|g| format!(
+                "Ebook: {}\nPrint: {}\nSignals: {}\nDemographic: {}",
+                g.industry_ebook, g.industry_print, g.genre_signals, g.reader_demographic
+            ))
+            .unwrap_or_default()
+    };
+
+    let mut vars = HashMap::new();
+    vars.insert("combined", combined.as_str());
+    vars.insert("genre_context", genre_context.as_str());
+
+    let raw = match prompts::execute_prompt(database, "blurb_builder", provider, api_key, model, vars).await {
+        Ok(r) => r,
+        Err(e) => return err(&format!("Blurb Builder AI error: {}", e)),
+    };
+
+    let clean = match extract_json_object(&raw) {
+        Some(c) => c,
+        None => return err(&format!("No JSON in blurb response: {}", &raw[..raw.len().min(200)])),
+    };
+    let mut value: serde_json::Value = match serde_json::from_str(&clean) {
+        Ok(v) => v,
+        Err(e) => return err(&format!("Blurb JSON parse error: {}", e)),
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("schema".into(), serde_json::json!("blurb_builder_v1"));
+    }
+    let report = value.to_string();
+    let conn = database.0.lock().unwrap();
+    let _ = db::save_document(&conn, folder, "blurb_builder", &report);
+    emit(app, "✓ Blurb Builder saved.");
+    GenreResult { success: true, report, error: String::new(), run_ts: chrono::Utc::now().to_rfc3339() }
+}
+
+// ── Print Production ──────────────────────────────────────────────────────────
+
+pub fn run_print_production(app: &AppHandle, database: &db::Db, folder: &str) -> GenreResult {
+    emit(app, "Calculating print production specs...");
+    let root = PathBuf::from(folder);
+    let chapters = collect_chapters(&root);
+    if chapters.is_empty() {
+        return err("No .md chapter files found.");
+    }
+
+    let mut word_count = 0usize;
+    for path in &chapters {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            word_count += content.split_whitespace().count();
+        }
+    }
+
+    let pages = ((word_count as f64) / 250.0).ceil() as u32;
+    let pages = pages.max(24);
+
+    let (trim, trim_reason) = if word_count < 50_000 {
+        ("5 x 8 in", "Shorter fiction — common trade size for under ~50k words.")
+    } else if word_count < 100_000 {
+        ("6 x 9 in", "Standard trade paperback for mid-length fiction.")
+    } else {
+        ("6 x 9 in", "Longer fiction — 6×9 keeps page count manageable.")
+    };
+
+    let spine_inches = (pages as f64 / 444.0) + 0.06;
+    let paper = if word_count > 90_000 { "cream" } else { "white" };
+
+    let genre_label = {
+        let conn = database.0.lock().unwrap();
+        db::load_genre_data(&conn, folder)
+            .map(|g| g.industry_print.clone())
+            .unwrap_or_default()
+    };
+
+    let report = serde_json::json!({
+        "schema": "print_production_v1",
+        "word_count": word_count,
+        "estimated_pages": pages,
+        "trim_size": trim,
+        "trim_rationale": trim_reason,
+        "spine_inches": format!("{:.3}", spine_inches),
+        "paper_color": paper,
+        "ink": "black",
+        "genre_label_print": genre_label,
+        "ingram_checklist": [
+            "Verify BISAC codes (bisg.org) before upload",
+            "Set trim size and page count to match final PDF",
+            "Upload print-ready PDF with embedded fonts",
+            "Set wholesale discount (typically 40–55% for libraries)",
+            "Confirm laminate (matte/gloss) and color profile",
+            "Add description and author bio matching wide listing copy",
+        ],
+        "kdp_print_checklist": [
+            "Paperback uses same 7 keywords as Kindle listing",
+            "Select paperback browse categories (separate from Kindle)",
+            "Enter BISAC subject codes on print details page",
+            "Upload cover PDF with correct spine width",
+        ],
+    }).to_string();
+
+    let conn = database.0.lock().unwrap();
+    let _ = db::save_document(&conn, folder, "print_production", &report);
+    emit(app, &format!("✓ Print production specs saved (~{} pages, {}).", pages, trim));
+    GenreResult { success: true, report, error: String::new(), run_ts: chrono::Utc::now().to_rfc3339() }
+}
+
 fn clean_for_formatter(content: &str) -> String {
     let mut out = String::new();
     for line in content.lines() {

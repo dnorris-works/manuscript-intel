@@ -61,6 +61,7 @@ export interface AnalysisState {
   summary_stale_files: string[];
   has_genre_data: boolean;
   has_full_report: boolean;
+  has_wide_analysis: boolean;
   has_keywords: boolean;
   has_search_terms: boolean;
   has_competition: boolean;
@@ -70,6 +71,7 @@ export interface AnalysisState {
   has_bisac: boolean;
   has_discovery_keywords: boolean;
   has_keyword_search_results: boolean;
+  has_google_keyword_search: boolean;
   has_zeigarnik: boolean;
   has_continuity_check: boolean;
   has_show_dont_tell: boolean;

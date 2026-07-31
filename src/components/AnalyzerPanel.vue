@@ -51,6 +51,8 @@ onMounted(() => {
 
 const selected = ref<string[]>([]);
 const forceResummarize = ref(false);
+const publishEbook = ref(true);
+const publishPrint = ref(true);
 const hasRun = ref(false);
 const continuityScopeMode = ref<'manuscript' | 'series'>('manuscript');
 const continuitySeriesId = ref<number | null>(null);
@@ -72,14 +74,15 @@ const existsMap = computed(() => {
   if (!state) return {} as Record<string, boolean>;
   const docs = new Set(state.existing_docs || []);
   const map: Record<string, boolean> = {
-    genre_analysis: state.has_genre_data,
     kdp_categories: state.has_categories,
     kdp_keywords: state.has_keywords,
     bisac_classification: state.has_bisac,
     mi_search_terms: state.has_search_terms,
     discovery_keywords: state.has_discovery_keywords,
     analysis: state.has_full_report,
+    wide_analysis: state.has_wide_analysis,
     keyword_search: state.has_keyword_search_results,
+    google_keyword_search: state.has_google_keyword_search,
     competition_report: state.has_competition,
     review_mining: docs.has('review_mining'),
     author_analysis: docs.has('author_analysis'),
@@ -229,14 +232,14 @@ const STATIC_SEEDED_MODEL_PRICES: Record<string, { input_price: number; output_p
 
 const RECOMMENDED_MODEL_BY_REPORT: Record<string, string> = {
   chapter_summaries: 'claude-haiku-4.5',
-  genre_analysis: 'claude-sonnet-4',
-  kdp_categories: 'claude-haiku-4.5',
-  kdp_keywords: 'claude-haiku-4.5',
-  bisac_classification: 'claude-haiku-4.5',
-  mi_search_terms: 'claude-haiku-4.5',
-  discovery_keywords: 'claude-haiku-4.5',
   analysis: 'claude-sonnet-4',
   keyword_search: 'claude-haiku-4.5',
+  google_keyword_search: 'claude-haiku-4.5',
+  content_maturity_advisory: 'claude-sonnet-4',
+  wide_metadata_paste: 'claude-haiku-4.5',
+  wide_analysis: 'claude-sonnet-4',
+  blurb_builder: 'claude-sonnet-4',
+  print_production: 'claude-haiku-4.5',
   competition_report: 'claude-sonnet-4',
   review_mining: 'claude-sonnet-4',
   author_analysis: 'claude-sonnet-4',
@@ -457,7 +460,10 @@ async function onGetReports(): Promise<void> {
       : { mode: 'manuscript' };
     await analysisCtx.runCraftAnalysis(folder, reportsToRun, scope);
   } else {
-    await analysisCtx.runAnalyze(folder, forceResummarize.value, plat, reportsToRun);
+    await analysisCtx.runAnalyze(folder, forceResummarize.value, plat, reportsToRun, {
+      publishEbook: publishEbook.value,
+      publishPrint: publishPrint.value,
+    });
   }
 }
 
@@ -484,6 +490,17 @@ function onStop(): void {
     </n-text>
 
     <AnalyzerPlatformTabs />
+
+    <n-space
+      v-if="platformCtx.isKdp.value"
+      align="center"
+      style="margin-bottom: 12px;"
+      wrap
+    >
+      <n-text depth="3" style="font-size: 13px;">Publishing formats:</n-text>
+      <n-checkbox v-model:checked="publishEbook">Ebook</n-checkbox>
+      <n-checkbox v-model:checked="publishPrint">Print</n-checkbox>
+    </n-space>
 
     <n-alert v-if="setupIssues.length > 0" type="warning" title="Setup required before running reports" style="margin-bottom: 12px;">
       <ul style="margin: 8px 0; padding-left: 1.2em;">

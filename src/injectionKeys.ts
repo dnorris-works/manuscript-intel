@@ -63,9 +63,9 @@ export const analysisKey: InjectionKey<AnalysisContext> = Symbol('analysis');
 // ── Platform ──────────────────────────────────────────────────────────────────
 
 export interface PlatformContext {
-  platform: Ref<'kdp' | 'wide' | 'craft' | 'publish' | 'saved'>;
+  platform: Ref<'kdp' | 'craft' | 'publish' | 'saved'>;
   isKdp: ComputedRef<boolean>;
-  setPlatform: (p: 'kdp' | 'wide' | 'craft' | 'publish' | 'saved') => void;
+  setPlatform: (p: 'kdp' | 'craft' | 'publish' | 'saved') => void;
 }
 
 export const platformKey: InjectionKey<PlatformContext> = Symbol('platform');

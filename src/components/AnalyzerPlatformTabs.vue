@@ -11,8 +11,7 @@ const platformCtx = usePlatform();
     style="margin-bottom: 12px;"
     @update:value="platformCtx.setPlatform"
   >
-    <n-radio-button value="kdp">KDP</n-radio-button>
-    <n-radio-button value="wide">Wide</n-radio-button>
+    <n-radio-button value="kdp">KDP/Wide</n-radio-button>
     <n-radio-button value="craft">Craft</n-radio-button>
     <n-radio-button value="publish">Publish</n-radio-button>
     <n-radio-button value="saved">Saved Reports</n-radio-button>

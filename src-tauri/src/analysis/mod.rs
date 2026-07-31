@@ -17,6 +17,7 @@ pub mod genres;
 pub mod categories;
 pub mod keywords;
 pub mod bisac;
+pub mod content_advisory;
 pub mod pipeline;
 pub mod zeigarnik;
 pub mod continuity;
@@ -78,9 +79,15 @@ pub struct AnalyzeStoryRequest {
     /// Report IDs to run. Empty means run the full legacy pipeline.
     #[serde(default)]
     pub selected:          Vec<String>,
+    /// Include ebook-format outputs (categories, discovery, content advisory).
+    #[serde(default = "default_true")]
+    pub publish_ebook:     bool,
+    /// Include print-format outputs (paperback categories, BISAC, print specs).
+    #[serde(default = "default_true")]
+    pub publish_print:     bool,
 }
 
-// ── Shared helpers ──────────────────────────────────────────────────────────
+fn default_true() -> bool { true }
 
 pub fn emit(app: &AppHandle, msg: &str) {
     let _ = app.emit("genre:log", msg);

@@ -88,7 +88,7 @@ watch(() => storiesCtx.activeFolder.value, (folder) => {
       />
       <n-empty
         v-else-if="reportsCtx.savedReports.value.length === 0"
-        description="No saved reports yet. Run reports from KDP, Wide, Craft, or Publish."
+        description="No saved reports yet. Run reports from KDP/Wide, Craft, or Publish."
       />
       <n-menu
         v-else

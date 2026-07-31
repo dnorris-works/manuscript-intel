@@ -1,11 +1,24 @@
 // analysis/pipeline.rs — Orchestration commands that compose the analysis pipeline.
-//
-// These commands call into chapters, genres, categories, keywords, and bisac
-// to run multi-step analyses and assemble combined reports.
 
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
+
+#[derive(Clone, Copy)]
+struct PublishFormats {
+    ebook: bool,
+    print: bool,
+}
+
+impl PublishFormats {
+    fn from_flags(ebook: bool, print: bool) -> Self {
+        if !ebook && !print {
+            Self { ebook: true, print: true }
+        } else {
+            Self { ebook, print }
+        }
+    }
+}
 
 use super::{emit, err, GenreResult, FolderRequest, AnalyzeStoryRequest};
 use crate::db;
@@ -14,10 +27,13 @@ use crate::models::KeywordResult;
 use super::chapters::{collect_chapters, phase1_summaries, phase1_config_from, clean_for_ai, chapter_source_hash, compute_manuscript_fingerprint};
 use super::genres::{load_ranked_genres, phase2_analyze, render_full_report};
 use super::categories::{match_categories_by_store, rank_by_discoverability};
-use super::bisac::ai_pick_bisac;
+use super::bisac::run_bisac_classification;
+use super::content_advisory::{aggregate_content_signals, generate_content_maturity_advisory};
 use super::keywords::{
     call_keyword_optimizer, call_keyword_optimizer_with_pool,
-    derive_keyword_seeds, run_keyword_searches_canopy, run_keyword_searches_dataforseo,
+    derive_keyword_seeds, derive_wide_keyword_seeds,
+    run_keyword_searches_canopy, run_keyword_searches_dataforseo,
+    run_google_keyword_searches_dataforseo,
     generate_discovery_keywords, generate_mi_search_terms, render_kdp_keywords, render_search_terms,
 };
 
@@ -40,6 +56,7 @@ pub struct AnalysisState {
     pub summary_stale_files:        Vec<String>,
     pub has_genre_data:             bool,
     pub has_full_report:            bool,
+    pub has_wide_analysis:          bool,
     pub has_keywords:               bool,
     pub has_search_terms:           bool,
     pub has_competition:            bool,
@@ -49,6 +66,7 @@ pub struct AnalysisState {
     pub has_bisac:                  bool,
     pub has_discovery_keywords:     bool,
     pub has_keyword_search_results: bool,
+    pub has_google_keyword_search:  bool,
     pub has_zeigarnik:              bool,
     pub has_continuity_check:       bool,
     pub has_show_dont_tell:         bool,
@@ -133,6 +151,10 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             "bisac_classification",
             "mi_search_terms",
             "discovery_keywords",
+            "google_keyword_search",
+            "content_maturity_advisory",
+            "wide_metadata_paste",
+            "wide_analysis",
             "analysis",
             "keyword_search",
             "competition_report",
@@ -163,6 +185,7 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             summary_stale_files,
         has_genre_data:             db::load_genre_data(&conn, &folder).is_some() && genre_fresh,
         has_full_report:            db::report_freshness_status(&conn, &folder, "analysis", &current_fp) == db::Freshness::Fresh,
+        has_wide_analysis:          db::report_freshness_status(&conn, &folder, "wide_analysis", &current_fp) == db::Freshness::Fresh,
         has_keywords:               db::load_kdp_keywords(&conn, &folder).is_some()
             && db::report_freshness_status(&conn, &folder, "kdp_keywords", &current_fp) == db::Freshness::Fresh,
         has_search_terms:           !db::load_mi_search_terms(&conn, &folder).is_empty()
@@ -178,6 +201,8 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             && db::report_freshness_status(&conn, &folder, "discovery_keywords", &current_fp) == db::Freshness::Fresh,
         has_keyword_search_results: db::has_keyword_search_results(&conn, &folder)
             && db::artifact_status(&conn, &folder, "keyword_search", &current_fp) == db::Freshness::Fresh,
+        has_google_keyword_search: db::has_google_keyword_search_results(&conn, &folder)
+            && db::artifact_status(&conn, &folder, "google_keyword_search", &current_fp) == db::Freshness::Fresh,
         has_zeigarnik:              db::has_zeigarnik_analysis(&conn, &folder)
             && db::artifact_status(&conn, &folder, "zeigarnik", &current_fp) == db::Freshness::Fresh,
             has_continuity_check:       db::report_freshness_status(&conn, &folder, "continuity_check", &current_fp) == db::Freshness::Fresh,
@@ -193,7 +218,7 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
 // ── run_everything ────────────────────────────────────────────────────────────
 
 /// Run everything except folder selection and chapter summaries:
-/// Analyze Genre → Full Analysis → Optimize Keywords → Generate Search Terms
+/// Analyze Genre → KDP Analysis (categories + keywords) → Generate Search Terms
 #[tauri::command]
 pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResult {
     let folder = PathBuf::from(&request.folder);
@@ -499,29 +524,25 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
 
     // ── BISAC, ebook then print if different ───────────────────────
     emit(&app, "Classifying BISAC subject headings...");
-    let bisac_master = { let conn = database.0.lock().unwrap(); db::master_bisac_list(&conn) };
-    let same_as_ebook = genre_data.industry_print.trim().eq_ignore_ascii_case(genre_data.industry_ebook.trim());
-
-    let ebook_desc = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
-    let ebook_picks = ai_pick_bisac(&database, &request.provider, &request.api_key, &request.model, &ebook_desc, &bisac_master).await.unwrap_or_default();
-    {
-        let conn = database.0.lock().unwrap();
-        let rows: Vec<(String, String, u8, String)> = ebook_picks.iter().map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone())).collect();
-        let _ = db::replace_bisac_classifications(&conn, &request.folder, "ebook", &rows);
-    }
-
-    let print_picks_opt = if same_as_ebook {
-        let conn = database.0.lock().unwrap();
-        let rows: Vec<(String, String, u8, String)> = ebook_picks.iter().map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone())).collect();
-        let _ = db::replace_bisac_classifications(&conn, &request.folder, "print", &rows);
+    let bisac_json = run_bisac_classification(
+        &database, &request.folder, &genre_data,
+        &request.provider, &request.api_key, &request.model,
+        true, true,
+    ).await;
+    let bisac_value: serde_json::Value = serde_json::from_str(&bisac_json).unwrap_or(serde_json::json!({}));
+    let ebook_picks: Vec<(String, String, u8, String)> = bisac_value["ebook"].as_array()
+        .map(|arr| arr.iter().filter_map(|v| {
+            Some((v["code"].as_str()?.to_string(), v["heading"].as_str()?.to_string(),
+                v["confidence"].as_u64()? as u8, v["reason"].as_str().unwrap_or("").to_string()))
+        }).collect())
+        .unwrap_or_default();
+    let print_picks_opt: Option<Vec<(String, String, u8, String)>> = if bisac_value["print"].as_str() == Some("same_as_ebook") {
         None
     } else {
-        let print_desc = format!("{}\n\n{}", genre_data.industry_print, genre_data.genre_signals);
-        let print_picks = ai_pick_bisac(&database, &request.provider, &request.api_key, &request.model, &print_desc, &bisac_master).await.unwrap_or_default();
-        let conn = database.0.lock().unwrap();
-        let rows: Vec<(String, String, u8, String)> = print_picks.iter().map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone())).collect();
-        let _ = db::replace_bisac_classifications(&conn, &request.folder, "print", &rows);
-        Some(print_picks)
+        bisac_value["print"].as_array().map(|arr| arr.iter().filter_map(|v| {
+            Some((v["code"].as_str()?.to_string(), v["heading"].as_str()?.to_string(),
+                v["confidence"].as_u64()? as u8, v["reason"].as_str().unwrap_or("").to_string()))
+        }).collect())
     };
 
     let mut bisac_section = vec![
@@ -606,6 +627,7 @@ pub(crate) fn render_combined_report(
     kdp_keywords_section: &str,
     discovery_keywords_section: &str,
     positioning_section: &str,
+    description_snippet: Option<&str>,
 ) -> String {
     let json = serde_json::json!({
         "schema": "analysis_v1",
@@ -617,9 +639,34 @@ pub(crate) fn render_combined_report(
             "kdp_keywords": kdp_keywords_section,
             "discovery_keywords": discovery_keywords_section,
             "positioning": positioning_section,
+            "description": description_snippet.unwrap_or(""),
         }
     });
     json.to_string()
+}
+
+/// Assembles wide-distribution outputs into one saved report.
+pub(crate) fn render_wide_combined_report(
+    genre_ranking_section: &str,
+    bisac_section: &str,
+    discovery_keywords_section: &str,
+    google_keywords_section: &str,
+    content_advisory_section: &str,
+    wide_paste_section: &str,
+    positioning_section: &str,
+) -> String {
+    serde_json::json!({
+        "schema": "wide_analysis_v1",
+        "sections": {
+            "genre_ranking": genre_ranking_section,
+            "bisac": bisac_section,
+            "discovery_keywords": discovery_keywords_section,
+            "google_keywords": google_keywords_section,
+            "content_advisory": content_advisory_section,
+            "wide_paste": wide_paste_section,
+            "positioning": positioning_section,
+        }
+    }).to_string()
 }
 
 // ── analyze_story ─────────────────────────────────────────────────────────────
@@ -630,10 +677,12 @@ fn report_allowed_on_platform(report_id: &str, platform: &str) -> bool {
         "chapter_summaries" | "genre_analysis" | "genre_ranking" => {
             platform == "kdp" || platform == "wide"
         }
-        "kdp_categories" | "kdp_keywords" | "mi_search_terms" | "keyword_search" | "analysis" => {
+        "kdp_categories" | "kdp_keywords" | "mi_search_terms" | "keyword_search" | "analysis"
+        | "competition_report" | "review_mining" | "author_analysis" | "wide_analysis" => {
             platform == "kdp"
         }
-        "bisac_classification" | "discovery_keywords" => platform == "wide",
+        "bisac_classification" | "discovery_keywords" | "google_keyword_search"
+        | "content_maturity_advisory" | "wide_metadata_paste" => platform == "kdp",
         _ => false,
     }
 }
@@ -641,6 +690,64 @@ fn report_allowed_on_platform(report_id: &str, platform: &str) -> bool {
 /// True when `report_id` is selected and allowed on the active platform.
 fn wants_report(selected: &[String], report_id: &str, platform: &str) -> bool {
     selected.iter().any(|s| s == report_id) && report_allowed_on_platform(report_id, platform)
+}
+
+/// KDP Analysis bundles genre classification, category matching, and keyword optimization.
+fn wants_kdp_analysis_bundle(selected: &[String], platform: &str) -> bool {
+    wants_report(selected, "analysis", platform)
+}
+
+/// Wide Analysis bundles BISAC, discovery keywords, content advisory, and paste sheet.
+fn wants_wide_analysis_bundle(selected: &[String], platform: &str) -> bool {
+    wants_report(selected, "wide_analysis", platform)
+}
+
+fn should_run_genre_analysis(selected: &[String], platform: &str) -> bool {
+    wants_report(selected, "genre_analysis", platform)
+        || wants_kdp_analysis_bundle(selected, platform)
+        || wants_wide_analysis_bundle(selected, platform)
+        || wants_report(selected, "bisac_classification", platform)
+        || wants_report(selected, "discovery_keywords", platform)
+        || wants_report(selected, "google_keyword_search", platform)
+        || wants_report(selected, "content_maturity_advisory", platform)
+        || wants_report(selected, "wide_metadata_paste", platform)
+}
+
+fn should_run_bisac(selected: &[String], platform: &str, formats: PublishFormats) -> bool {
+    if wants_report(selected, "bisac_classification", platform) || wants_wide_analysis_bundle(selected, platform) {
+        return formats.ebook || formats.print;
+    }
+    wants_kdp_analysis_bundle(selected, platform) && formats.print
+}
+
+fn should_run_discovery_keywords(selected: &[String], platform: &str, formats: PublishFormats) -> bool {
+    (wants_report(selected, "discovery_keywords", platform) || wants_wide_analysis_bundle(selected, platform))
+        && formats.ebook
+}
+
+fn should_run_content_advisory(selected: &[String], platform: &str, formats: PublishFormats) -> bool {
+    (wants_report(selected, "content_maturity_advisory", platform) || wants_wide_analysis_bundle(selected, platform))
+        && formats.ebook
+}
+
+fn should_run_google_keyword_search(selected: &[String], platform: &str, formats: PublishFormats) -> bool {
+    (wants_report(selected, "google_keyword_search", platform) || wants_wide_analysis_bundle(selected, platform))
+        && formats.ebook
+}
+
+fn should_run_wide_paste(selected: &[String], platform: &str) -> bool {
+    wants_report(selected, "wide_metadata_paste", platform) || wants_wide_analysis_bundle(selected, platform)
+}
+
+fn should_run_kdp_categories(selected: &[String], platform: &str, formats: PublishFormats) -> bool {
+    if !(wants_report(selected, "kdp_categories", platform) || wants_kdp_analysis_bundle(selected, platform)) {
+        return false;
+    }
+    formats.ebook || formats.print
+}
+
+fn should_run_kdp_keywords(selected: &[String], platform: &str) -> bool {
+    wants_report(selected, "kdp_keywords", platform) || wants_kdp_analysis_bundle(selected, platform)
 }
 
 /// Persist a report the user explicitly selected — always overwrite prior output.
@@ -667,9 +774,10 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
 async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> GenreResult {
     let selected = &request.selected;
     let platform = request.platform.as_str();
+    let formats = PublishFormats::from_flags(request.publish_ebook, request.publish_print);
 
-    if platform != "kdp" && platform != "wide" {
-        return err("Invalid platform — expected kdp or wide.");
+    if platform != "kdp" {
+        return err("Invalid platform — expected kdp.");
     }
     if selected.is_empty() {
         return err("No reports selected.");
@@ -689,14 +797,20 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         let _ = db::sync_manuscript_state(&conn, &request.folder, &manuscript_fp);
     }
 
-    let needs_genre_data = wants_report(selected, "genre_analysis", platform)
-        || wants_report(selected, "kdp_categories", platform)
-        || wants_report(selected, "kdp_keywords", platform)
-        || wants_report(selected, "bisac_classification", platform)
+    let needs_genre_data = should_run_genre_analysis(selected, platform)
+        || should_run_kdp_categories(selected, platform, formats)
+        || should_run_kdp_keywords(selected, platform)
+        || should_run_bisac(selected, platform, formats)
         || wants_report(selected, "mi_search_terms", platform)
-        || wants_report(selected, "discovery_keywords", platform)
+        || should_run_discovery_keywords(selected, platform, formats)
         || wants_report(selected, "keyword_search", platform)
-        || wants_report(selected, "analysis", platform);
+        || should_run_google_keyword_search(selected, platform, formats)
+        || should_run_content_advisory(selected, platform, formats)
+        || wants_kdp_analysis_bundle(selected, platform)
+        || wants_wide_analysis_bundle(selected, platform)
+        || wants_report(selected, "competition_report", platform)
+        || wants_report(selected, "review_mining", platform)
+        || wants_report(selected, "author_analysis", platform);
 
     // ── Step 1: Chapter summaries (infrastructure) ────────────────────────
     if needs_genre_data || request.force_resummarize {
@@ -752,7 +866,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
     }
 
     // ── Step 2: Genre Analysis ─────────────────────────────────────────────
-    if wants_report(selected, "genre_analysis", platform) {
+    if should_run_genre_analysis(selected, platform) {
         emit(&app, "Step 2: Genre analysis...");
         let summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
         if summaries.is_empty() { return err("No chapter summaries available."); }
@@ -774,7 +888,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
         match genre_data {
             Some(d) => d,
-            None => return err("Genre analysis data is required. Run Genre Analysis first."),
+            None => return err("Genre analysis data is required. Run a positioning report first (KDP Analysis or Wide Analysis)."),
         }
     } else {
         return GenreResult {
@@ -809,15 +923,21 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
     let mut kindle_top_categories: Vec<String> = Vec::new();
     let mut print_top_categories: Vec<String> = Vec::new();
     let mut kdp_categories_section = serde_json::json!({ "stores": [] }).to_string();
-    if wants_report(selected, "kdp_categories", platform) {
+    if should_run_kdp_categories(selected, platform, formats) {
         emit(&app, "Step 4: Matching KDP categories...");
         let base_description = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
         let mut kdp_stores_json: Vec<serde_json::Value> = Vec::new();
 
-        for (store, label, top_cats) in [
-            ("Kindle", "Kindle eBook", &mut kindle_top_categories as &mut Vec<String>),
-            ("Books", "Paperback", &mut print_top_categories as &mut Vec<String>),
-        ] {
+        let store_jobs: Vec<(&str, &str)> = [
+            formats.ebook.then_some(("Kindle", "Kindle eBook")),
+            formats.print.then_some(("Books", "Paperback")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        for (store, label) in store_jobs {
+            let top_cats = if store == "Kindle" { &mut kindle_top_categories } else { &mut print_top_categories };
             let total_catalog = { let conn = database.0.lock().unwrap(); db::kdp_category_count(&conn, store) };
             if total_catalog < 50 {
                 kdp_stores_json.push(serde_json::json!({ "store": label, "error": "Catalog nearly empty — import WinningCat data." }));
@@ -873,48 +993,25 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         if crate::is_cancelled() { return err("Cancelled."); }
     }
 
-    // ── Step 6: BISAC Classification (Wide only) ───────────────────────────
+    // ── Step 6: BISAC Classification ───────────────────────────────────────
     let mut bisac_section = String::new();
-    if wants_report(selected, "bisac_classification", platform) {
+    if should_run_bisac(selected, platform, formats) {
         emit(&app, "Step 6: BISAC classification...");
-        let bisac_master = { let conn = database.0.lock().unwrap(); db::master_bisac_list(&conn) };
-        let same_as_ebook = genre_data.industry_print.trim().eq_ignore_ascii_case(genre_data.industry_ebook.trim());
-
-        let ebook_desc = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
-        let ebook_picks = ai_pick_bisac(&database, &request.provider, &request.api_key, &request.model, &ebook_desc, &bisac_master).await.unwrap_or_default();
-        {
+        bisac_section = run_bisac_classification(
+            &database,
+            &request.folder,
+            &genre_data,
+            &request.provider,
+            &request.api_key,
+            &request.model,
+            formats.ebook && wants_wide_analysis_bundle(selected, platform),
+            formats.print,
+        ).await;
+        if !bisac_section.is_empty() {
             let conn = database.0.lock().unwrap();
-            let rows: Vec<(String, String, u8, String)> = ebook_picks.iter().map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone())).collect();
-            let _ = db::replace_bisac_classifications(&conn, &request.folder, "ebook", &rows);
+            save_selected_report(&conn, &request.folder, "bisac_classification", &bisac_section, &run_ts, &manuscript_fp);
+            let _ = db::record_artifact_built(&conn, &request.folder, "bisac", &manuscript_fp);
         }
-
-        let print_picks = if same_as_ebook {
-            let conn = database.0.lock().unwrap();
-            let rows: Vec<(String, String, u8, String)> = ebook_picks.iter().map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone())).collect();
-            let _ = db::replace_bisac_classifications(&conn, &request.folder, "print", &rows);
-            None
-        } else {
-            let print_desc = format!("{}\n\n{}", genre_data.industry_print, genre_data.genre_signals);
-            let picks = ai_pick_bisac(&database, &request.provider, &request.api_key, &request.model, &print_desc, &bisac_master).await.unwrap_or_default();
-            let conn = database.0.lock().unwrap();
-            let rows: Vec<(String, String, u8, String)> = picks.iter().map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone())).collect();
-            let _ = db::replace_bisac_classifications(&conn, &request.folder, "print", &rows);
-            Some(picks)
-        };
-
-        let bisac_json = serde_json::json!({
-            "ebook": ebook_picks.iter().map(|(code, heading, conf, reason)| serde_json::json!({
-                "code": code, "heading": heading, "confidence": conf, "reason": reason,
-            })).collect::<Vec<_>>(),
-            "print": match &print_picks {
-                None => serde_json::json!("same_as_ebook"),
-                Some(picks) => serde_json::json!(picks.iter().map(|(code, heading, conf, reason)| serde_json::json!({
-                    "code": code, "heading": heading, "confidence": conf, "reason": reason,
-                })).collect::<Vec<_>>()),
-            },
-        });
-        bisac_section = bisac_json.to_string();
-        { let conn = database.0.lock().unwrap(); save_selected_report(&conn, &request.folder, "bisac_classification", &bisac_section, &run_ts, &manuscript_fp); let _ = db::record_artifact_built(&conn, &request.folder, "bisac", &manuscript_fp); }
         if crate::is_cancelled() { return err("Cancelled."); }
     }
 
@@ -958,7 +1055,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
     // ── Step 8: KDP Keywords (KDP only) ────────────────────────────────────
     let mut kdp_keyword_entries: Vec<db::KdpKeywordEntry> = Vec::new();
     let mut kdp_keyword_strategy = String::new();
-    if wants_report(selected, "kdp_keywords", platform) {
+    if should_run_kdp_keywords(selected, platform) {
         emit(&app, "Step 8: Optimizing KDP keywords...");
         let res = call_keyword_optimizer_with_pool(&database, &request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals, &keyword_pool).await;
 
@@ -984,7 +1081,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
 
     // ── Step 9: Discovery Keywords ─────────────────────────────────────────
     let mut discovery_entries: Vec<db::DiscoveryKeywordEntry> = Vec::new();
-    if wants_report(selected, "discovery_keywords", platform) {
+    if should_run_discovery_keywords(selected, platform, formats) {
         emit(&app, "Step 9: Generating discovery keywords...");
         let res = generate_discovery_keywords(&database, &request.provider, &request.api_key, &request.model, &genre_data).await;
 
@@ -1031,26 +1128,215 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         if crate::is_cancelled() { return err("Cancelled."); }
     }
 
-    if !wants_report(selected, "analysis", platform) {
+    // ── Step 9b: Google Keyword Search (Wide only) ─────────────────────────
+    let mut google_keywords_section = String::new();
+    if should_run_google_keyword_search(selected, platform, formats) {
+        emit(&app, "Step 9b: Google keyword search...");
+        let discovery_phrases: Vec<String> = if !discovery_entries.is_empty() {
+            discovery_entries.iter().map(|e| e.phrase.clone()).collect()
+        } else {
+            let conn = database.0.lock().unwrap();
+            db::load_discovery_keywords(&conn, &request.folder)
+                .into_iter()
+                .map(|e| e.phrase)
+                .collect()
+        };
+        let seeds = derive_wide_keyword_seeds(&genre_data.industry_ebook, &discovery_phrases);
+        if seeds.is_empty() {
+            emit(&app, "  ⚠ No seeds derived — skipping Google keyword search.");
+        } else if request.dataforseo_login.is_empty() || request.dataforseo_password.is_empty() {
+            emit(&app, "  ⚠ DataForSEO credentials not set — add login/password in Settings.");
+        } else {
+            emit(&app, &format!("  Seeds: {:?}", seeds));
+            let results = run_google_keyword_searches_dataforseo(
+                &app,
+                &request.folder,
+                &seeds,
+                &request.dataforseo_login,
+                &request.dataforseo_password,
+            ).await;
+            if !results.is_empty() {
+                let conn = database.0.lock().unwrap();
+                let ks_json = serde_json::json!({
+                    "schema": "google_keyword_search_v1",
+                    "keywords": results.iter().map(|k| serde_json::json!({
+                        "keyword": k.keyword,
+                        "searches": k.searches,
+                        "competition": k.competition,
+                        "cpc": k.estimated_earnings,
+                    })).collect::<Vec<_>>(),
+                }).to_string();
+                google_keywords_section = ks_json.clone();
+                save_selected_report(&conn, &request.folder, "google_keyword_search", &ks_json, &run_ts, &manuscript_fp);
+                let _ = db::record_artifact_built(&conn, &request.folder, "google_keyword_search", &manuscript_fp);
+                emit(&app, &format!("  ✓ {} Google keywords saved.", results.len()));
+            }
+        }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    // ── Step 9c: Content & Maturity Advisory (Wide only) ───────────────────
+    let mut content_advisory_section = String::new();
+    if should_run_content_advisory(selected, platform, formats) {
+        emit(&app, "Step 9c: Content & maturity advisory...");
+        let summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
+        let signals = aggregate_content_signals(&summaries);
+        match generate_content_maturity_advisory(
+            &database,
+            &request.provider,
+            &request.api_key,
+            &request.model,
+            &genre_data,
+            &signals,
+        ).await {
+            Ok(value) => {
+                let json = value.to_string();
+                content_advisory_section = json.clone();
+                let conn = database.0.lock().unwrap();
+                save_selected_report(&conn, &request.folder, "content_maturity_advisory", &json, &run_ts, &manuscript_fp);
+                emit(&app, "  ✓ Content & maturity advisory saved.");
+            }
+            Err(e) => emit(&app, &format!("  ⚠ Content advisory failed: {} — continuing.", e)),
+        }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    // ── Step 9d: Wide Metadata Paste Sheet ───────────────────────────────────
+    let mut wide_paste_section = String::new();
+    if should_run_wide_paste(selected, platform) {
+        emit(&app, "Step 9d: Assembling wide metadata paste sheet...");
+        let (ebook_bisac, print_bisac, discovery_for_paste, content_note) = {
+            let conn = database.0.lock().unwrap();
+            let ebook = db::load_bisac_classifications(&conn, &request.folder, "ebook");
+            let print = db::load_bisac_classifications(&conn, &request.folder, "print");
+            let discovery = if !discovery_entries.is_empty() {
+                discovery_entries.clone()
+            } else {
+                db::load_discovery_keywords(&conn, &request.folder)
+            };
+            let content_note = if !content_advisory_section.is_empty() {
+                serde_json::from_str::<serde_json::Value>(&content_advisory_section).ok()
+                    .and_then(|v| v["maturity_rating_suggestion"].as_str().map(String::from))
+            } else {
+                db::get_document(&conn, &request.folder, "content_maturity_advisory")
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .and_then(|v| v["maturity_rating_suggestion"].as_str().map(String::from))
+            };
+            (ebook, print, discovery, content_note)
+        };
+        if ebook_bisac.is_empty() && print_bisac.is_empty() && discovery_for_paste.is_empty() {
+            emit(&app, "  ⚠ BISAC and discovery data not ready — run Wide Analysis or its dependencies.");
+        } else {
+            wide_paste_section = render_wide_paste_section(
+                &genre_data,
+                &ebook_bisac,
+                &print_bisac,
+                &discovery_for_paste,
+                content_note.as_deref(),
+            );
+            if wants_report(selected, "wide_metadata_paste", platform)
+                && !wants_wide_analysis_bundle(selected, platform)
+            {
+                let conn = database.0.lock().unwrap();
+                save_selected_report(&conn, &request.folder, "wide_metadata_paste", &wide_paste_section, &run_ts, &manuscript_fp);
+                emit(&app, "  ✓ Wide metadata paste sheet saved.");
+            }
+        }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    // ── Step 9e: Market Intel (KDP — competition, reviews, authors) ────────
+    if platform == "kdp" && !request.canopy_api_key.is_empty() {
+        if wants_report(selected, "competition_report", platform) {
+            emit(&app, "Step 9e: Competition analysis...");
+            let result = crate::canopy::analyze_competition_canopy(
+                app.clone(),
+                crate::canopy::CompetitionCanopyRequest {
+                    folder: request.folder.clone(),
+                    api_key: request.api_key.clone(),
+                    model: request.model.clone(),
+                    store: "Kindle".to_string(),
+                    provider: request.provider.clone(),
+                    canopy_api_key: request.canopy_api_key.clone(),
+                },
+            ).await;
+            if result.success {
+                let conn = database.0.lock().unwrap();
+                if let Some(content) = db::get_document(&conn, &request.folder, "competition_report") {
+                    save_selected_report(&conn, &request.folder, "competition_report", &content, &run_ts, &manuscript_fp);
+                }
+                emit(&app, "  ✓ Competition analysis saved.");
+            } else {
+                emit(&app, &format!("  ⚠ Competition analysis failed: {}", result.error));
+            }
+        }
+        if wants_report(selected, "review_mining", platform) {
+            emit(&app, "Step 9e: Review mining...");
+            let result = crate::canopy::mine_competitor_reviews(
+                app.clone(),
+                crate::canopy::ReviewMiningRequest {
+                    folder: request.folder.clone(),
+                    canopy_api_key: request.canopy_api_key.clone(),
+                    api_key: request.api_key.clone(),
+                    model: request.model.clone(),
+                    provider: request.provider.clone(),
+                },
+            ).await;
+            if result.success {
+                let conn = database.0.lock().unwrap();
+                if let Some(content) = db::get_document(&conn, &request.folder, "review_mining") {
+                    save_selected_report(&conn, &request.folder, "review_mining", &content, &run_ts, &manuscript_fp);
+                }
+                emit(&app, "  ✓ Review mining saved.");
+            } else {
+                emit(&app, &format!("  ⚠ Review mining failed: {}", result.error));
+            }
+        }
+        if wants_report(selected, "author_analysis", platform) {
+            emit(&app, "Step 9e: Author analysis...");
+            let result = crate::canopy::analyze_comp_authors(
+                app.clone(),
+                crate::canopy::AuthorAnalysisRequest {
+                    folder: request.folder.clone(),
+                    canopy_api_key: request.canopy_api_key.clone(),
+                    api_key: request.api_key.clone(),
+                    model: request.model.clone(),
+                    provider: request.provider.clone(),
+                },
+            ).await;
+            if result.success {
+                let conn = database.0.lock().unwrap();
+                if let Some(content) = db::get_document(&conn, &request.folder, "author_analysis") {
+                    save_selected_report(&conn, &request.folder, "author_analysis", &content, &run_ts, &manuscript_fp);
+                }
+                emit(&app, "  ✓ Author analysis saved.");
+            } else {
+                emit(&app, &format!("  ⚠ Author analysis failed: {}", result.error));
+            }
+        }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    } else if platform == "kdp" && (
+        wants_report(selected, "competition_report", platform)
+        || wants_report(selected, "review_mining", platform)
+        || wants_report(selected, "author_analysis", platform)
+    ) {
+        emit(&app, "  ⚠ Canopy API key required for market intel reports — add in Settings.");
+    }
+
+    let wants_kdp_bundle = wants_kdp_analysis_bundle(selected, platform);
+    let wants_wide_bundle = wants_wide_analysis_bundle(selected, platform);
+    if !wants_kdp_bundle && !wants_wide_bundle {
         emit(&app, "✓ Selected reports complete.");
         return GenreResult { success: true, report: String::new(), error: String::new(), run_ts: run_ts.clone() };
     }
 
-    // ── Step 10: Assemble Combined Report ───────────────────────────────────
-    emit(&app, "Step 10: Assembling combined report...");
-
-    // KDP paste section
-    let kdp_paste = render_kdp_paste_section(&kindle_top_categories, &print_top_categories, &kdp_keyword_entries);
-
-    // KDP keywords section
-    let source_note = if keyword_pool.is_empty() {
-        "*(Generated from genre analysis — no keyword search data available.)*"
-    } else {
-        "*(Enhanced with real Amazon search volume data.)*"
+    let description_snippet = {
+        let conn = database.0.lock().unwrap();
+        db::get_document(&conn, &request.folder, "blurb_builder")
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|v| v["variants"].as_array().and_then(|a| a.first()).and_then(|x| x["blurb"].as_str().map(String::from)))
     };
-    let kdp_keywords_section = render_kdp_keywords(&kdp_keyword_entries, &kdp_keyword_strategy, source_note);
 
-    // Discovery keywords section
     let discovery_keywords_section = serde_json::json!({
         "keywords": discovery_entries.iter().map(|e| serde_json::json!({
             "phrase": e.phrase,
@@ -1058,13 +1344,77 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         })).collect::<Vec<_>>(),
     }).to_string();
 
-    // Positioning context section
     let positioning_section = serde_json::json!({
         "reader_demographic": genre_data.reader_demographic,
         "bookstore_shelving": genre_data.bookstore_shelving,
         "comps_ebook": genre_data.comps_ebook,
         "comps_print": genre_data.comps_print,
     }).to_string();
+
+    if wants_wide_bundle {
+        emit(&app, "Step 10: Assembling Wide Analysis report...");
+        if wide_paste_section.is_empty() && should_run_wide_paste(selected, platform) {
+            let conn = database.0.lock().unwrap();
+            let ebook = db::load_bisac_classifications(&conn, &request.folder, "ebook");
+            let print = db::load_bisac_classifications(&conn, &request.folder, "print");
+            let discovery = if !discovery_entries.is_empty() {
+                discovery_entries.clone()
+            } else {
+                db::load_discovery_keywords(&conn, &request.folder)
+            };
+            let content_note = if !content_advisory_section.is_empty() {
+                serde_json::from_str::<serde_json::Value>(&content_advisory_section).ok()
+                    .and_then(|v| v["maturity_rating_suggestion"].as_str().map(String::from))
+            } else {
+                None
+            };
+            wide_paste_section = render_wide_paste_section(
+                &genre_data, &ebook, &print, &discovery, content_note.as_deref(),
+            );
+        }
+        let report = render_wide_combined_report(
+            &genre_ranking_section,
+            &bisac_section,
+            &discovery_keywords_section,
+            &google_keywords_section,
+            &content_advisory_section,
+            &wide_paste_section,
+            &positioning_section,
+        );
+        {
+            let conn = database.0.lock().unwrap();
+            let _ = db::save_document_current(&conn, &request.folder, "wide_analysis", &report, &run_ts, &manuscript_fp);
+            emit(&app, "✓ Wide Analysis report saved.");
+        }
+        if !wants_kdp_bundle {
+            return GenreResult { success: true, report, error: String::new(), run_ts: run_ts.clone() };
+        }
+    }
+
+    if wants_kdp_bundle {
+    // ── Step 10: Assemble KDP Combined Report ───────────────────────────────
+    emit(&app, "Step 10: Assembling KDP Analysis report...");
+
+    let bisac_print_json = if bisac_section.is_empty() {
+        None
+    } else {
+        serde_json::from_str::<serde_json::Value>(&bisac_section).ok()
+            .and_then(|v| if v["print"].is_string() { v.get("ebook").map(|x| x.to_string()) } else { v.get("print").map(|x| x.to_string()) })
+    };
+    let kdp_paste = render_kdp_paste_section(
+        &kindle_top_categories,
+        &print_top_categories,
+        &kdp_keyword_entries,
+        bisac_print_json.as_deref(),
+        description_snippet.as_deref(),
+    );
+
+    let source_note = if keyword_pool.is_empty() {
+        "*(Generated from genre analysis — no keyword search data available.)*"
+    } else {
+        "*(Enhanced with real Amazon search volume data.)*"
+    };
+    let kdp_keywords_section = render_kdp_keywords(&kdp_keyword_entries, &kdp_keyword_strategy, source_note);
 
     let report = render_combined_report(
         &kdp_paste,
@@ -1074,15 +1424,19 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         &kdp_keywords_section,
         &discovery_keywords_section,
         &positioning_section,
+        description_snippet.as_deref(),
     );
 
     {
         let conn = database.0.lock().unwrap();
         let _ = db::save_document_current(&conn, &request.folder, "analysis", &report, &run_ts, &manuscript_fp);
-        emit(&app, "✓ Full analysis report saved.");
+        emit(&app, "✓ KDP Analysis report saved.");
     }
 
-    GenreResult { success: true, report, error: String::new(), run_ts: run_ts.clone() }
+    return GenreResult { success: true, report, error: String::new(), run_ts: run_ts.clone() };
+    }
+
+    GenreResult { success: true, report: String::new(), error: String::new(), run_ts: run_ts.clone() }
 }
 
 // ── KDP Paste Section Renderer ─────────────────────────────────────────────────
@@ -1093,12 +1447,49 @@ pub(crate) fn render_kdp_paste_section(
     kindle_categories: &[String],
     print_categories: &[String],
     keywords: &[db::KdpKeywordEntry],
+    bisac_print_json: Option<&str>,
+    description_snippet: Option<&str>,
 ) -> String {
+    let bisac_print: serde_json::Value = bisac_print_json
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::json!([]));
     let json = serde_json::json!({
         "schema": "kdp_paste_v1",
         "kindle_categories": kindle_categories.iter().take(3).collect::<Vec<_>>(),
         "print_categories": print_categories.iter().take(3).collect::<Vec<_>>(),
         "keywords": keywords.iter().map(|k| &k.string).collect::<Vec<_>>(),
+        "bisac_print": bisac_print,
+        "description_snippet": description_snippet.unwrap_or(""),
+    });
+    json.to_string()
+}
+
+/// Renders copy-ready wide-distribution metadata (BISAC, discovery keywords, content note).
+pub(crate) fn render_wide_paste_section(
+    genre_data: &db::GenreDataRow,
+    ebook_bisac: &[(String, String, u8, String)],
+    print_bisac: &[(String, String, u8, String)],
+    discovery: &[db::DiscoveryKeywordEntry],
+    content_note: Option<&str>,
+) -> String {
+    let json = serde_json::json!({
+        "schema": "wide_paste_v1",
+        "genre_labels": {
+            "ebook": genre_data.industry_ebook,
+            "print": genre_data.industry_print,
+        },
+        "bisac_ebook": ebook_bisac.iter().map(|(code, heading, conf, _)| serde_json::json!({
+            "code": code,
+            "heading": heading,
+            "confidence": conf,
+        })).collect::<Vec<_>>(),
+        "bisac_print": print_bisac.iter().map(|(code, heading, conf, _)| serde_json::json!({
+            "code": code,
+            "heading": heading,
+            "confidence": conf,
+        })).collect::<Vec<_>>(),
+        "discovery_keywords": discovery.iter().map(|e| &e.phrase).collect::<Vec<_>>(),
+        "content_note": content_note.unwrap_or(""),
     });
     json.to_string()
 }
@@ -1163,7 +1554,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
             || s == "show_dont_tell"
             || s == "ai_isms"
             || super::craft_audits::is_craft_audit(s)
-            || matches!(s.as_str(), "ai_beta_reader" | "cliffhanger_score" | "hook_strength" | "pacing_curve")
+            || matches!(s.as_str(), "ai_beta_reader" | "cliffhanger_score" | "hook_strength" | "pacing_curve" | "blurb_builder")
     });
 
     if needs_ai {
@@ -1395,6 +1786,18 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
     }
     if request.selected.iter().any(|s| s == "vellum_prep") {
         let r = super::publish_audits::run_vellum_prep(&app, &database, &request.folder);
+        if !r.success { return r; }
+    }
+    if request.selected.iter().any(|s| s == "blurb_builder") {
+        let r = super::publish_audits::run_blurb_builder(
+            &app, &database, &request.folder,
+            &request.provider, &request.api_key, model_prose,
+        ).await;
+        if !r.success { return r; }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+    if request.selected.iter().any(|s| s == "print_production") {
+        let r = super::publish_audits::run_print_production(&app, &database, &request.folder);
         if !r.success { return r; }
     }
 

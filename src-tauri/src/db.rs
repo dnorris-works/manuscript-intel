@@ -150,6 +150,18 @@ CREATE TABLE IF NOT EXISTS keyword_search_results (
 
 CREATE INDEX IF NOT EXISTS idx_keyword_results_folder ON keyword_search_results(story_folder);
 
+CREATE TABLE IF NOT EXISTS google_keyword_search_results (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_folder  TEXT NOT NULL,
+    keyword       TEXT NOT NULL,
+    searches      TEXT,
+    competition   TEXT,
+    cpc           TEXT,
+    generated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_google_keyword_results_folder ON google_keyword_search_results(story_folder);
+
 -- Rendered markdown cache for the Reports panel. Every report type is
 -- re-rendered fresh from its structured source table whenever regenerated —
 -- this table is what the UI reads, never hand-edited, never stale-checked
@@ -705,14 +717,26 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     seed_bisac_if_empty(&conn)?;
     seed_report_types(&conn)?;
     let _ = conn.execute_batch(
-        "UPDATE report_types SET hidden = 1 WHERE id = 'genre_ranking';
-         UPDATE report_types SET depends_on = 'chapter_summaries,genre_analysis'
-           WHERE id IN ('kdp_categories', 'kdp_keywords', 'keyword_search');
-         UPDATE report_types SET depends_on = 'chapter_summaries,genre_analysis,kdp_categories,kdp_keywords,mi_search_terms'
+        "UPDATE report_types SET hidden = 1 WHERE id IN ('genre_ranking', 'genre_analysis', 'kdp_categories', 'kdp_keywords', 'bisac_classification', 'discovery_keywords', 'google_keyword_search', 'content_maturity_advisory', 'wide_metadata_paste');
+         UPDATE report_types SET depends_on = 'chapter_summaries,analysis'
+           WHERE id IN ('keyword_search', 'mi_search_terms');
+         UPDATE report_types SET depends_on = 'chapter_summaries,mi_search_terms'
            WHERE id = 'analysis';
-         UPDATE report_types SET description = 'Industry genre classification, master-list ranking, KDP paths, comps, and reader demographic.'
-           WHERE id = 'genre_analysis';
-         UPDATE report_types SET cost_fixed_calls = 3 WHERE id = 'genre_analysis';"
+         UPDATE report_types SET depends_on = 'chapter_summaries'
+           WHERE id IN ('bisac_classification', 'discovery_keywords', 'google_keyword_search', 'content_maturity_advisory', 'wide_metadata_paste', 'blurb_builder');
+         UPDATE report_types SET label = 'KDP Analysis',
+           description = 'Genre, Kindle & paperback categories, print BISAC, seven keywords, and ready-to-paste KDP metadata.',
+           depends_on = 'chapter_summaries,mi_search_terms',
+           cost_output_max = 1200,
+           cost_fixed_calls = 7
+           WHERE id = 'analysis';
+         UPDATE report_types SET label = 'Wide Analysis - Wide',
+           platforms = 'kdp',
+           description = 'BISAC, discovery keywords, Google SEO, content advisory, and ready-to-paste wide metadata.',
+           depends_on = 'chapter_summaries',
+           cost_output_max = 1200,
+           cost_fixed_calls = 5
+           WHERE id = 'wide_analysis';"
     );
     seed_prompt_templates(&conn)?;
     seed_zeigarnik_config_if_empty(&conn)?;
@@ -855,10 +879,14 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
         ("kdp_categories", "KDP Categories", "Find the best-fit Amazon categories with discoverability stats.", "kdp", "chapter_summaries,genre_analysis", 0, 1200, 0, 2, "keywords", "basic"),
         ("kdp_keywords", "KDP Keywords", "Optimize the 7 keyword strings for KDP discoverability.", "kdp", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "keywords", "basic"),
         ("bisac_classification", "BISAC Classification", "Select BISAC subject codes for Ingram, wide distributors, and print metadata.", "wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 2, "keywords", "basic"),
-        ("mi_search_terms", "Search Terms", "Generate competition search phrases for market analysis.", "kdp", "chapter_summaries,genre_analysis", 0, 300, 0, 1, "keywords", "basic"),
-        ("discovery_keywords", "Discovery Keywords", "Keywords optimized for Apple Books, Kobo, Google Play, and SEO.", "wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "keywords", "basic"),
-        ("analysis", "Full Analysis", "Combined report: categories, keywords, and positioning all in one.", "kdp", "chapter_summaries,genre_analysis,kdp_categories,kdp_keywords,mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
-        ("keyword_search", "Keyword Search Results", "Amazon keyword volume and competition data from DataForSEO.", "kdp", "chapter_summaries,genre_analysis", 4000, 1000, 0, 1, "keywords", "basic"),
+        ("mi_search_terms", "Search Terms", "Generate competition search phrases for market analysis.", "kdp", "chapter_summaries,analysis", 0, 300, 0, 1, "keywords", "basic"),
+        ("discovery_keywords", "Discovery Keywords", "Keywords optimized for Apple Books, Kobo, Google Play, and SEO.", "wide", "chapter_summaries", 0, 1200, 0, 1, "keywords", "basic"),
+        ("google_keyword_search", "Google Keyword Search", "Google search volume and competition for wide-store SEO phrases.", "wide", "chapter_summaries,discovery_keywords", 0, 0, 0, 0, "keywords", "basic"),
+        ("content_maturity_advisory", "Content & Maturity Advisory", "Heat level, content warnings, and age guidance for Apple Books, Kobo, and wide distributors.", "wide", "chapter_summaries", 0, 1200, 0, 1, "genre", "capable"),
+        ("wide_metadata_paste", "Wide Metadata Paste Sheet", "Copy-ready BISAC codes, discovery keywords, and content notes for aggregators and wide stores.", "wide", "bisac_classification,discovery_keywords", 0, 0, 0, 0, "default", "basic"),
+        ("wide_analysis", "Wide Analysis - Wide", "BISAC, discovery keywords, Google SEO, content advisory, and ready-to-paste wide metadata.", "kdp", "chapter_summaries", 4000, 1200, 0, 5, "default", "basic"),
+        ("analysis", "KDP Analysis", "Genre, Kindle & paperback categories, print BISAC, seven keywords, and ready-to-paste KDP metadata.", "kdp", "chapter_summaries,mi_search_terms", 4000, 1200, 0, 7, "default", "basic"),
+        ("keyword_search", "Keyword Search Results", "Amazon keyword volume and competition data from DataForSEO.", "kdp", "chapter_summaries,analysis", 4000, 1000, 0, 1, "keywords", "basic"),
         ("competition_report", "Competition Analysis", "Market landscape: how competitive the niche is, who dominates.", "kdp", "mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
         ("review_mining", "Reader Review Intelligence", "Reader insights extracted from competitor book reviews.", "kdp", "mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
         ("author_analysis", "Competitor Author Analysis", "Competitor pricing, release cadence, and series strategy.", "kdp", "mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
@@ -888,7 +916,8 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
         ("cliffhanger_score", "Cliffhanger Score", "How hard each chapter ending pulls into the next.", "publish", "", 4000, 500, 1, 0, "summaries", "basic"),
         ("hook_strength", "Hook Strength", "Would a browsing reader keep going past page one?", "publish", "", 0, 1200, 0, 1, "summaries", "basic"),
         ("pacing_curve", "Pacing Curve", "Where the story drags — per-chapter pace scores.", "publish", "", 4000, 600, 1, 0, "summaries", "basic"),
-        ("blurb_builder", "Blurb Builder", "Back-cover / Amazon description variants plus short-form and BookBub one-liners.", "publish", "", 0, 3000, 0, 1, "prose", "strong"),
+        ("blurb_builder", "Blurb Builder", "Amazon, back-cover, and BookBub description variants from your manuscript.", "publish", "chapter_summaries", 0, 3000, 0, 1, "prose", "strong"),
+        ("print_production", "Print Production", "Page count, trim size, spine width, and Ingram/KDP print checklists.", "publish", "", 0, 0, 0, 0, "default", "basic"),
         ("line_polish", "Line-level Polish", "Filter words, echoes, adverbs, and passive voice (heuristic).", "publish", "", 0, 0, 0, 0, "default", "basic"),
         ("vellum_prep", "Vellum & Atticus Prep", "Clean manuscript export for formatter import.", "publish", "", 0, 0, 0, 0, "default", "basic"),
     ];
@@ -2108,6 +2137,54 @@ pub fn replace_keyword_search_results(
     Ok(())
 }
 
+pub fn has_google_keyword_search_results(conn: &Connection, story_folder: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM google_keyword_search_results WHERE story_folder = ?1)",
+        params![story_folder],
+        |r| r.get::<_, bool>(0),
+    ).unwrap_or(false)
+}
+
+pub fn replace_google_keyword_search_results(
+    conn: &Connection,
+    story_folder: &str,
+    rows: &[(String, String, String, String)], // (keyword, searches, competition, cpc)
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "DELETE FROM google_keyword_search_results WHERE story_folder = ?1",
+        params![story_folder],
+    ).map_err(|e| e.to_string())?;
+    for (keyword, searches, competition, cpc) in rows {
+        conn.execute(
+            "INSERT INTO google_keyword_search_results (story_folder, keyword, searches, competition, cpc, generated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![story_folder, keyword, searches, competition, cpc, now],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn load_bisac_classifications(
+    conn: &Connection,
+    story_folder: &str,
+    format: &str,
+) -> Vec<(String, String, u8, String)> {
+    let mut stmt = match conn.prepare(
+        "SELECT code, heading, confidence, COALESCE(reason, '') FROM bisac_classifications
+         WHERE story_folder = ?1 AND format = ?2 ORDER BY confidence DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map(params![story_folder, format], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u8, r.get(3)?))
+    })
+    .ok()
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
 
 // ── Manuscript fingerprint + artifact state ──────────────────────────────────
 
@@ -2799,7 +2876,7 @@ pub async fn get_sidebar_reports(db: tauri::State<'_, Db>, folder: String, platf
 
     // Get report types for this platform
     let mut type_stmt = conn.prepare(
-        "SELECT id, label, description FROM report_types ORDER BY rowid"
+        "SELECT id, label, description FROM report_types WHERE COALESCE(hidden, 0) = 0 ORDER BY rowid"
     ).map_err(|e| e.to_string())?;
     let all_types: Vec<(String, String, String)> = type_stmt.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
@@ -2991,6 +3068,7 @@ pub async fn get_story_artifact_state(
         "mi_search_terms",
         "discovery_keywords",
         "keyword_search",
+        "google_keyword_search",
         "bisac",
         "zeigarnik",
     ];

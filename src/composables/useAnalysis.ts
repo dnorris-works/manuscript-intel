@@ -118,7 +118,13 @@ async function afterAnalysisRun(folder: string): Promise<void> {
   await useReports().loadSavedReports(folder);
 }
 
-async function runAnalyze(folder: string, forceResummarize: boolean, platform: string, selected: string[]): Promise<void> {
+async function runAnalyze(
+  folder: string,
+  forceResummarize: boolean,
+  platform: string,
+  selected: string[],
+  formats: { publishEbook: boolean; publishPrint: boolean } = { publishEbook: true, publishPrint: true },
+): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
   const s = useSettings();
   const setupIssues = s.checkPublishAnalyzeSetup();
@@ -146,6 +152,8 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
         dataforseo_password: dataforseoPassword,
         run_time: runTime,
         selected,
+        publish_ebook: formats.publishEbook,
+        publish_print: formats.publishPrint,
       },
     });
     if (!result.success) {
@@ -192,6 +200,7 @@ async function runCraftAnalysis(folder: string, selected: string[], continuitySc
         model_continuity: s.modelFor('continuity'),
         model_sdt: s.modelFor('showDontTell'),
         model_ai_isms: s.modelFor('aiIsms'),
+        model_prose: s.modelFor('prose'),
         continuity_scope: continuityScope.mode,
         series_id: continuityScope.mode === 'series' ? continuityScope.seriesId : 0,
       },
