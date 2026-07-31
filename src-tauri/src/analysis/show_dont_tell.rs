@@ -12,6 +12,7 @@ use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult};
 use super::chapters::{collect_chapters, extract_title};
+use crate::batch_prompt::{self, BatchChapterItem, CRAFT_BATCH_WORD_BUDGET};
 use crate::db;
 
 // ── Request ──────────────────────────────────────────────────────────────────
@@ -69,23 +70,22 @@ async fn check_inner(app: AppHandle, request: ShowDontTellRequest) -> GenreResul
 
     emit(&app, &format!("Checking {} chapter(s) for show-don't-tell violations...", chapters.len()));
 
-    let mut all_findings: Vec<serde_json::Value> = Vec::new();
-    let mut total_violations = 0usize;
+    let mut chapter_meta: Vec<(usize, String, String)> = Vec::new();
+    let mut batch_items: Vec<BatchChapterItem> = Vec::new();
 
     for (i, path) in chapters.iter().enumerate() {
-        if crate::is_cancelled() { return err("Cancelled."); }
-
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue,
         };
 
-        let filename = path.strip_prefix(&folder)
+        let filename = path
+            .strip_prefix(&folder)
             .unwrap_or(path)
-            .to_string_lossy().to_string();
+            .to_string_lossy()
+            .to_string();
         let title = extract_title(&content).unwrap_or_else(|| filename.clone());
 
-        // Use preprocessed text (cached)
         let processed = {
             let conn = database.0.lock().unwrap();
             crate::prompts::get_preprocessed(&conn, &request.folder, &filename, "sdt_check", path)
@@ -96,16 +96,41 @@ async fn check_inner(app: AppHandle, request: ShowDontTellRequest) -> GenreResul
                 })
         };
 
-        emit(&app, &format!("[{}/{}] {} — checking...", i + 1, chapters.len(), filename));
+        chapter_meta.push((i, filename.clone(), title.clone()));
+        batch_items.push(BatchChapterItem {
+            file: filename,
+            title,
+            text: processed,
+        });
+    }
 
-        let violations = match extract_violations(
-            &database, &request.provider, &request.api_key, &request.model,
-            &filename, &processed, &bible,
-        ).await {
-            Ok(v) => v,
-            Err(e) => {
-                emit(&app, &format!("  ⚠ {}: {}", filename, e));
-                continue;
+    let results = batch_prompt::process_chapters_batched(
+        &database,
+        &request.provider,
+        &request.api_key,
+        &request.model,
+        "sdt_check_batch",
+        "sdt_check",
+        &bible,
+        batch_items,
+        CRAFT_BATCH_WORD_BUDGET,
+        &[],
+    )
+    .await;
+
+    let mut all_findings: Vec<serde_json::Value> = Vec::new();
+    let mut total_violations = 0usize;
+
+    for (i, filename, title) in chapter_meta {
+        if crate::is_cancelled() {
+            return err("Cancelled.");
+        }
+
+        let violations = match results.get(&filename) {
+            Some(value) => parse_violations(value),
+            None => {
+                emit(&app, &format!("  ⚠ {}: no response", filename));
+                Vec::new()
             }
         };
 
@@ -154,73 +179,12 @@ async fn check_inner(app: AppHandle, request: ShowDontTellRequest) -> GenreResul
 
 // ── AI extraction ────────────────────────────────────────────────────────────
 
-async fn extract_violations(
-    db: &db::Db,
-    provider: &str, api_key: &str, model: &str,
-    filename: &str, content: &str, bible: &str,
-) -> Result<Vec<AiViolation>, String> {
-    use std::collections::HashMap;
-    use crate::prompts;
-
-    let mut vars = HashMap::new();
-    vars.insert("chapter_title", filename);
-    vars.insert("chapter_text", content);
-    vars.insert("bible", bible);
-
-    let raw = prompts::execute_prompt(db, "sdt_check", provider, api_key, model, vars).await?;
-
-    let clean = raw.trim()
-        .trim_start_matches("```json").trim_start_matches("```")
-        .trim_end_matches("```").trim();
-
-    // If the model dumped reasoning before the JSON, extract just the array
-    let json_str = if clean.starts_with('[') {
-        clean.to_string()
-    } else if let Some(start) = clean.find('[') {
-        // Find the matching closing bracket
-        let bytes = clean.as_bytes();
-        let mut depth = 0i32;
-        let mut in_string = false;
-        let mut escape = false;
-        let mut end = clean.len();
-        for (i, &b) in bytes[start..].iter().enumerate() {
-            if escape { escape = false; continue; }
-            match b {
-                b'\\' if in_string => escape = true,
-                b'"' => in_string = !in_string,
-                b'[' if !in_string => depth += 1,
-                b']' if !in_string => {
-                    depth -= 1;
-                    if depth == 0 { end = start + i + 1; break; }
-                }
-                _ => {}
-            }
-        }
-        clean[start..end].to_string()
-    } else {
-        clean.to_string()
-    };
-
-    // Try full parse first
-    if let Ok(violations) = serde_json::from_str::<Vec<AiViolation>>(&json_str) {
-        return Ok(violations.into_iter()
-            .filter(|v| !v.telling_text.is_empty())
-            .collect());
-    }
-
-    // Fallback: parse individually from Value array
-    let arr = serde_json::from_str::<Vec<serde_json::Value>>(&json_str)
-        .map_err(|e| format!("Parse error: {} | got: {}", e, &json_str[..json_str.len().min(200)]))?;
-
-    let mut good = Vec::new();
-    for item in arr {
-        if let Ok(v) = serde_json::from_value::<AiViolation>(item) {
-            if !v.telling_text.is_empty() {
-                good.push(v);
-            }
-        }
-    }
-    Ok(good)
+fn parse_violations(value: &serde_json::Value) -> Vec<AiViolation> {
+    batch_prompt::chapter_array_field(value, "findings")
+        .into_iter()
+        .filter_map(|item| serde_json::from_value::<AiViolation>(item).ok())
+        .filter(|v| !v.telling_text.is_empty())
+        .collect()
 }
 
 // ── Suggest fix for a show-don't-tell violation ──────────────────────────────

@@ -11,6 +11,7 @@ mod db;
 mod folder_structure;
 mod genre_taxonomy;
 mod models;
+mod batch_prompt;
 mod prompts;
 mod campaigns;
 mod series;

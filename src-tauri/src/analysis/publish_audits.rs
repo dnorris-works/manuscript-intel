@@ -7,6 +7,7 @@ use tauri::AppHandle;
 use super::chapters::{collect_chapters, extract_title};
 use super::craft_audits::build_opening_excerpt;
 use super::{emit, err, extract_json_object, GenreResult};
+use crate::batch_prompt::{self, BatchChapterItem, CRAFT_BATCH_WORD_BUDGET};
 use crate::db;
 use crate::prompts;
 
@@ -23,6 +24,7 @@ async fn per_chapter_json(
     database: &db::Db,
     folder: &str,
     template_id: &str,
+    batch_template_id: &str,
     provider: &str,
     api_key: &str,
     model: &str,
@@ -35,11 +37,11 @@ async fn per_chapter_json(
         return Err("No .md chapter files found.".into());
     }
 
-    let mut rows = Vec::new();
+    let bible_text = if include_bible { bible } else { "" };
+    let mut chapter_meta: Vec<(usize, String, String)> = Vec::new();
+    let mut batch_items: Vec<BatchChapterItem> = Vec::new();
+
     for (i, ch_path) in chapters.iter().enumerate() {
-        if crate::is_cancelled() {
-            return Err("Cancelled.".into());
-        }
         let content = match std::fs::read_to_string(ch_path) {
             Ok(c) if !c.trim().is_empty() => c,
             _ => continue,
@@ -52,19 +54,52 @@ async fn per_chapter_json(
         let title = extract_title(&content).unwrap_or_else(|| filename.clone());
         let chapter_text = truncate_words(&content, 4000);
 
-        emit(app, &format!("  [{}/{}] {}...", i + 1, chapters.len(), filename));
+        chapter_meta.push((i, filename.clone(), title.clone()));
+        batch_items.push(BatchChapterItem {
+            file: filename,
+            title,
+            text: chapter_text,
+        });
+    }
 
-        let mut vars = HashMap::new();
-        vars.insert("chapter_title", title.as_str());
-        vars.insert("chapter_text", chapter_text.as_str());
-        let empty = "";
-        vars.insert("bible", if include_bible { bible } else { empty });
+    emit(
+        app,
+        &format!(
+            "  Analyzing {} chapter(s) in batched AI calls...",
+            batch_items.len()
+        ),
+    );
 
-        let raw = prompts::execute_prompt(database, template_id, provider, api_key, model, vars).await?;
-        let clean = extract_json_object(&raw)
-            .ok_or_else(|| format!("No JSON for {}", filename))?;
-        let mut parsed: serde_json::Value = serde_json::from_str(&clean)
-            .map_err(|e| format!("Parse {}: {}", filename, e))?;
+    let results = batch_prompt::process_chapters_batched(
+        database,
+        provider,
+        api_key,
+        model,
+        batch_template_id,
+        template_id,
+        bible_text,
+        batch_items,
+        CRAFT_BATCH_WORD_BUDGET,
+        &[],
+    )
+    .await;
+
+    let mut rows = Vec::new();
+    for (i, filename, title) in chapter_meta {
+        if crate::is_cancelled() {
+            return Err("Cancelled.".into());
+        }
+
+        let value = results.get(&filename).cloned().ok_or_else(|| {
+            format!("No JSON for {}", filename)
+        })?;
+
+        let mut parsed = if value.is_object() {
+            value
+        } else {
+            return Err(format!("Invalid JSON object for {}", filename));
+        };
+
         if let Some(obj) = parsed.as_object_mut() {
             obj.insert("file".into(), serde_json::json!(filename));
             obj.insert("title".into(), serde_json::json!(title));
@@ -72,6 +107,7 @@ async fn per_chapter_json(
         }
         rows.push(parsed);
     }
+
     Ok(rows)
 }
 
@@ -89,7 +125,7 @@ pub async fn run_ai_beta_reader(
     }
     let bible = prompts::load_bible_for_story(folder, bible_path);
     emit(app, "Running AI beta reader (per chapter)...");
-    match per_chapter_json(app, database, folder, "ai_beta_reader", provider, api_key, model, &bible, true).await {
+    match per_chapter_json(app, database, folder, "ai_beta_reader", "ai_beta_reader_batch", provider, api_key, model, &bible, true).await {
         Ok(chapters) => {
             let avg_eng: f64 = chapters.iter()
                 .filter_map(|c| c.get("engagement").and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64))))
@@ -124,7 +160,7 @@ pub async fn run_cliffhanger_score(
         return err(&msg);
     }
     emit(app, "Scoring chapter endings...");
-    match per_chapter_json(app, database, folder, "cliffhanger_score", provider, api_key, model, "", false).await {
+    match per_chapter_json(app, database, folder, "cliffhanger_score", "cliffhanger_score_batch", provider, api_key, model, "", false).await {
         Ok(chapters) => {
             let avg: f64 = chapters.iter()
                 .filter_map(|c| c.get("score").and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64))))
@@ -204,7 +240,7 @@ pub async fn run_pacing_curve(
         return err(&msg);
     }
     emit(app, "Building pacing curve...");
-    match per_chapter_json(app, database, folder, "pacing_curve", provider, api_key, model, "", false).await {
+    match per_chapter_json(app, database, folder, "pacing_curve", "pacing_curve_batch", provider, api_key, model, "", false).await {
         Ok(chapters) => {
             let report = serde_json::json!({
                 "schema": "pacing_curve_v1",

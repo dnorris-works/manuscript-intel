@@ -23,6 +23,7 @@ use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult};
 use super::chapters::{collect_chapters, extract_title, truncate_words};
+use crate::batch_prompt::{self, BatchChapterItem, DEFAULT_WORD_BUDGET};
 use crate::db;
 
 // ── Requests ─────────────────────────────────────────────────────────────────
@@ -193,68 +194,66 @@ async fn extract_book_facts(
 
     emit(app, &format!("  Extracting continuity facts from {} chapter(s)...", chapter_paths.len()));
 
-    let mut chapters = Vec::with_capacity(chapter_paths.len());
+    let mut chapter_meta: Vec<(usize, String, String)> = Vec::new();
+    let mut batch_items: Vec<BatchChapterItem> = Vec::new();
+
     for (i, path) in chapter_paths.iter().enumerate() {
         let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
         let raw = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(e) => { emit(app, &format!("    ⚠ Could not read {}: {}", fname, e)); continue; }
+            Err(e) => {
+                emit(app, &format!("    ⚠ Could not read {}: {}", fname, e));
+                continue;
+            }
         };
-        if raw.trim().is_empty() { continue; }
+        if raw.trim().is_empty() {
+            continue;
+        }
         let title = extract_title(&raw).unwrap_or_else(|| fname.clone());
+        chapter_meta.push((i, fname.clone(), title.clone()));
+        batch_items.push(BatchChapterItem {
+            file: fname,
+            title,
+            text: truncate_words(&raw, 6000),
+        });
+    }
 
-        let facts = match extract_facts_for_chapter(db, provider, api_key, model, &fname, &truncate_words(&raw, 6000), bible).await {
-            Ok(f) => f,
-            Err(e) => { emit(app, &format!("    ⚠ {}: {}", fname, e)); Vec::new() }
+    let results = batch_prompt::process_chapters_batched(
+        db,
+        provider,
+        api_key,
+        model,
+        "continuity_extract_batch",
+        "continuity_extract",
+        bible,
+        batch_items,
+        DEFAULT_WORD_BUDGET,
+        &[],
+    )
+    .await;
+
+    let mut chapters = Vec::with_capacity(chapter_meta.len());
+    for (i, fname, title) in chapter_meta {
+        let facts = match results.get(&fname) {
+            Some(value) => parse_facts(value),
+            None => Vec::new(),
         };
-
         emit(app, &format!("    [{}/{}] {} — {} fact(s)", i + 1, chapter_paths.len(), fname, facts.len()));
         chapters.push(ChapterFacts { chapter_index: i, file: fname, title, facts });
-
-        if crate::is_cancelled() { break; }
+        if crate::is_cancelled() {
+            break;
+        }
     }
 
     Ok(Book { story_folder: story_folder.to_string(), story_name: story_name.to_string(), chapters })
 }
 
-async fn extract_facts_for_chapter(
-    db: &crate::db::Db,
-    provider: &str,
-    api_key: &str,
-    model: &str,
-    filename: &str,
-    content: &str,
-    bible: &str,
-) -> Result<Vec<AiFact>, String> {
-    use std::collections::HashMap;
-
-    let mut vars = HashMap::new();
-    vars.insert("chapter_title", filename);
-    vars.insert("chapter_text", content);
-    vars.insert("bible", bible);
-
-    let raw = crate::prompts::execute_prompt(db, "continuity_extract", provider, api_key, model, vars).await?;
-
-    let clean = raw.trim()
-        .trim_start_matches("```json").trim_start_matches("```")
-        .trim_end_matches("```").trim();
-
-    serde_json::from_str::<Vec<AiFact>>(clean)
-        .map(|facts| facts.into_iter().filter(|f| !f.entity.is_empty() && !f.attribute.is_empty() && !f.value.is_empty()).collect())
-        .or_else(|_| {
-            // Fallback: parse as array of Value and extract valid items individually
-            let arr = serde_json::from_str::<Vec<serde_json::Value>>(clean)
-                .map_err(|e| format!("Parse error (facts): {} | got: {}", e, &clean[..clean.len().min(200)]))?;
-            let mut good = Vec::new();
-            for item in arr {
-                if let Ok(f) = serde_json::from_value::<AiFact>(item) {
-                    if !f.entity.is_empty() && !f.attribute.is_empty() && !f.value.is_empty() {
-                        good.push(f);
-                    }
-                }
-            }
-            Ok(good)
-        })
+fn parse_facts(value: &serde_json::Value) -> Vec<AiFact> {
+    batch_prompt::chapter_array_field(value, "facts")
+        .into_iter()
+        .filter_map(|item| serde_json::from_value::<AiFact>(item).ok())
+        .filter(|f| !f.entity.is_empty() && !f.attribute.is_empty() && !f.value.is_empty())
+        .collect()
 }
 
 fn flatten_facts(book: &Book) -> Vec<db::ContinuityFactRow> {

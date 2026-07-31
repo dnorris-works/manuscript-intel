@@ -3,7 +3,6 @@
 // Change detection uses source_hash only. Summaries are prose stored in
 // chapter_summaries.signals and fed to book-level genre analysis.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
@@ -11,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::chapter_stats::ChapterFingerprint;
 use super::{emit, err, GenreResult, FolderRequest};
+use crate::batch_prompt::{self, BatchChapterItem, DEFAULT_WORD_BUDGET};
 use crate::db;
 use crate::prompts;
 
@@ -134,6 +134,15 @@ pub(crate) async fn phase1_summaries(
         return (0, 0);
     }
 
+    struct PendingSummary {
+        item:        BatchChapterItem,
+        source_hash: String,
+        word_count:  i64,
+    }
+
+    let bible = prompts::load_bible_for_story(story_folder, "");
+    let mut pending: Vec<PendingSummary> = Vec::new();
+
     for (i, chapter_path) in chapters.iter().enumerate() {
         let fname = chapter_path
             .file_name()
@@ -141,21 +150,15 @@ pub(crate) async fn phase1_summaries(
             .to_string_lossy()
             .to_string();
 
-        emit(
-            app,
-            &format!("  [{}/{}] Summarizing: {}", i + 1, chapters.len(), fname),
-        );
-        emit_summary_progress(app, &fname, "started");
-
         let content = match fs::read_to_string(chapter_path) {
             Ok(c) if !c.trim().is_empty() => c,
             Ok(_) => {
-                emit(app, "    \u{26a0} Empty \u{2014} skipping.");
+                emit(app, &format!("  [{}/{}] SKIP (empty): {}", i + 1, chapters.len(), fname));
                 emit_summary_progress(app, &fname, "skipped");
                 continue;
             }
-            Err(e) => {
-                emit(app, &format!("    \u{26a0} Read error: {}", e));
+            Err(_e) => {
+                emit(app, &format!("  [{}/{}] SKIP (read error): {}", i + 1, chapters.len(), fname));
                 emit_summary_progress(app, &fname, "skipped");
                 continue;
             }
@@ -163,7 +166,7 @@ pub(crate) async fn phase1_summaries(
 
         let cleaned_source = clean_for_ai(&content);
         if cleaned_source.is_empty() {
-            emit(app, "    \u{26a0} Empty after cleanup \u{2014} skipping.");
+            emit(app, &format!("  [{}/{}] SKIP (empty after cleanup): {}", i + 1, chapters.len(), fname));
             emit_summary_progress(app, &fname, "skipped");
             continue;
         }
@@ -174,7 +177,7 @@ pub(crate) async fn phase1_summaries(
             if db::chapter_has_current_summary(&conn, story_folder, &fname, &source_hash) {
                 emit(
                     app,
-                    &format!("  [{}/{}] SKIP: {}", i + 1, chapters.len(), fname),
+                    &format!("  [{}/{}] SKIP (up to date): {}", i + 1, chapters.len(), fname),
                 );
                 emit_summary_progress(app, &fname, "skipped");
                 skipped += 1;
@@ -185,55 +188,86 @@ pub(crate) async fn phase1_summaries(
         let title = extract_title(&content)
             .or_else(|| extract_title(&cleaned_source))
             .unwrap_or_else(|| fname.clone());
-        let word_count = cleaned_source.split_whitespace().count();
+        let word_count = cleaned_source.split_whitespace().count() as i64;
         let chapter_text = truncate_words(&cleaned_source, CHAPTER_SUMMARY_WORD_LIMIT);
 
+        pending.push(PendingSummary {
+            item: BatchChapterItem {
+                file: fname,
+                title,
+                text: chapter_text,
+            },
+            source_hash,
+            word_count,
+        });
+    }
+
+    if !pending.is_empty() {
         emit(
             app,
             &format!(
-                "    {} words (sending {} to {})...",
-                word_count,
-                chapter_text.split_whitespace().count(),
-                summaries_model
+                "  Summarizing {} chapter(s) in batched AI calls...",
+                pending.len()
             ),
         );
 
-        match summarize_chapter(
+        for p in &pending {
+            emit_summary_progress(app, &p.item.file, "started");
+        }
+
+        let batch_items: Vec<BatchChapterItem> = pending.iter().map(|p| p.item.clone()).collect();
+        let results = batch_prompt::process_chapters_batched(
             database,
             config.provider,
             config.api_key,
             &summaries_model,
-            story_folder,
-            &title,
-            &chapter_text,
-            word_count,
+            "chapter_summary_batch",
+            "chapter_summary",
+            &bible,
+            batch_items,
+            DEFAULT_WORD_BUDGET,
+            &[],
         )
-        .await
-        {
-            Ok(signals) => {
-                let conn = database.0.lock().unwrap();
-                if let Err(e) = db::save_chapter_summary(
-                    &conn,
-                    story_folder,
-                    &fname,
-                    &title,
-                    &signals,
-                    &source_hash,
-                    word_count as i64,
-                ) {
-                    emit(app, &format!("    \u{26a0} Save error: {}", e));
-                } else {
-                    emit(app, "    \u{2713} Summary saved");
-                    emit_summary_progress(app, &fname, "done");
-                    done += 1;
-                }
-            }
-            Err(e) => emit(app, &format!("    \u{26a0} AI error: {}", e)),
-        }
+        .await;
 
-        if crate::is_cancelled() {
-            emit(app, "\u{26a0} Cancelled.");
-            break;
+        for p in pending {
+            if crate::is_cancelled() {
+                emit(app, "\u{26a0} Cancelled.");
+                break;
+            }
+
+            let Some(value) = results.get(&p.item.file) else {
+                emit(
+                    app,
+                    &format!("    \u{26a0} {} — no summary returned", p.item.file),
+                );
+                continue;
+            };
+
+            let Some(signals) = batch_prompt::chapter_string_field(value, "summary") else {
+                emit(
+                    app,
+                    &format!("    \u{26a0} {} — empty summary", p.item.file),
+                );
+                continue;
+            };
+
+            let conn = database.0.lock().unwrap();
+            if let Err(e) = db::save_chapter_summary(
+                &conn,
+                story_folder,
+                &p.item.file,
+                &p.item.title,
+                &signals,
+                &p.source_hash,
+                p.word_count,
+            ) {
+                emit(app, &format!("    \u{26a0} Save error: {}", e));
+            } else {
+                emit(app, &format!("    \u{2713} {} — summary saved", p.item.file));
+                emit_summary_progress(app, &p.item.file, "done");
+                done += 1;
+            }
         }
     }
 
@@ -245,33 +279,6 @@ pub(crate) async fn phase1_summaries(
         ),
     );
     (done, skipped)
-}
-
-async fn summarize_chapter(
-    database: &db::Db,
-    provider: &str,
-    api_key: &str,
-    model: &str,
-    story_folder: &str,
-    title: &str,
-    chapter_text: &str,
-    word_count: usize,
-) -> Result<String, String> {
-    let bible = prompts::load_bible_for_story(story_folder, "");
-    let computed = format!("Word count: {word_count}");
-    let title_owned = title.to_string();
-    let chapter_owned = chapter_text.to_string();
-    let mut vars = HashMap::new();
-    vars.insert("chapter_title", title_owned.as_str());
-    vars.insert("computed_signals", computed.as_str());
-    vars.insert("bible", bible.as_str());
-    vars.insert("chapter_text", chapter_owned.as_str());
-    let prose = prompts::execute_prompt(database, "chapter_summary", provider, api_key, model, vars).await?;
-    let trimmed = prose.trim();
-    if trimmed.is_empty() {
-        return Err("Empty summary returned.".to_string());
-    }
-    Ok(trimmed.to_string())
 }
 
 fn emit_summary_progress(app: &AppHandle, filename: &str, status: &str) {

@@ -328,6 +328,62 @@
     "json_mode": 1
   },
   {
+    "id": "chapter_summary_batch",
+    "label": "Chapter Summary Batch",
+    "system_prompt": "You are a literary analyst specializing in book genre classification for publishing.\n\nYou receive MULTIPLE chapters in one request. For EACH chapter, extract ONLY genre signals — not a plot summary.\n\nCover per chapter:\n- Setting, tone, themes, conflict type, romance/faith/supernatural, pacing, voice, tropes\n\nFaith classification rules (critical):\n- Label faith as Christian only with explicit Christian practice, worship, church community, or Christian theology as a story driver.\n- Secular when romance, suspense, or moral themes appear without religious practice.\n- A single word like \"faith\" or a church wedding does NOT make a book Christian fiction.\n- Distinguish secular romantic suspense from Christian romantic suspense.\n\nReturn ONLY a JSON object — no markdown:\n{\n  \"chapters\": {\n    \"<exact FILE key>\": {\n      \"summary\": \"<2-3 dense paragraphs of genre signals>\"\n    }\n  }\n}\n\nRules:\n- Include EVERY FILE key from the input.\n- Use the exact FILE string as each JSON key.\n- Write 2-3 dense paragraphs per summary.",
+    "user_template": "{bible}\n\n---\n\nAnalyze {chapter_count} chapter(s). Use each FILE value as the JSON key.\n\n{chapters_block}",
+    "max_tokens": 600,
+    "json_mode": 1
+  },
+  {
+    "id": "sdt_check_batch",
+    "label": "Show Don't Tell Batch",
+    "system_prompt": "You check fiction for TELLING instead of SHOWING. You receive MULTIPLE chapters.\n\nFor EACH chapter, output violations where the author states emotion/judgment instead of showing through action, dialogue, or sensory detail.\n\nReturn ONLY JSON:\n{\n  \"chapters\": {\n    \"<exact FILE key>\": {\n      \"findings\": [\n        {\"telling_text\":\"<max 15 words>\",\"context\":\"<1-2 sentences>\",\"why\":\"<one sentence>\",\"severity\":\"minor|moderate|major\"}\n      ]\n    }\n  }\n}\n\nRules:\n- Include EVERY FILE key. Use exact FILE as JSON key.\n- Maximum 8 findings per chapter. Return findings: [] if clean.\n- Flag only clear violations.",
+    "user_template": "{bible}\n\n---\n\nCheck {chapter_count} chapter(s) for show-don't-tell violations.\n\n{chapters_block}",
+    "max_tokens": 4000,
+    "json_mode": 1
+  },
+  {
+    "id": "ai_isms_check_batch",
+    "label": "AI-isms Batch",
+    "system_prompt": "You check fiction for AI-isms — machine-generated or template-sounding prose. You receive MULTIPLE chapters.\n\nFor EACH chapter, flag synthetic/generic passages.\n\nReturn ONLY JSON:\n{\n  \"chapters\": {\n    \"<exact FILE key>\": {\n      \"findings\": [\n        {\"telling_text\":\"<max 15 words>\",\"context\":\"<1-2 sentences>\",\"why\":\"<one sentence>\",\"severity\":\"minor|moderate|major\"}\n      ]\n    }\n  }\n}\n\nRules:\n- Include EVERY FILE key. Use exact FILE as JSON key.\n- Maximum 8 findings per chapter. Return findings: [] if clean.",
+    "user_template": "{bible}\n\n---\n\nCheck {chapter_count} chapter(s) for AI-isms.\n\n{chapters_block}",
+    "max_tokens": 4000,
+    "json_mode": 1
+  },
+  {
+    "id": "continuity_extract_batch",
+    "label": "Continuity Extract Batch",
+    "system_prompt": "You are a continuity editor for fiction. You receive MULTIPLE chapters.\n\nFor EACH chapter, extract facts likely to matter for continuity.\n\nReturn ONLY JSON:\n{\n  \"chapters\": {\n    \"<exact FILE key>\": {\n      \"facts\": [\n        {\"entity\":\"<name>\",\"entity_type\":\"character|place|object|timeline|other\",\"attribute\":\"<label>\",\"value\":\"<under 10 words>\",\"snippet\":\"<under 12 words>\"}\n      ]\n    }\n  }\n}\n\nRules:\n- Include EVERY FILE key. Use exact FILE as JSON key.\n- Maximum 15 facts per chapter. One fact per attribute per entity.",
+    "user_template": "{bible}\n\n---\n\nExtract continuity facts from {chapter_count} chapter(s).\n\n{chapters_block}",
+    "max_tokens": 4000,
+    "json_mode": 1
+  },
+  {
+    "id": "ai_beta_reader_batch",
+    "label": "AI Beta Reader Batch",
+    "system_prompt": "You are an experienced beta reader. You receive MULTIPLE chapters.\n\nFor EACH chapter, react as a real reader would.\n\nReturn ONLY JSON:\n{\n  \"chapters\": {\n    \"<exact FILE key>\": {\n      \"reaction\": \"<2-4 sentences>\",\n      \"engagement\": <0-100>,\n      \"put_down_risk\": <0-100>,\n      \"put_down_reasons\": [\"...\"],\n      \"highlights\": [\"...\"],\n      \"friction\": [\"...\"]\n    }\n  }\n}\n\nRules:\n- Include EVERY FILE key. Use exact FILE as JSON key.",
+    "user_template": "{bible}\n\n---\n\nBeta-read {chapter_count} chapter(s).\n\n{chapters_block}",
+    "max_tokens": 1200,
+    "json_mode": 1
+  },
+  {
+    "id": "cliffhanger_score_batch",
+    "label": "Cliffhanger Score Batch",
+    "system_prompt": "You score fiction chapter endings. You receive MULTIPLE chapters.\n\nFor EACH chapter, focus on the ending pull into the next chapter.\n\nReturn ONLY JSON:\n{\n  \"chapters\": {\n    \"<exact FILE key>\": {\n      \"score\": <0-100>,\n      \"ending_type\": \"cliffhanger|hook|soft_landing|resolved|mixed\",\n      \"why\": \"<one sentence>\",\n      \"ending_snippet\": \"<last ~40 words>\"\n    }\n  }\n}\n\nRules:\n- Include EVERY FILE key. Use exact FILE as JSON key.",
+    "user_template": "Score endings for {chapter_count} chapter(s).\n\n{chapters_block}",
+    "max_tokens": 500,
+    "json_mode": 1
+  },
+  {
+    "id": "pacing_curve_batch",
+    "label": "Pacing Curve Batch",
+    "system_prompt": "You rate pacing of fiction chapters. You receive MULTIPLE chapters.\n\nReturn ONLY JSON:\n{\n  \"chapters\": {\n    \"<exact FILE key>\": {\n      \"pace_score\": <0-100>,\n      \"drag_risk\": <0-100>,\n      \"label\": \"racing|brisk|steady|slow|dragging\",\n      \"why\": \"<one sentence>\",\n      \"drag_spots\": [\"...\"]\n    }\n  }\n}\n\nRules:\n- Include EVERY FILE key. Use exact FILE as JSON key.",
+    "user_template": "Rate pacing for {chapter_count} chapter(s).\n\n{chapters_block}",
+    "max_tokens": 600,
+    "json_mode": 1
+  },
+  {
     "id": "blurb_builder",
     "label": "Blurb Builder",
     "system_prompt": "You are an expert book-marketing copywriter for fiction (Amazon/KDP back-cover descriptions, retailer short blurbs, BookBub).\n\nUsing the chapter genre-signal summaries and optional genre-analysis context, write sales copy that matches what the manuscript actually delivers — no invented plot, no spoilers of major twists/ending, no over-promising tone or stakes the story does not support.\n\nReturn ONLY JSON with this EXACT structure:\n{\n  \"variants\": [\n    {\n      \"angle\": \"voice-forward|stakes-forward|trope-forward|<short angle tag>\",\n      \"blurb\": \"<150-200 word back-cover / Amazon description>\",\n      \"critique\": {\n        \"hook_strength\": \"<1-2 sentences>\",\n        \"promise_vs_manuscript\": \"<over-promises / under-delivers / well-matched — with brief why>\",\n        \"spoiler_risk\": \"low|medium|high — brief why\",\n        \"estimated_read_time\": \"<e.g. 45 seconds>\"\n      }\n    }\n  ],\n  \"short_form\": \"<~40 words for retailers with tight description limits>\",\n  \"bookbub_one_liner\": \"<~15 words, BookBub-style punchy one-liner>\"\n}\n\nRules:\n- Produce exactly 3 distinct variants in \"variants\", each with a different angle tag.\n- Each blurb ~150-200 words; short_form ~40 words; bookbub_one_liner ~15 words.\n- Angles should lean differently (e.g. voice, stakes, trope/comp) — not three paraphrases of the same paragraph.\n- Critique promise_vs_manuscript against the provided summaries/genre context, not against invented plot.\n- No markdown, no preamble — JSON only.",
