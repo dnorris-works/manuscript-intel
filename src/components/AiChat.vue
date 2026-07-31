@@ -5,6 +5,7 @@ import { NText, NSelect, NButton, NSpace, NInput, NAlert } from 'naive-ui';
 import { useSettings } from '../composables/useSettings';
 import { useAiSpend } from '../composables/useAiSpend';
 import { formatMarkdown } from '../formatMarkdown';
+import { findPricedModel, hasModelPricing } from '../reportCostPricing';
 
 const props = defineProps<{
   chapterText: string;
@@ -23,8 +24,16 @@ const settings = useSettings();
 const { refreshAiSpend } = useAiSpend();
 
 const modelOptions = computed(() =>
-  settings.models.value.map(m => ({ label: m.id, value: m.id })),
+  settings.models.value
+    .filter(hasModelPricing)
+    .map(m => ({ label: m.id, value: m.id })),
 );
+
+function resolveChatModel(): string {
+  const prose = settings.modelFor('prose');
+  if (prose) return prose;
+  return modelOptions.value[0]?.value ?? '';
+}
 
 interface Message {
   role: 'user' | 'assistant';
@@ -36,7 +45,13 @@ const input = ref('');
 const loading = ref(false);
 const error = ref('');
 const chatPane = ref<HTMLElement | null>(null);
-const chatModel = ref(settings.modelFor('prose'));
+const chatModel = ref(resolveChatModel());
+
+watch(() => settings.models.value, () => {
+  if (!findPricedModel(chatModel.value, settings.models.value)) {
+    chatModel.value = resolveChatModel();
+  }
+}, { deep: true });
 
 async function onSend(): Promise<void> {
   const text = input.value.trim();

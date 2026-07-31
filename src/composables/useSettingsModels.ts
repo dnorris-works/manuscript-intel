@@ -1,6 +1,7 @@
 import { ref, computed, type Ref } from 'vue';
 import type { ModelInfo } from '../types';
 import type { ReportTypeDef } from '../types';
+import { hasModelPricing } from '../reportCostPricing';
 
 export type ModelSort = 'price' | 'provider';
 export type Tier = 'basic' | 'capable' | 'strong';
@@ -74,16 +75,21 @@ export function useSettingsModels(
     });
   });
 
-  const filteredModels = computed(() => {
-    return sortedModels.value.filter((m) => {
-      const hasBothPrices = m.input_price != null && m.output_price != null;
-      const isFree = isModelFreeLike(m);
+  const unpricedModelCount = computed(() =>
+    sortedModels.value.filter(m => !hasModelPricing(m)).length,
+  );
 
+  /** Only models with published input/output pricing can be assigned. */
+  const selectableModels = computed(() => {
+    return sortedModels.value.filter(hasModelPricing).filter((m) => {
+      const isFree = isModelFreeLike(m);
       if (freeOnly.value) return isFree;
-      if (pricedOnly.value) return hasBothPrices;
+      if (pricedOnly.value) return !isFree;
       return true;
     });
   });
+
+  const filteredModels = selectableModels;
 
   function minTierFor(fnKey: string): Tier {
     if (fnKey === 'prose') return 'strong';
@@ -129,6 +135,8 @@ export function useSettingsModels(
     freeOnly,
     modelFetchStatus,
     sortedModels,
+    selectableModels,
+    unpricedModelCount,
     filteredModels,
     modelSelectOptions,
     fnSelectOptions,

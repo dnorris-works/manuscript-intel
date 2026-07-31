@@ -19,6 +19,8 @@ const {
   freeOnly,
   modelFetchStatus,
   sortedModels,
+  selectableModels,
+  unpricedModelCount,
   filteredModels,
   modelSelectOptions,
   fnSelectOptions,
@@ -28,7 +30,10 @@ const apiKeyMissing = computed(() => !settingsCtx.apiKey.value.trim());
 
 const defaultModelOptions = computed(() => {
   if (settingsCtx.models.value.length === 0) {
-    return [{ label: 'No models loaded', value: '', disabled: true }];
+    return [{ label: 'Fetch models to see priced options', value: '', disabled: true }];
+  }
+  if (selectableModels.value.length === 0) {
+    return [{ label: 'No models with published pricing', value: '', disabled: true }];
   }
   if (filteredModels.value.length === 0) {
     return [{ label: 'No models match current filters', value: '', disabled: true }];
@@ -85,18 +90,22 @@ const ASSIGNMENTS: { key: keyof ModelAssignments; label: string; hint: string }[
         />
       </n-form-item>
 
-      <n-form-item label="Default Model" feedback="Fetch models first, then assign each function below.">
+      <n-form-item label="Default Model" feedback="Only models with published TokenMix pricing can be selected.">
         <n-space vertical>
           <n-space>
             <n-select
               v-model:value="settingsCtx.activeModelAssignments.value.default"
               :options="defaultModelOptions"
               filterable
+              placeholder="Select a priced model"
               style="min-width: 320px;"
             />
             <n-button @click="onFetchModels">Fetch Models</n-button>
           </n-space>
           <n-text v-if="modelFetchStatus" depth="3">{{ modelFetchStatus }}</n-text>
+          <n-text v-if="unpricedModelCount > 0" depth="3" style="font-size: 12px;">
+            {{ unpricedModelCount }} model{{ unpricedModelCount === 1 ? '' : 's' }} hidden — no published pricing.
+          </n-text>
         </n-space>
       </n-form-item>
     </n-form>
@@ -114,14 +123,14 @@ const ASSIGNMENTS: { key: keyof ModelAssignments; label: string; hint: string }[
             @click="modelSort = 'provider'"
           >Provider</n-button>
         </n-button-group>
-        <n-checkbox v-model:checked="pricedOnly" :disabled="freeOnly">Priced only</n-checkbox>
+        <n-checkbox v-model:checked="pricedOnly" :disabled="freeOnly">Paid only</n-checkbox>
         <n-checkbox v-model:checked="freeOnly">Free only</n-checkbox>
-        <n-text depth="3">{{ filteredModels.length }} shown</n-text>
+        <n-text depth="3">{{ selectableModels.length }} selectable</n-text>
       </n-space>
 
       <n-card title="Model per function" size="small">
-        <n-alert v-if="filteredModels.length === 0" type="warning" :bordered="false">
-          No models match the current filters.
+        <n-alert v-if="selectableModels.length === 0" type="warning" :bordered="false">
+          No priced models match the current filters. Fetch models or adjust filters.
         </n-alert>
 
         <n-alert type="default" :bordered="false">

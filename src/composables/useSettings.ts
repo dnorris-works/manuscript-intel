@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { ModelInfo, ModelsResult } from '../types';
 import { applyThemeTokens, type ThemeMode } from '../theme/tokens';
 import { refreshAiSpend } from './useAiSpend';
+import { findPricedModel } from '../reportCostPricing';
 
 export type { ThemeMode };
 
@@ -134,7 +135,34 @@ const provider = computed(() => 'tokenmix');
 
 function modelFor(fn: keyof ModelAssignments): string {
   const assignments = modelAssignments.value;
-  return assignments[fn] || assignments.default;
+  const chosen = assignments[fn] || assignments.default;
+  return findPricedModel(chosen, models.value)?.id ?? '';
+}
+
+function sanitizeModelAssignments(): void {
+  const list = models.value;
+  if (list.length === 0) return;
+
+  const next = { ...modelAssignments.value };
+  let changed = false;
+
+  const keepIfPriced = (id: string): string => {
+    if (!id) return '';
+    if (!findPricedModel(id, list)) {
+      changed = true;
+      return '';
+    }
+    return id;
+  };
+
+  (Object.keys(next) as (keyof ModelAssignments)[]).forEach((key) => {
+    const cleaned = keepIfPriced(next[key]);
+    if (cleaned !== next[key]) next[key] = cleaned;
+  });
+
+  if (changed) {
+    modelAssignments.value = next;
+  }
 }
 
 const model = computed(() => modelAssignments.value.default);
@@ -148,10 +176,22 @@ function checkAiSetup(): SetupIssue[] {
       message: 'TokenMix API key required. Add it in Settings → AI Models.',
     });
   }
-  if (!model.value.trim()) {
+  if (models.value.length === 0) {
+    issues.push({
+      id: 'models-not-loaded',
+      message: 'Fetch models in Settings → AI Models before running reports.',
+    });
+    return issues;
+  }
+  if (!modelAssignments.value.default.trim()) {
     issues.push({
       id: 'default-model',
-      message: 'Select a default model in Settings → AI Models (fetch models first).',
+      message: 'Select a default model with published pricing in Settings → AI Models.',
+    });
+  } else if (!findPricedModel(modelAssignments.value.default, models.value)) {
+    issues.push({
+      id: 'default-model-pricing',
+      message: 'The selected default model has no published pricing. Fetch models and choose a priced model.',
     });
   }
   return issues;
@@ -187,6 +227,7 @@ async function fetchModels(): Promise<{ success: boolean; error: string }> {
     });
     if (result.success && result.models.length > 0) {
       models.value = result.models;
+      sanitizeModelAssignments();
       await refreshAiSpend();
       return { success: true, error: '' };
     }
@@ -312,8 +353,14 @@ watch(folderStructure, () => {
 watch(apiKey, () => {
   if (!settingsHydrated) return;
   models.value = [];
+  modelAssignments.value = defaultModelAssignments();
   void autoLoadModelsIfConfigured();
 });
+
+watch(models, () => {
+  if (!settingsHydrated) return;
+  sanitizeModelAssignments();
+}, { deep: true });
 
 async function testCanopy(): Promise<{ success: boolean; error: string }> {
   const key = canopyApiKey.value.trim();

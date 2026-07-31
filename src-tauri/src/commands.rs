@@ -566,6 +566,14 @@ pub struct ReportModelPrice {
     pub output_price: f64,  // per 1K tokens
 }
 
+fn resolve_report_model_prices(rp: &ReportModelPrice) -> Option<(f64, f64)> {
+    if rp.input_price >= 0.0 && rp.output_price >= 0.0 {
+        Some((rp.input_price, rp.output_price))
+    } else {
+        None
+    }
+}
+
 #[derive(Serialize)]
 pub struct CostEstimateResult {
     pub success: bool,
@@ -587,6 +595,10 @@ pub struct ReportCostEstimate {
 #[derive(Deserialize)]
 pub struct SummaryRefreshEstimateRequest {
     pub folder: String,
+    #[serde(default)]
+    pub input_price: Option<f64>,
+    #[serde(default)]
+    pub output_price: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -656,6 +668,10 @@ pub async fn estimate_report_costs(
             continue;
         }
 
+        let Some((input_price, output_price)) = resolve_report_model_prices(rp) else {
+            continue;
+        };
+
         let (calls, total_input_tokens, total_output_tokens) = if params.per_chapter {
             // Per-chapter reports: sum input tokens across all chapters
             let input_tokens: usize = word_counts.iter().map(|&wc| {
@@ -673,8 +689,8 @@ pub async fn estimate_report_costs(
         };
 
         // Cost = (input_tokens / 1000 * input_price) + (output_tokens / 1000 * output_price)
-        let cost = (total_input_tokens as f64 / 1000.0 * rp.input_price)
-                 + (total_output_tokens as f64 / 1000.0 * rp.output_price);
+        let cost = (total_input_tokens as f64 / 1000.0 * input_price)
+                 + (total_output_tokens as f64 / 1000.0 * output_price);
 
         estimates.push(ReportCostEstimate {
             report_id: rp.report_id.clone(),
@@ -750,13 +766,27 @@ pub async fn estimate_summary_refresh_cost(
         }
     }
 
+    let estimated_cost = match resolve_report_model_prices(&ReportModelPrice {
+        report_id: "chapter_summaries".to_string(),
+        input_price: request.input_price.unwrap_or(0.0),
+        output_price: request.output_price.unwrap_or(0.0),
+    }) {
+        Some((input_price, output_price)) if input_tokens > 0 || output_tokens > 0 => {
+            let cost = (input_tokens as f64 / 1000.0 * input_price)
+                + (output_tokens as f64 / 1000.0 * output_price);
+            Some((cost * 1000.0).round() / 1000.0)
+        }
+        Some(_) => Some(0.0),
+        None => None,
+    };
+
     Ok(SummaryRefreshEstimateResult {
         success: true,
         files: files_to_refresh.clone(),
         chapter_count: files_to_refresh.len(),
         input_tokens,
         output_tokens,
-        estimated_cost: None,
+        estimated_cost,
         error: String::new(),
     })
 }

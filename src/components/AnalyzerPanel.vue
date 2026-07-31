@@ -13,6 +13,7 @@ import LogStream from './LogStream.vue';
 import { useReportTypes } from '../composables/useReportTypes';
 import { CRAFT_REPORT_GROUPS, SERIES_REPORT_IDS } from '../craftReportGroups';
 import { buildRunQueue, collectPrerequisites } from '../reportDependencies';
+import { isAiConfigured, resolveModelPrices } from '../reportCostPricing';
 import type { ReportTypeDef, Series } from '../types';
 
 type VisibleReport = ReportTypeDef & {
@@ -364,66 +365,10 @@ watch(activeStorySeries, (series) => {
 // ── Cost estimation ───────────────────────────────────────────────────────────
 
 const costEstimates = ref<Record<string, number>>({});
+const costEstimatesLoaded = ref(false);
 
-const STATIC_SEEDED_MODEL_PRICES: Record<string, { input_price: number; output_price: number }> = {
-  'claude-opus-4-20250514': { input_price: 15, output_price: 75 },
-  'claude-sonnet-4-20250514': { input_price: 3, output_price: 15 },
-  'claude-haiku-4-5-20251001': { input_price: 1, output_price: 5 },
-  'claude-3-5-sonnet-20241022': { input_price: 3, output_price: 15 },
-  'claude-3-5-haiku-20241022': { input_price: 0.8, output_price: 4 },
-};
-
-const RECOMMENDED_MODEL_BY_REPORT: Record<string, string> = {
-  chapter_summaries: 'claude-haiku-4.5',
-  analysis: 'claude-sonnet-4',
-  keyword_search: 'claude-haiku-4.5',
-  google_keyword_search: 'claude-haiku-4.5',
-  content_maturity_advisory: 'claude-sonnet-4',
-  wide_metadata_paste: 'claude-haiku-4.5',
-  wide_analysis: 'claude-sonnet-4',
-  blurb_builder: 'claude-sonnet-4',
-  print_production: 'claude-haiku-4.5',
-  competition_report: 'claude-sonnet-4',
-  review_mining: 'claude-sonnet-4',
-  author_analysis: 'claude-sonnet-4',
-  continuity_check: 'claude-sonnet-4',
-  show_dont_tell: 'claude-sonnet-4',
-  ai_isms: 'claude-sonnet-4',
-  chekhovs_gun: 'claude-sonnet-4',
-  red_herring_vs_abandoned: 'claude-sonnet-4',
-  foreshadowing_twist_fairness: 'claude-sonnet-4',
-  macguffin_clarity: 'claude-sonnet-4',
-  want_vs_need: 'claude-sonnet-4',
-  thematic_throughline: 'claude-sonnet-4',
-  mirror_foil_character: 'claude-sonnet-4',
-  pov_discipline: 'claude-sonnet-4',
-  story_beat_placement: 'claude-sonnet-4',
-  scene_sequel_balance: 'claude-sonnet-4',
-  timeline_flashback: 'claude-sonnet-4',
-  dramatic_irony: 'claude-sonnet-4',
-  stakes_escalation: 'claude-sonnet-4',
-  cross_book_setup_payoff: 'claude-sonnet-4',
-  series_pacing_comparator: 'claude-sonnet-4',
-  recurring_motif_theme_series: 'claude-sonnet-4',
-  ai_beta_reader: 'claude-sonnet-4',
-  cliffhanger_score: 'claude-haiku-4.5',
-  hook_strength: 'claude-haiku-4.5',
-  pacing_curve: 'claude-haiku-4.5',
-  blurb_builder: 'claude-sonnet-4',
-};
-
-function normalizeModelId(id: string): string {
-  return id.toLowerCase().replace(/\s+/g, '-');
-}
-
-function fallbackModelPrice(modelId: string): { input_price: number; output_price: number } | null {
-  const normalized = normalizeModelId(modelId);
-  if (STATIC_SEEDED_MODEL_PRICES[normalized]) return STATIC_SEEDED_MODEL_PRICES[normalized];
-  return null;
-}
-
-function estimateReportModel(reportId: string): string {
-  return RECOMMENDED_MODEL_BY_REPORT[reportId] || 'claude-sonnet-4';
+function isAiReport(reportId: string): boolean {
+  return reportTypes.value.find(r => r.id === reportId)?.uses_ai ?? false;
 }
 
 function hasSummaryDependency(reportId: string, visited = new Set<string>()): boolean {
@@ -441,25 +386,56 @@ function selectionNeedsSummaries(): boolean {
     || reportsToRun.value.some(id => hasSummaryDependency(id));
 }
 
+const aiConfigured = computed(() =>
+  isAiConfigured(settings.apiKey.value, settings.model.value),
+);
+
+const reportsMissingPricing = computed(() =>
+  reportsToRun.value.filter(id =>
+    isAiReport(id) && costEstimatesLoaded.value && costEstimates.value[id] == null,
+  ),
+);
+
 const totalEstimatedCost = computed(() => {
   let total = 0;
   for (const id of reportsToRun.value) {
-    total += costEstimates.value[id] || 0;
+    const est = costEstimates.value[id];
+    if (est != null) total += est;
   }
   return total;
 });
 
 function formatCost(cost: number): string {
-  if (cost === 0) return 'Free';
+  if (cost === 0) return '$0.00';
   if (cost < 0.01) return '<$0.01';
   return `~$${cost.toFixed(2)}`;
 }
 
+function formatTotalCost(): string {
+  if (!aiConfigured.value) return '';
+  if (!costEstimatesLoaded.value) return '…';
+  const missing = reportsMissingPricing.value.length;
+  if (reportsToRun.value.length === 0) return '';
+  if (missing === reportsToRun.value.filter(isAiReport).length) {
+    return 'pricing unavailable';
+  }
+  const base = formatCost(totalEstimatedCost.value);
+  if (missing > 0) return `${base} (${missing} unpriced)`;
+  return base;
+}
+
 function reportRunCost(reportId: string, usesAi = true): string {
   if (!usesAi) return 'Free';
+  if (!aiConfigured.value) return '—';
+  if (!costEstimatesLoaded.value) return '…';
   const estimate = costEstimates.value[reportId];
-  if (estimate == null) return 'N/A';
+  if (estimate == null) return 'pricing unavailable';
   return formatCost(estimate);
+}
+
+function pricingForReport(reportId: string): ReturnType<typeof resolveModelPrices> {
+  const modelId = settings.modelFor(reportToModelFn(reportId));
+  return resolveModelPrices(modelId, settings.models.value);
 }
 
 function depStatusLabel(freshness: 'fresh' | 'stale' | 'missing'): string {
@@ -479,6 +455,8 @@ async function maybeRefreshSummariesBeforeRun(folder: string): Promise<boolean> 
     return true;
   }
 
+  const summaryPricing = pricingForReport('chapter_summaries');
+
   let msg = 'Some chapters need AI summarization before these reports can run.\n\n';
   try {
     const estimate = await invoke<{
@@ -486,15 +464,25 @@ async function maybeRefreshSummariesBeforeRun(folder: string): Promise<boolean> 
       chapter_count: number;
       input_tokens: number;
       output_tokens: number;
+      estimated_cost: number | null;
       error: string;
     }>('estimate_summary_refresh_cost', {
-      request: { folder },
+      request: {
+        folder,
+        input_price: summaryPricing.available ? summaryPricing.input_price : undefined,
+        output_price: summaryPricing.available ? summaryPricing.output_price : undefined,
+      },
     });
     const count = estimate.success ? estimate.chapter_count : 0;
     if (count > 0) {
       msg += `Chapters to summarize: ${count}\n`;
       if (estimate.input_tokens > 0) {
         msg += `Estimated tokens: ~${estimate.input_tokens.toLocaleString()} in / ~${estimate.output_tokens.toLocaleString()} out\n`;
+      }
+      if (estimate.estimated_cost != null && summaryPricing.available) {
+        msg += `Estimated cost: ${formatCost(estimate.estimated_cost)}\n`;
+      } else if (summaryPricing.available === false) {
+        msg += 'Estimated cost: pricing unavailable — fetch models in Settings → AI Models\n';
       }
     } else {
       msg += `${summaryStatus.value.text}\n`;
@@ -529,8 +517,9 @@ async function maybeRefreshSummariesBeforeRun(folder: string): Promise<boolean> 
 
 async function fetchCostEstimates(): Promise<void> {
   const folder = storiesCtx.activeFolder.value;
-  if (!folder || visibleReports.value.length === 0) {
+  if (!folder || visibleReports.value.length === 0 || !aiConfigured.value) {
     costEstimates.value = {};
+    costEstimatesLoaded.value = false;
     return;
   }
 
@@ -542,23 +531,27 @@ async function fetchCostEstimates(): Promise<void> {
     }
   }
 
-  const modelPrices = [...costReportIds].map(reportId => {
+  const modelPrices = [...costReportIds].flatMap(reportId => {
     const def = reportTypes.value.find(r => r.id === reportId);
-    const fnKey = reportToModelFn(reportId);
-    const modelId = settings.modelFor(fnKey);
-    const modelInfo = settings.models.value.find(m => m.id === modelId);
-    const fallback = fallbackModelPrice(modelId) || fallbackModelPrice(estimateReportModel(reportId));
-    return {
+    const usesAi = def?.uses_ai ?? true;
+    if (!usesAi) return [];
+
+    const modelId = settings.modelFor(reportToModelFn(reportId));
+    const pricing = resolveModelPrices(modelId, settings.models.value);
+    if (!pricing.available) return [];
+
+    return [{
       report_id: reportId,
-      input_price: modelInfo?.input_price ?? fallback?.input_price ?? 0,
-      output_price: modelInfo?.output_price ?? fallback?.output_price ?? 0,
-      uses_ai: def?.uses_ai ?? true,
-    };
-  }).filter(r => r.uses_ai).map(({ report_id, input_price, output_price }) => ({
-    report_id,
-    input_price,
-    output_price,
-  }));
+      input_price: pricing.input_price,
+      output_price: pricing.output_price,
+    }];
+  });
+
+  if (modelPrices.length === 0) {
+    costEstimates.value = {};
+    costEstimatesLoaded.value = true;
+    return;
+  }
 
   try {
     const result = await invoke<{ success: boolean; estimates: { report_id: string; estimated_cost: number }[] }>('estimate_report_costs', {
@@ -570,9 +563,15 @@ async function fetchCostEstimates(): Promise<void> {
         obj[est.report_id] = est.estimated_cost;
       }
       costEstimates.value = obj;
+      costEstimatesLoaded.value = true;
+    } else {
+      costEstimates.value = {};
+      costEstimatesLoaded.value = false;
     }
   } catch (e) {
     console.error('estimate_report_costs:', e);
+    costEstimates.value = {};
+    costEstimatesLoaded.value = false;
   }
 }
 
@@ -593,9 +592,11 @@ function reportToModelFn(reportId: string): 'default' | 'summaries' | 'genre' | 
   }
 }
 
-// Refresh estimates when folder changes, models are loaded, or report types load
+// Refresh estimates when folder, models, assignments, or report types change
 watch(() => storiesCtx.activeFolder.value, () => fetchCostEstimates());
 watch(() => settings.models.value, () => fetchCostEstimates());
+watch(() => settings.modelAssignments.value, () => fetchCostEstimates());
+watch(() => settings.apiKey.value, () => fetchCostEstimates());
 watch(() => reportTypes.value, () => fetchCostEstimates());
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -691,8 +692,8 @@ function onStop(): void {
       <n-button type="primary" :disabled="getReportsDisabled" @click="onGetReports">
         Get Reports
       </n-button>
-      <n-text v-if="reportsToRun.length > 0" depth="3">
-        {{ formatCost(totalEstimatedCost) }}
+      <n-text v-if="reportsToRun.length > 0 && aiConfigured" depth="3">
+        {{ formatTotalCost() }}
       </n-text>
       <n-button
         v-if="platformCtx.isKdp.value"
