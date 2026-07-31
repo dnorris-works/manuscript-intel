@@ -382,6 +382,17 @@ CREATE TABLE IF NOT EXISTS preprocessed_chapters (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_preproc_unique ON preprocessed_chapters(story_folder, chapter_file, report_type);
 
+-- Cached per-chapter AI results keyed by source hash (skip unchanged chapters).
+CREATE TABLE IF NOT EXISTS chapter_ai_cache (
+    story_folder TEXT NOT NULL,
+    chapter_file TEXT NOT NULL,
+    report_type  TEXT NOT NULL,
+    source_hash  TEXT NOT NULL,
+    result_json  TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (story_folder, chapter_file, report_type)
+);
+
 -- Configurable story folder layout (scaffolded on Create empty story).
 -- role: '' | 'manuscript' | 'bible' | 'characters'
 CREATE TABLE IF NOT EXISTS folder_structure (
@@ -1675,6 +1686,42 @@ pub fn save_chapter_summary(
             word_count = excluded.word_count,
             updated_at = excluded.updated_at",
         params![story_folder, file, title, signals, source_hash, word_count, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn load_chapter_ai_cache(
+    conn: &Connection,
+    story_folder: &str,
+    chapter_file: &str,
+    report_type: &str,
+    source_hash: &str,
+) -> Option<String> {
+    conn.query_row(
+        "SELECT result_json FROM chapter_ai_cache
+         WHERE story_folder = ?1 AND chapter_file = ?2 AND report_type = ?3 AND source_hash = ?4",
+        params![story_folder, chapter_file, report_type, source_hash],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+pub fn save_chapter_ai_cache(
+    conn: &Connection,
+    story_folder: &str,
+    chapter_file: &str,
+    report_type: &str,
+    source_hash: &str,
+    result_json: &str,
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO chapter_ai_cache (story_folder, chapter_file, report_type, source_hash, result_json, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(story_folder, chapter_file, report_type)
+         DO UPDATE SET source_hash = excluded.source_hash, result_json = excluded.result_json, updated_at = excluded.updated_at",
+        params![story_folder, chapter_file, report_type, source_hash, result_json, now],
     )
     .map_err(|e| e.to_string())?;
     Ok(())

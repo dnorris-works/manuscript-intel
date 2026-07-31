@@ -34,10 +34,10 @@
   {
     "id": "sdt_suggest",
     "label": "Show Don't Tell: Suggest Fix",
-    "system_prompt": "You are a fiction editor helping an author rewrite a \"telling\" passage to \"show\" instead. You will be given:\n- The passage that tells instead of shows\n- Surrounding context\n- Why it's considered telling\n\nProvide 2-3 alternative rewrites that SHOW instead of TELL. For each:\n1. Give the revised prose (ready to paste — match the author's voice and tense)\n2. One sentence explaining the technique used (body language, sensory detail, action, dialogue, etc.)\n\nKeep rewrites concise — replace only the telling passage, not the surrounding context. Maintain the author's style and point of view.\"#,\n            \"Chapter: {chapter_title}\\n\\nTelling passage: \\\"{telling_text}\\\"\\n\\nContext: \\\"{context}\\\"\\n\\nWhy it's telling: {why}\\n\\n{bible}\",\n            1500, 0\n        ),\n        (\n            \"ai_isms_check\",\n            \"AI-isms: Check\",\n            r#\"You check fiction for AI-isms — prose habits that often sound machine-generated or template-written. Output ONLY a JSON array.\n\nFlag passages that feel synthetic, generic, or LLM-flavored, including:\n- Stock AI vocabulary: delve, tapestry, testament to, landscape of, in the realm of, pivotal, underscore, foster, embark, nestled, amidst\n- Throat-clearing / essay filler: \"It's important to note\", \"In a world where\", \"Little did they know\"\n- Overused antithesis templates: \"Not X, but Y\" / \"It wasn't just X — it was Y\"\n- Perfectly polished parallel lists or rule-of-three padding that adds no meaning\n- Vague atmospheric abstraction instead of concrete sensory detail\n- Sudden thesaurus inflation or oddly formal diction that breaks voice\n- Em-dash heavy explanatory asides that lecture the reader\n\nDo NOT flag:\n- Deliberate stylistic voice that fits the character/narrator\n- Genre-appropriate elevated or lyrical prose\n- A single unusual word used once with intent\n- Normal literary metaphor or sensory writing\n\nFor each flag return exactly:\n{\"telling_text\":\"<exact quote, max 15 words>\",\"context\":\"<1-2 surrounding sentences>\",\"why\":\"<one sentence naming the AI-ism>\",\"severity\":\"minor|moderate|major\"}\n\nRules:\n- severity \"major\" = loudly synthetic; breaks immersion\n- severity \"moderate\" = noticeably template-like\n- severity \"minor\" = mild habit that could be tighter\n- Maximum 8 per chapter. Prefer clear hits over nitpicks.\n- Return [] if the chapter is clean.\n- Do NOT include reasoning, preamble, or markdown. ONLY the JSON array.",
-    "user_template": "Chapter: {chapter_title}\\n\\n{bible}\\n\\n---\\n\\n{chapter_text}",
-    "max_tokens": 4000,
-    "json_mode": 1
+    "system_prompt": "You are a fiction editor helping an author rewrite a \"telling\" passage to \"show\" instead. You will be given:\n- The passage that tells instead of shows\n- Surrounding context\n- Why it's considered telling\n\nProvide 2-3 alternative rewrites that SHOW instead of TELL. For each:\n1. Give the revised prose (ready to paste — match the author's voice and tense)\n2. One sentence explaining the technique used (body language, sensory detail, action, dialogue, etc.)\n\nKeep rewrites concise — replace only the telling passage, not the surrounding context. Maintain the author's style and point of view.",
+    "user_template": "Chapter: {chapter_title}\n\nTelling passage: \"{telling_text}\"\n\nContext: \"{context}\"\n\nWhy it's telling: {why}\n\n{bible}",
+    "max_tokens": 1500,
+    "json_mode": 0
   },
   {
     "id": "ai_isms_check",
@@ -50,9 +50,9 @@
   {
     "id": "ai_isms_suggest",
     "label": "AI-isms: Suggest Fix",
-    "system_prompt": "You are a fiction editor helping an author remove AI-sounding prose. You will be given:\n- The passage that reads as an AI-ism\n- Surrounding context\n- Why it was flagged\n\nProvide 2-3 alternative rewrites that sound human and specific. For each:\n1. Give the revised prose (ready to paste — match the author's voice and tense)\n2. One sentence explaining what you changed (concreteness, voice, cut filler, etc.)\n\nKeep rewrites concise — replace only the flagged passage, not the surrounding context. Maintain POV and style.\"#,\n            \"Chapter: {chapter_title}\\n\\nFlagged passage: \\\"{telling_text}\\\"\\n\\nContext: \\\"{context}\\\"\\n\\nWhy it was flagged: {why}\\n\\n{bible}\",\n            1500, 0\n        ),\n        (\n            \"chapter_summary\",\n            \"Chapter Summary: Genre Signal Extraction\",\n            r#\"You are a book genre analyst. Read the chapter excerpt and extract genre-relevant signals: themes, tropes, character archetypes, setting type, tone, pacing indicators, and any explicit or implicit genre markers.\n\nReturn a SHORT paragraph (3-5 sentences max) summarizing the genre signals. Do not summarize the plot. Focus only on what tells us about the genre and subgenre. Be specific (name tropes, compare to known genres).",
-    "user_template": "Chapter: {chapter_title}\\n\\n{bible}\\n\\n---\\n\\n{chapter_text}",
-    "max_tokens": 500,
+    "system_prompt": "You are a fiction editor helping an author remove AI-sounding prose. You will be given:\n- The passage that reads as an AI-ism\n- Surrounding context\n- Why it was flagged\n\nProvide 2-3 alternative rewrites that sound human and specific. For each:\n1. Give the revised prose (ready to paste — match the author's voice and tense)\n2. One sentence explaining what you changed (concreteness, voice, cut filler, etc.)\n\nKeep rewrites concise — replace only the flagged passage, not the surrounding context. Maintain POV and style.",
+    "user_template": "Chapter: {chapter_title}\n\nFlagged passage: \"{telling_text}\"\n\nContext: \"{context}\"\n\nWhy it was flagged: {why}\n\n{bible}",
+    "max_tokens": 1500,
     "json_mode": 0
   },
   {
@@ -100,7 +100,15 @@
     "label": "Genre Ranking: Score Against Catalog",
     "system_prompt": "You are a publishing genre classification expert. Score this book INDEPENDENTLY against EACH genre in the list below. Do not normalize or force scores to sum to 100 — a genuinely cross-genre book can score high (even 80%+) on more than one genre at once, and that is correct, not an error.\n\nReturn ONLY a JSON array, no markdown, no preamble.\nInclude only genres scoring above 15.\nEach item: { \"genre\": \"<exact name from list>\", \"confidence\": <0-100>, \"reason\": \"<one sentence>\" }\nSort descending by confidence.\n\nGenre list:\n{genre_list}",
     "user_template": "{description}",
-    "max_tokens": 1200,
+    "max_tokens": 2500,
+    "json_mode": 1
+  },
+  {
+    "id": "genre_ranking_coarse",
+    "label": "Genre Ranking: Coarse Shortlist",
+    "system_prompt": "You are a publishing genre classification expert. Score this book against EACH genre name in the list below using names only (no descriptions yet).\n\nReturn ONLY a JSON array, no markdown, no preamble.\nInclude only genres scoring above 15.\nEach item: { \"genre\": \"<exact name from list>\", \"confidence\": <0-100>, \"reason\": \"<one sentence>\" }\nSort descending by confidence.\n\nGenre names:\n{genre_list}",
+    "user_template": "{description}",
+    "max_tokens": 800,
     "json_mode": 1
   },
   {
@@ -117,6 +125,14 @@
     "system_prompt": "You are an Amazon KDP category expert. Below is a REAL list of existing Amazon category paths for this book's store, pulled directly from Amazon's own category tree — not a guess. Pick the 1 to {max_picks} best-fitting categories for this book from ONLY this list.\n\nReturn ONLY a JSON array, no markdown, no preamble.\nEach item: { \"index\": <1-based row number from the list>, \"confidence\": <0-100>, \"reason\": \"<one sentence>\" }\nOnly include categories that are genuinely strong fits — an empty array is a valid answer if nothing fits well.\nSort descending by confidence.\n\nCategories:\n{category_list}",
     "user_template": "{description}",
     "max_tokens": 500,
+    "json_mode": 1
+  },
+  {
+    "id": "kdp_category_match_batch",
+    "label": "KDP Categories: Batch Match",
+    "system_prompt": "You are an Amazon KDP category expert. For EACH genre block below, pick up to {max_picks} best-fitting categories from ONLY that genre's candidate list.\n\nReturn ONLY JSON:\n{\n  \"genres\": {\n    \"<exact GENRE name>\": [\n      { \"index\": <1-based row number from that genre's list>, \"confidence\": <0-100>, \"reason\": \"<one sentence>\" }\n    ]\n  }\n}\n\nRules:\n- Include every GENRE key from the input.\n- Use the exact GENRE string as each JSON key.\n- An empty array is valid when nothing fits well.\n\n{genre_blocks}",
+    "user_template": "{description}",
+    "max_tokens": 1200,
     "json_mode": 1
   },
   {
@@ -380,7 +396,23 @@
     "label": "Pacing Curve Batch",
     "system_prompt": "You rate pacing of fiction chapters. You receive MULTIPLE chapters.\n\nReturn ONLY JSON:\n{\n  \"chapters\": {\n    \"<exact FILE key>\": {\n      \"pace_score\": <0-100>,\n      \"drag_risk\": <0-100>,\n      \"label\": \"racing|brisk|steady|slow|dragging\",\n      \"why\": \"<one sentence>\",\n      \"drag_spots\": [\"...\"]\n    }\n  }\n}\n\nRules:\n- Include EVERY FILE key. Use exact FILE as JSON key.",
     "user_template": "Rate pacing for {chapter_count} chapter(s).\n\n{chapters_block}",
-    "max_tokens": 600,
+    "max_tokens": 2500,
+    "json_mode": 1
+  },
+  {
+    "id": "craft_prose_checks_single",
+    "label": "Craft Prose Checks: Single Chapter",
+    "system_prompt": "You are a fiction craft editor. Check ONE chapter for BOTH show-don't-tell violations AND AI-isms in a single pass.\n\nReturn ONLY JSON:\n{\n  \"sdt_findings\": [\n    {\"telling_text\":\"<max 15 words>\",\"context\":\"<1-2 sentences>\",\"why\":\"<one sentence>\",\"severity\":\"minor|moderate|major\"}\n  ],\n  \"ai_isms_findings\": [\n    {\"telling_text\":\"<max 15 words>\",\"context\":\"<1-2 sentences>\",\"why\":\"<one sentence>\",\"severity\":\"minor|moderate|major\"}\n  ]\n}\n\nRules:\n- Maximum 8 findings per list. Return [] when clean.\n- SDT = telling emotion/judgment instead of showing.\n- AI-isms = synthetic/template-sounding prose habits.",
+    "user_template": "Chapter: {chapter_title}\n\n{bible}\n\n---\n\n{chapter_text}",
+    "max_tokens": 2500,
+    "json_mode": 1
+  },
+  {
+    "id": "craft_prose_checks_batch",
+    "label": "Craft Prose Checks: Batch",
+    "system_prompt": "You are a fiction craft editor. Check MULTIPLE chapters for BOTH show-don't-tell violations AND AI-isms in one pass.\n\nReturn ONLY JSON:\n{\n  \"chapters\": {\n    \"<exact FILE key>\": {\n      \"sdt_findings\": [ ... ],\n      \"ai_isms_findings\": [ ... ]\n    }\n  }\n}\n\nRules:\n- Include EVERY FILE key from the input.\n- Maximum 8 findings per list per chapter.\n- Use exact FILE strings as JSON keys.",
+    "user_template": "Check {chapter_count} chapter(s) for show-don't-tell and AI-isms.\n\n{chapters_block}",
+    "max_tokens": 2500,
     "json_mode": 1
   },
   {

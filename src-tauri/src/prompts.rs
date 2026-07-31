@@ -11,7 +11,6 @@ use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::commands::{call_llm, call_llm_json};
 use crate::db::Db;
 
 // ── Template loading ──────────────────────────────────────────────────────────
@@ -39,6 +38,61 @@ pub fn load_template(conn: &Connection, template_id: &str) -> Result<PromptTempl
 }
 
 // ── Bible loading ─────────────────────────────────────────────────────────────
+
+/// How much story bible context to attach to a prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BibleTier {
+    /// Full bible + characters + locations (up to 8k words).
+    Full,
+    /// Characters + locations only (up to 2k words) — summaries, continuity.
+    Medium,
+    /// No bible — mechanical checks (pacing, cliffhanger, SDT).
+    Minimal,
+}
+
+const BIBLE_FULL_WORD_LIMIT: usize = 8000;
+const BIBLE_MEDIUM_WORD_LIMIT: usize = 2000;
+
+/// Load bible text for a story at the requested detail tier.
+pub fn load_bible_tiered(story_folder: &str, explicit_bible_path: &str, tier: BibleTier) -> String {
+    match tier {
+        BibleTier::Minimal => String::new(),
+        BibleTier::Medium => discover_bible_medium(story_folder),
+        BibleTier::Full => load_bible_for_story(story_folder, explicit_bible_path),
+    }
+}
+
+fn discover_bible_medium(story_folder: &str) -> String {
+    let root = Path::new(story_folder);
+    if !root.exists() {
+        return String::new();
+    }
+    let structure = crate::folder_structure::current();
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(dir) = crate::folder_structure::resolve_subdir(root, structure.characters()) {
+        let content = read_md_folder(&dir);
+        if !content.is_empty() {
+            parts.push(format!("## Characters\n\n{content}"));
+        }
+    }
+    if let Some(dir) = crate::folder_structure::resolve_subdir(root, structure.locations()) {
+        let content = read_md_folder(&dir);
+        if !content.is_empty() {
+            parts.push(format!("## Locations\n\n{content}"));
+        }
+    }
+
+    truncate_words_joined(&parts.join("\n\n---\n\n"), BIBLE_MEDIUM_WORD_LIMIT)
+}
+
+fn truncate_words_joined(text: &str, max_words: usize) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() <= max_words {
+        return text.to_string();
+    }
+    words[..max_words].join(" ") + "\n[Bible truncated]"
+}
 
 /// Auto-discover bible content from a story folder using Settings → Folder Structure:
 ///   1. Configured bible subfolder — all .md files concatenated
@@ -88,13 +142,8 @@ pub fn discover_bible(story_folder: &str) -> String {
 
     let combined = parts.join("\n\n---\n\n");
 
-    // Truncate to 8000 words max
-    let words: Vec<&str> = combined.split_whitespace().collect();
-    if words.len() > 8000 {
-        words[..8000].join(" ") + "\n[Bible truncated]"
-    } else {
-        combined
-    }
+    // Truncate to full-tier limit
+    truncate_words_joined(&combined, BIBLE_FULL_WORD_LIMIT)
 }
 
 /// Read all .md files in a folder, sorted by name, concatenated with separators.
@@ -141,14 +190,7 @@ pub fn load_bible(bible_path: &str) -> String {
     let path = Path::new(bible_path);
     if !path.exists() { return String::new(); }
     match std::fs::read_to_string(path) {
-        Ok(text) => {
-            let words: Vec<&str> = text.split_whitespace().collect();
-            if words.len() > 8000 {
-                words[..8000].join(" ") + "\n[Bible truncated]"
-            } else {
-                text
-            }
-        }
+        Ok(text) => truncate_words_joined(&text, BIBLE_FULL_WORD_LIMIT),
         Err(_) => String::new(),
     }
 }
@@ -237,6 +279,19 @@ pub async fn execute_prompt(
     model: &str,
     vars: HashMap<&str, &str>,
 ) -> Result<String, String> {
+    execute_prompt_for_story(db, template_id, provider, api_key, model, vars, None).await
+}
+
+/// Like `execute_prompt` but enables prompt-cache keying per story folder.
+pub async fn execute_prompt_for_story(
+    db: &Db,
+    template_id: &str,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    vars: HashMap<&str, &str>,
+    story_folder: Option<&str>,
+) -> Result<String, String> {
     let template = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         load_template(&conn, template_id)?
@@ -244,26 +299,30 @@ pub async fn execute_prompt(
 
     let system_prompt = fill_template(&template.system_prompt, &vars);
     let user_content = fill_template(&template.user_template, &vars);
-
     let max_tokens = template.max_tokens;
+    let cache_key = story_folder.map(|f| crate::llm::story_cache_key(template_id, f));
+    let opts = crate::llm::LlmCallOpts {
+        cache_key: cache_key.as_deref(),
+        template_id: Some(template_id),
+    };
 
     if template.json_mode {
-        call_llm_json(provider, api_key, model, &system_prompt, &user_content, max_tokens).await
+        crate::llm::call_llm_json(provider, api_key, model, &system_prompt, &user_content, max_tokens, opts).await
     } else {
-        call_llm(provider, api_key, model, &system_prompt, &user_content, max_tokens).await
+        crate::llm::call_llm(provider, api_key, model, &system_prompt, &user_content, max_tokens, opts).await
     }
 }
 
 // ── Chapter preprocessing functions ───────────────────────────────────────────
 
-/// Preprocess chapter text for show-don't-tell checking: keep prose, truncate at 4000 words.
+/// Preprocess chapter text for show-don't-tell checking.
 pub fn preprocess_for_sdt(content: &str) -> String {
-    truncate_words(content, 4000)
+    truncate_words(content, crate::analysis::chapters::CRAFT_EXCERPT_WORD_LIMIT)
 }
 
-/// Preprocess chapter text for AI-isms checking (same truncation as SDT).
+/// Preprocess chapter text for AI-isms checking.
 pub fn preprocess_for_ai_isms(content: &str) -> String {
-    truncate_words(content, 4000)
+    truncate_words(content, crate::analysis::chapters::CRAFT_EXCERPT_WORD_LIMIT)
 }
 
 fn truncate_words(text: &str, max: usize) -> String {

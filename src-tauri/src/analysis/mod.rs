@@ -22,6 +22,7 @@ pub mod zeigarnik;
 pub mod continuity;
 pub mod show_dont_tell;
 pub mod ai_isms;
+pub mod craft_prose_checks;
 pub mod craft_audits;
 pub mod publish_audits;
 

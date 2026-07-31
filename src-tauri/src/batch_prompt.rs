@@ -21,6 +21,12 @@ pub struct BatchChapterItem {
     pub text:  String,
 }
 
+#[derive(Clone, Debug)]
+pub struct CachedBatchItem {
+    pub item:        BatchChapterItem,
+    pub source_hash: String,
+}
+
 impl BatchChapterItem {
     pub fn word_count(&self) -> usize {
         self.text.split_whitespace().count()
@@ -81,6 +87,7 @@ pub async fn execute_batch_prompt(
     model: &str,
     bible: &str,
     items: &[BatchChapterItem],
+    cache_key: Option<&str>,
 ) -> Result<String, String> {
     let chapters_block = format_chapters_block(items);
     let chapter_count = items.len().to_string();
@@ -97,16 +104,38 @@ pub async fn execute_batch_prompt(
 
     let system_prompt = prompts::fill_template(&template.system_prompt, &vars);
     let user_content = prompts::fill_template(&template.user_template, &vars);
+    let opts = crate::llm::LlmCallOpts {
+        cache_key,
+        template_id: Some(template_id),
+    };
 
     if template.json_mode {
-        crate::commands::call_llm_json(provider, api_key, model, &system_prompt, &user_content, max_tokens).await
+        crate::llm::call_llm_json(
+            provider,
+            api_key,
+            model,
+            &system_prompt,
+            &user_content,
+            max_tokens,
+            opts,
+        )
+        .await
     } else {
-        crate::commands::call_llm(provider, api_key, model, &system_prompt, &user_content, max_tokens).await
+        crate::llm::call_llm(
+            provider,
+            api_key,
+            model,
+            &system_prompt,
+            &user_content,
+            max_tokens,
+            opts,
+        )
+        .await
     }
 }
 
-/// Execute a single-chapter prompt (fallback path).
-pub async fn execute_single_chapter_prompt(
+/// Like `execute_single_chapter_prompt_for_story` with per-story prompt caching.
+pub async fn execute_single_chapter_prompt_for_story(
     db: &Db,
     template_id: &str,
     provider: &str,
@@ -115,6 +144,7 @@ pub async fn execute_single_chapter_prompt(
     bible: &str,
     item: &BatchChapterItem,
     extra_vars: &[(&str, &str)],
+    story_folder: &str,
 ) -> Result<String, String> {
     let mut vars = HashMap::new();
     let computed = format!("Word count: {}", item.word_count());
@@ -125,7 +155,16 @@ pub async fn execute_single_chapter_prompt(
     for (key, value) in extra_vars {
         vars.insert(*key, *value);
     }
-    prompts::execute_prompt(db, template_id, provider, api_key, model, vars).await
+    prompts::execute_prompt_for_story(
+        db,
+        template_id,
+        provider,
+        api_key,
+        model,
+        vars,
+        Some(story_folder),
+    )
+    .await
 }
 
 /// Normalize a single-chapter LLM response into the standard per-chapter JSON shape.
@@ -148,6 +187,11 @@ pub fn wrap_single_response(
             let findings = parse_json_array(clean)?;
             Ok(serde_json::json!({ "findings": findings }))
         }
+        "craft_prose_checks" | "craft_prose_checks_single" => {
+            let sdt = parse_json_array_field(clean, "sdt_findings");
+            let ai = parse_json_array_field(clean, "ai_isms_findings");
+            Ok(serde_json::json!({ "sdt_findings": sdt, "ai_isms_findings": ai }))
+        }
         "continuity_extract" => {
             let facts = parse_json_array(clean)?;
             Ok(serde_json::json!({ "facts": facts }))
@@ -158,6 +202,18 @@ pub fn wrap_single_response(
                 .map_err(|e| format!("Parse error: {} | {}", e, &obj[..obj.len().min(200)]))
         }
     }
+}
+
+fn parse_json_array_field(clean: &str, field: &str) -> Vec<serde_json::Value> {
+    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(clean) {
+        if let Some(arr) = obj.get(field).and_then(|v| v.as_array()) {
+            return arr.clone();
+        }
+    }
+    if field == "sdt_findings" || field == "findings" {
+        return parse_json_array(clean).unwrap_or_default();
+    }
+    Vec::new()
 }
 
 fn parse_json_array(clean: &str) -> Result<Vec<serde_json::Value>, String> {
@@ -212,7 +268,9 @@ pub async fn process_chapters_batched(
     batch_template_id: &str,
     single_template_id: &str,
     bible: &str,
-    items: Vec<BatchChapterItem>,
+    story_folder: &str,
+    cache_report_type: Option<&str>,
+    items: Vec<CachedBatchItem>,
     word_budget: usize,
     single_extra: &[(&str, &str)],
 ) -> HashMap<String, serde_json::Value> {
@@ -220,15 +278,111 @@ pub async fn process_chapters_batched(
         return HashMap::new();
     }
 
-    if items.len() == 1 {
-        let item = &items[0];
-        return match run_single(db, provider, api_key, model, single_template_id, bible, item, single_extra).await {
-            Ok(v) => HashMap::from([(item.file.clone(), v)]),
-            Err(_) => HashMap::new(),
-        };
+    let mut results: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut to_process: Vec<CachedBatchItem> = Vec::new();
+
+    if let Some(report_type) = cache_report_type {
+        let conn = db.0.lock().unwrap();
+        for entry in items {
+            if let Some(cached) = crate::db::load_chapter_ai_cache(
+                &conn,
+                story_folder,
+                &entry.item.file,
+                report_type,
+                &entry.source_hash,
+            ) {
+                if let Ok(value) = serde_json::from_str(&cached) {
+                    results.insert(entry.item.file.clone(), value);
+                    continue;
+                }
+            }
+            to_process.push(entry);
+        }
+    } else {
+        to_process = items;
     }
 
-    let chunks = chunk_by_word_budget(&items, word_budget);
+    if to_process.is_empty() {
+        return results;
+    }
+
+    let batch_items: Vec<BatchChapterItem> = to_process.iter().map(|e| e.item.clone()).collect();
+    let cache_key = crate::llm::story_cache_key(batch_template_id, story_folder);
+
+    let fresh = if batch_items.len() == 1 {
+        let entry = &to_process[0];
+        match run_single(
+            db,
+            provider,
+            api_key,
+            model,
+            single_template_id,
+            bible,
+            &entry.item,
+            single_extra,
+            story_folder,
+        )
+        .await
+        {
+            Ok(v) => HashMap::from([(entry.item.file.clone(), v)]),
+            Err(_) => HashMap::new(),
+        }
+    } else {
+        run_batches(
+            db,
+            provider,
+            api_key,
+            model,
+            batch_template_id,
+            single_template_id,
+            bible,
+            story_folder,
+            &cache_key,
+            &to_process,
+            word_budget,
+            single_extra,
+        )
+        .await
+    };
+
+    if let Some(report_type) = cache_report_type {
+        let conn = db.0.lock().unwrap();
+        for (file, value) in &fresh {
+            if let Some(hash) = to_process.iter().find(|e| e.item.file == *file).map(|e| e.source_hash.as_str()) {
+                if let Ok(json) = serde_json::to_string(value) {
+                    let _ = crate::db::save_chapter_ai_cache(
+                        &conn,
+                        story_folder,
+                        file,
+                        report_type,
+                        hash,
+                        &json,
+                    );
+                }
+            }
+        }
+    }
+
+    results.extend(fresh);
+    results
+}
+
+async fn run_batches(
+    db: &Db,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    batch_template_id: &str,
+    single_template_id: &str,
+    bible: &str,
+    story_folder: &str,
+    cache_key: &str,
+    to_process: &[CachedBatchItem],
+    word_budget: usize,
+    single_extra: &[(&str, &str)],
+) -> HashMap<String, serde_json::Value> {
+    let batch_items: Vec<BatchChapterItem> = to_process.iter().map(|e| e.item.clone()).collect();
+    let chunks = chunk_by_word_budget(&batch_items, word_budget);
     let mut results: HashMap<String, serde_json::Value> = HashMap::new();
 
     for chunk_indices in chunks {
@@ -236,45 +390,76 @@ pub async fn process_chapters_batched(
             break;
         }
 
-        let chunk: Vec<BatchChapterItem> = chunk_indices.iter().map(|&i| items[i].clone()).collect();
+        let chunk: Vec<CachedBatchItem> = chunk_indices.iter().map(|&i| to_process[i].clone()).collect();
+        let chunk_items: Vec<BatchChapterItem> = chunk.iter().map(|e| e.item.clone()).collect();
 
-        let batch_result = execute_batch_prompt(
+        let mut parsed = try_batch_parse(
             db,
             batch_template_id,
             provider,
             api_key,
             model,
             bible,
-            &chunk,
+            &chunk_items,
+            Some(cache_key),
         )
         .await;
 
-        let parsed = match batch_result {
-            Ok(raw) => parse_batch_chapters_map(&raw),
-            Err(_) => Err("batch call failed".to_string()),
-        };
+        if parsed.is_err() {
+            parsed = try_batch_parse(
+                db,
+                batch_template_id,
+                provider,
+                api_key,
+                model,
+                bible,
+                &chunk_items,
+                Some(cache_key),
+            )
+            .await;
+        }
 
         match parsed {
-            Ok(map) if chunk.iter().all(|it| map.contains_key(&it.file)) => {
+            Ok(map) if chunk.iter().all(|it| map.contains_key(&it.item.file)) => {
                 results.extend(map);
             }
             Ok(map) => {
-                for item in &chunk {
-                    if let Some(value) = map.get(&item.file) {
-                        results.insert(item.file.clone(), value.clone());
-                    } else if let Ok(value) =
-                        run_single(db, provider, api_key, model, single_template_id, bible, item, single_extra).await
+                for entry in &chunk {
+                    if let Some(value) = map.get(&entry.item.file) {
+                        results.insert(entry.item.file.clone(), value.clone());
+                    } else if let Ok(value) = run_single(
+                        db,
+                        provider,
+                        api_key,
+                        model,
+                        single_template_id,
+                        bible,
+                        &entry.item,
+                        single_extra,
+                        story_folder,
+                    )
+                    .await
                     {
-                        results.insert(item.file.clone(), value);
+                        results.insert(entry.item.file.clone(), value);
                     }
                 }
             }
             Err(_) => {
-                for item in &chunk {
-                    if let Ok(value) =
-                        run_single(db, provider, api_key, model, single_template_id, bible, item, single_extra).await
+                for entry in &chunk {
+                    if let Ok(value) = run_single(
+                        db,
+                        provider,
+                        api_key,
+                        model,
+                        single_template_id,
+                        bible,
+                        &entry.item,
+                        single_extra,
+                        story_folder,
+                    )
+                    .await
                     {
-                        results.insert(item.file.clone(), value);
+                        results.insert(entry.item.file.clone(), value);
                     }
                 }
             }
@@ -282,6 +467,30 @@ pub async fn process_chapters_batched(
     }
 
     results
+}
+
+async fn try_batch_parse(
+    db: &Db,
+    batch_template_id: &str,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    bible: &str,
+    chunk_items: &[BatchChapterItem],
+    cache_key: Option<&str>,
+) -> Result<HashMap<String, serde_json::Value>, String> {
+    let raw = execute_batch_prompt(
+        db,
+        batch_template_id,
+        provider,
+        api_key,
+        model,
+        bible,
+        chunk_items,
+        cache_key,
+    )
+    .await?;
+    parse_batch_chapters_map(&raw)
 }
 
 async fn run_single(
@@ -293,8 +502,9 @@ async fn run_single(
     bible: &str,
     item: &BatchChapterItem,
     single_extra: &[(&str, &str)],
+    story_folder: &str,
 ) -> Result<serde_json::Value, String> {
-    let raw = execute_single_chapter_prompt(
+    let raw = execute_single_chapter_prompt_for_story(
         db,
         single_template_id,
         provider,
@@ -303,6 +513,7 @@ async fn run_single(
         bible,
         item,
         single_extra,
+        story_folder,
     )
     .await?;
     wrap_single_response(single_template_id, &raw)

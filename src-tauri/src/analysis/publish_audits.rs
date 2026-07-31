@@ -4,12 +4,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::AppHandle;
 
-use super::chapters::{collect_chapters, extract_title};
+use super::chapters::{chapter_source_hash, collect_chapters, extract_title};
 use super::craft_audits::build_opening_excerpt;
 use super::{emit, err, extract_json_object, GenreResult};
-use crate::batch_prompt::{self, BatchChapterItem, CRAFT_BATCH_WORD_BUDGET};
+use crate::batch_prompt::{self, BatchChapterItem, CachedBatchItem, CRAFT_BATCH_WORD_BUDGET};
 use crate::db;
-use crate::prompts;
+use crate::prompts::{self, BibleTier};
 
 fn truncate_words(text: &str, max: usize) -> String {
     let words: Vec<&str> = text.split_whitespace().collect();
@@ -25,6 +25,7 @@ async fn per_chapter_json(
     folder: &str,
     template_id: &str,
     batch_template_id: &str,
+    cache_report_type: &str,
     provider: &str,
     api_key: &str,
     model: &str,
@@ -39,7 +40,7 @@ async fn per_chapter_json(
 
     let bible_text = if include_bible { bible } else { "" };
     let mut chapter_meta: Vec<(usize, String, String)> = Vec::new();
-    let mut batch_items: Vec<BatchChapterItem> = Vec::new();
+    let mut batch_items: Vec<CachedBatchItem> = Vec::new();
 
     for (i, ch_path) in chapters.iter().enumerate() {
         let content = match std::fs::read_to_string(ch_path) {
@@ -55,10 +56,13 @@ async fn per_chapter_json(
         let chapter_text = truncate_words(&content, 4000);
 
         chapter_meta.push((i, filename.clone(), title.clone()));
-        batch_items.push(BatchChapterItem {
-            file: filename,
-            title,
-            text: chapter_text,
+        batch_items.push(CachedBatchItem {
+            item: BatchChapterItem {
+                file: filename,
+                title,
+                text: chapter_text,
+            },
+            source_hash: chapter_source_hash(&content),
         });
     }
 
@@ -78,6 +82,8 @@ async fn per_chapter_json(
         batch_template_id,
         template_id,
         bible_text,
+        folder,
+        Some(cache_report_type),
         batch_items,
         CRAFT_BATCH_WORD_BUDGET,
         &[],
@@ -123,9 +129,23 @@ pub async fn run_ai_beta_reader(
     if let Err(msg) = crate::ai::ai_ready(provider, api_key, model) {
         return err(&msg);
     }
-    let bible = prompts::load_bible_for_story(folder, bible_path);
+    let bible = prompts::load_bible_tiered(folder, bible_path, BibleTier::Medium);
     emit(app, "Running AI beta reader (per chapter)...");
-    match per_chapter_json(app, database, folder, "ai_beta_reader", "ai_beta_reader_batch", provider, api_key, model, &bible, true).await {
+    match per_chapter_json(
+        app,
+        database,
+        folder,
+        "ai_beta_reader",
+        "ai_beta_reader_batch",
+        "ai_beta_reader",
+        provider,
+        api_key,
+        model,
+        &bible,
+        true,
+    )
+    .await
+    {
         Ok(chapters) => {
             let avg_eng: f64 = chapters.iter()
                 .filter_map(|c| c.get("engagement").and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64))))
@@ -160,7 +180,21 @@ pub async fn run_cliffhanger_score(
         return err(&msg);
     }
     emit(app, "Scoring chapter endings...");
-    match per_chapter_json(app, database, folder, "cliffhanger_score", "cliffhanger_score_batch", provider, api_key, model, "", false).await {
+    match per_chapter_json(
+        app,
+        database,
+        folder,
+        "cliffhanger_score",
+        "cliffhanger_score_batch",
+        "cliffhanger_score",
+        provider,
+        api_key,
+        model,
+        "",
+        false,
+    )
+    .await
+    {
         Ok(chapters) => {
             let avg: f64 = chapters.iter()
                 .filter_map(|c| c.get("score").and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64))))
@@ -196,7 +230,7 @@ pub async fn run_hook_strength(
         Ok(m) => m,
         Err(e) => return err(&e),
     };
-    let bible = prompts::load_bible_for_story(folder, bible_path);
+    let bible = prompts::load_bible_tiered(folder, bible_path, BibleTier::Full);
     let mut vars = HashMap::new();
     vars.insert("bible", bible.as_str());
     vars.insert("manuscript", manuscript.as_str());
@@ -240,7 +274,21 @@ pub async fn run_pacing_curve(
         return err(&msg);
     }
     emit(app, "Building pacing curve...");
-    match per_chapter_json(app, database, folder, "pacing_curve", "pacing_curve_batch", provider, api_key, model, "", false).await {
+    match per_chapter_json(
+        app,
+        database,
+        folder,
+        "pacing_curve",
+        "pacing_curve_batch",
+        "pacing_curve",
+        provider,
+        api_key,
+        model,
+        "",
+        false,
+    )
+    .await
+    {
         Ok(chapters) => {
             let report = serde_json::json!({
                 "schema": "pacing_curve_v1",

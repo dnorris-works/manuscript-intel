@@ -1251,6 +1251,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
 
     // Resolve per-function models (fall back to default)
     let model_continuity = if request.model_continuity.is_empty() { &request.model } else { &request.model_continuity };
+    let model_summaries = if request.model_summaries.is_empty() { &request.model } else { &request.model_summaries };
     let model_sdt = if request.model_sdt.is_empty() { &request.model } else { &request.model_sdt };
     let model_ai_isms = if request.model_ai_isms.is_empty() { &request.model } else { &request.model_ai_isms };
 
@@ -1329,6 +1330,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
                     provider: request.provider.clone(),
                     api_key: request.api_key.clone(),
                     model: model_continuity.clone(),
+                    extraction_model: model_summaries.clone(),
                     bible_path: request.bible_path.clone(),
                 },
             ).await;
@@ -1347,6 +1349,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
                     provider: request.provider.clone(),
                     api_key: request.api_key.clone(),
                     model: model_continuity.clone(),
+                    extraction_model: model_summaries.clone(),
                     bible_path: request.bible_path.clone(),
                 },
             ).await;
@@ -1360,8 +1363,36 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
         if crate::is_cancelled() { return err("Cancelled."); }
     }
 
-    // ── Show Don't Tell ───────────────────────────────────────────────────
-    if request.selected.contains(&"show_dont_tell".to_string()) {
+    // ── Show Don't Tell + AI-isms (combined when both selected) ───────────
+    let wants_sdt = request.selected.contains(&"show_dont_tell".to_string());
+    let wants_ai = request.selected.contains(&"ai_isms".to_string());
+
+    if wants_sdt && wants_ai {
+        emit(&app, "Running combined show-don't-tell + AI-isms check (single batched pass)...");
+        let craft_model = if !request.model_sdt.is_empty() {
+            model_sdt.clone()
+        } else {
+            model_ai_isms.clone()
+        };
+        let combined = super::craft_prose_checks::check_craft_prose_combined(
+            app.clone(),
+            super::craft_prose_checks::CraftProseChecksRequest {
+                folder: request.folder.clone(),
+                provider: request.provider.clone(),
+                api_key: request.api_key.clone(),
+                model: craft_model,
+                bible_path: request.bible_path.clone(),
+            },
+        )
+        .await;
+        if !combined.success {
+            emit(&app, &format!("✗ Craft prose checks: {}", combined.error));
+            return combined;
+        }
+        if crate::is_cancelled() {
+            return err("Cancelled.");
+        }
+    } else if wants_sdt {
         let sdt = super::show_dont_tell::check_show_dont_tell(
             app.clone(),
             super::show_dont_tell::ShowDontTellRequest {
@@ -1371,16 +1402,16 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
                 model: model_sdt.clone(),
                 bible_path: request.bible_path.clone(),
             },
-        ).await;
+        )
+        .await;
         if !sdt.success {
             emit(&app, &format!("✗ Show Don't Tell: {}", sdt.error));
             return sdt;
         }
-        if crate::is_cancelled() { return err("Cancelled."); }
-    }
-
-    // ── AI-isms ───────────────────────────────────────────────────────────
-    if request.selected.contains(&"ai_isms".to_string()) {
+        if crate::is_cancelled() {
+            return err("Cancelled.");
+        }
+    } else if wants_ai {
         let ai = super::ai_isms::check_ai_isms(
             app.clone(),
             super::ai_isms::AiIsmsRequest {
@@ -1390,12 +1421,15 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
                 model: model_ai_isms.clone(),
                 bible_path: request.bible_path.clone(),
             },
-        ).await;
+        )
+        .await;
         if !ai.success {
             emit(&app, &format!("✗ AI-isms: {}", ai.error));
             return ai;
         }
-        if crate::is_cancelled() { return err("Cancelled."); }
+        if crate::is_cancelled() {
+            return err("Cancelled.");
+        }
     }
 
     // ── Generic craft audits (StoryAuditor catalog) ───────────────────────

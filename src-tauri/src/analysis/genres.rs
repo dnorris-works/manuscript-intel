@@ -246,7 +246,55 @@ pub(crate) async fn ai_rank_genres(
     let genre_m = crate::ai::resolve_slot_model(genre_model, model)?;
     crate::ai::ai_ready(provider, api_key, &genre_m)?;
 
-    let genre_list = master_list
+    const COARSE_BAR: u8 = 15;
+    const SHORTLIST_MAX: usize = 40;
+
+    let coarse_names: Vec<String> = master_list.iter().map(|g| g.name.clone()).collect();
+    let coarse_list = coarse_names
+        .iter()
+        .map(|name| format!("- {name}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut coarse_vars = HashMap::new();
+    coarse_vars.insert("genre_list", coarse_list.as_str());
+    coarse_vars.insert("description", description);
+
+    let shortlisted_names: std::collections::HashSet<String> = match prompts::execute_prompt(
+        database,
+        "genre_ranking_coarse",
+        provider,
+        api_key,
+        &genre_m,
+        coarse_vars,
+    )
+    .await
+    {
+        Ok(raw) => {
+            let clean = raw.trim()
+                .trim_start_matches("```json").trim_start_matches("```")
+                .trim_end_matches("```").trim();
+            serde_json::from_str::<Vec<AiGenreRank>>(clean)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.confidence >= COARSE_BAR)
+                .take(SHORTLIST_MAX)
+                .map(|r| r.genre)
+                .collect()
+        }
+        Err(_) => std::collections::HashSet::new(),
+    };
+
+    let shortlist: Vec<&db::GenreRow> = if shortlisted_names.len() >= 8 {
+        master_list
+            .iter()
+            .filter(|g| shortlisted_names.contains(&g.name))
+            .collect()
+    } else {
+        master_list.iter().collect()
+    };
+
+    let genre_list = shortlist
         .iter()
         .map(|g| format!("- {}: {}", g.name, g.description))
         .collect::<Vec<_>>()

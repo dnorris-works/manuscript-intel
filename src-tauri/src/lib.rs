@@ -11,6 +11,7 @@ mod db;
 mod folder_structure;
 mod genre_taxonomy;
 mod models;
+mod llm;
 mod batch_prompt;
 mod prompts;
 mod campaigns;
@@ -71,6 +72,7 @@ pub fn run() {
             analysis::show_dont_tell::suggest_sdt_fix,
             analysis::ai_isms::check_ai_isms,
             analysis::ai_isms::suggest_ai_isms_fix,
+            analysis::craft_prose_checks::check_craft_prose_combined,
             genre_taxonomy::get_genre_taxonomy,
             db::list_genres_cmd,
             db::list_report_types_cmd,

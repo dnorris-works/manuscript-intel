@@ -62,107 +62,7 @@ pub async fn analyze_csv(
 }
 
 // ── AI client (async) ─────────────────────────────────────────────────────────
-
-/// Call the LLM asynchronously. Cancellable via tokio::select! — dropping the
-/// future closes the HTTP connection immediately.
-pub async fn call_llm(
-    provider: &str,
-    api_key: &str,
-    model: &str,
-    system: &str,
-    user: &str,
-    max_tokens: u32,
-) -> Result<String, String> {
-    if provider != "tokenmix" {
-        return Err(format!("Unsupported provider '{}'. TokenMix is required.", provider));
-    }
-    call_tokenmix(api_key, model, system, user, max_tokens, false).await
-}
-
-/// Same as call_llm but forces JSON mode (valid JSON guaranteed in response).
-pub async fn call_llm_json(
-    provider: &str,
-    api_key: &str,
-    model: &str,
-    system: &str,
-    user: &str,
-    max_tokens: u32,
-) -> Result<String, String> {
-    if provider != "tokenmix" {
-        return Err(format!("Unsupported provider '{}'. TokenMix is required.", provider));
-    }
-    call_tokenmix(api_key, model, system, user, max_tokens, true).await
-}
-
-async fn call_tokenmix(
-    api_key: &str,
-    model: &str,
-    system: &str,
-    user: &str,
-    max_tokens: u32,
-    json_mode: bool,
-) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-
-    let mut last_err = String::new();
-    let candidates = tokenmix_model_candidates(model);
-
-    for candidate in candidates {
-        let mut body = json!({
-            "model": candidate,
-            "max_tokens": max_tokens,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user}
-            ]
-        });
-
-        if json_mode {
-            body["response_format"] = json!({"type": "json_object"});
-        }
-
-        let resp = client
-            .post("https://api.tokenmix.ai/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("TokenMix request failed: {}", e))?;
-
-        let json: Value = resp.json()
-            .await
-            .map_err(|e| format!("TokenMix response parse failed: {}", e))?;
-
-        if let Some(err) = json.get("error") {
-            let msg = err["message"].as_str().unwrap_or(
-                err.as_str().unwrap_or("unknown error")
-            );
-            let msg_lc = msg.to_ascii_lowercase();
-            last_err = format!("TokenMix error: {}", msg);
-
-            // TokenMix model IDs can differ by provider prefix; retry with normalized variants.
-            if msg_lc.contains("model was not found") || msg_lc.contains("requested model was not found") {
-                continue;
-            }
-            return Err(last_err);
-        }
-
-        if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
-            return Ok(content.to_string());
-        }
-        return Err("TokenMix: empty response".to_string());
-    }
-
-    if last_err.is_empty() {
-        Err("TokenMix error: model not found for this API key.".to_string())
-    } else {
-        Err(last_err)
-    }
-}
+// LLM calls live in crate::llm and are invoked via prompts::execute_prompt*.
 
 fn tokenmix_model_candidates(model: &str) -> Vec<String> {
     let raw = model.trim();
@@ -900,18 +800,31 @@ pub async fn chat_with_context(
 
     let system = crate::prompts::fill_template(&template.system_prompt, &vars);
 
-    // Build messages array: system + history + new user message
+    // Build messages array: system + compressed history + new user message
+    let history_pairs: Vec<(String, String)> = request
+        .history
+        .iter()
+        .map(|msg| (msg.role.clone(), msg.content.clone()))
+        .collect();
+    let compressed = crate::llm::compress_chat_history(&history_pairs, 6);
+
     let mut messages = Vec::new();
     messages.push(json!({"role": "system", "content": system}));
-    for msg in &request.history {
-        messages.push(json!({"role": msg.role, "content": msg.content}));
+    for (role, content) in &compressed {
+        messages.push(json!({"role": role, "content": content}));
     }
     messages.push(json!({"role": "user", "content": request.message}));
 
+    let cache_key = crate::llm::story_cache_key("writing_chat", &request.chapter_title);
     let body = json!({
         "model": request.model,
-        "max_tokens": 2000,
+        "max_tokens": template.max_tokens,
         "messages": messages,
+        "cache_config": {
+            "enabled": true,
+            "ttl": 300
+        },
+        "prompt_cache_key": cache_key,
     });
 
     let timeout_secs = 120u64;

@@ -22,9 +22,13 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult};
-use super::chapters::{collect_chapters, extract_title, truncate_words};
-use crate::batch_prompt::{self, BatchChapterItem, DEFAULT_WORD_BUDGET};
+use super::chapters::{
+    chapter_source_hash, collect_chapters, extract_title, truncate_words,
+    CONTINUITY_EXCERPT_WORD_LIMIT,
+};
+use crate::batch_prompt::{self, BatchChapterItem, CachedBatchItem, DEFAULT_WORD_BUDGET};
 use crate::db;
+use crate::prompts::{self, BibleTier};
 
 // ── Requests ─────────────────────────────────────────────────────────────────
 
@@ -35,6 +39,8 @@ pub struct ContinuityRequest {
     pub api_key:  String,
     pub model:    String,
     #[serde(default)]
+    pub extraction_model: String,
+    #[serde(default)]
     pub bible_path: String,
 }
 
@@ -44,6 +50,8 @@ pub struct SeriesContinuityRequest {
     pub provider:  String,
     pub api_key:   String,
     pub model:     String,
+    #[serde(default)]
+    pub extraction_model: String,
     #[serde(default)]
     pub bible_path: String,
 }
@@ -89,9 +97,21 @@ pub async fn check_continuity_for_story(app: AppHandle, request: ContinuityReque
 
     let database = app.state::<db::Db>();
     let story_name = folder.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| request.folder.clone());
-    let bible = crate::prompts::load_bible_for_story(&request.folder, &request.bible_path);
+    let bible = prompts::load_bible_tiered(&request.folder, &request.bible_path, BibleTier::Medium);
+    let extraction_model = crate::ai::resolve_slot_model(&request.extraction_model, &request.model)
+        .unwrap_or_else(|_| request.model.clone());
 
-    let book = match extract_book_facts(&app, &database, &request.folder, &story_name, &request.provider, &request.api_key, &request.model, &bible).await {
+    let book = match extract_book_facts(
+        &app,
+        &database,
+        &request.folder,
+        &story_name,
+        &request.provider,
+        &request.api_key,
+        &extraction_model,
+        &bible,
+    )
+    .await {
         Ok(b) => b,
         Err(e) => return err(&e),
     };
@@ -129,20 +149,30 @@ pub async fn check_continuity_for_series(app: AppHandle, request: SeriesContinui
         Err(e) => return err(&e),
     };
 
-    // For series bible: try explicit path first, then discover from first book's folder
     let bible = if !request.bible_path.is_empty() {
         crate::prompts::load_bible(&request.bible_path)
     } else {
-        let first_folder = &books_meta[0].story_folder;
-        crate::prompts::discover_bible(first_folder)
+        prompts::load_bible_tiered(&books_meta[0].story_folder, "", BibleTier::Medium)
     };
+    let extraction_model = crate::ai::resolve_slot_model(&request.extraction_model, &request.model)
+        .unwrap_or_else(|_| request.model.clone());
 
     emit(&app, &format!("Series has {} book(s) in reading order.", books_meta.len()));
 
     let mut books: Vec<Book> = Vec::new();
     for meta in &books_meta {
         emit(&app, &format!("— {} —", meta.story_name));
-        let book = match extract_book_facts(&app, &database, &meta.story_folder, &meta.story_name, &request.provider, &request.api_key, &request.model, &bible).await {
+        let book = match extract_book_facts(
+            &app,
+            &database,
+            &meta.story_folder,
+            &meta.story_name,
+            &request.provider,
+            &request.api_key,
+            &extraction_model,
+            &bible,
+        )
+        .await {
             Ok(b) => b,
             Err(e) => { emit(&app, &format!("  ⚠ Skipping {}: {}", meta.story_name, e)); continue; }
         };
@@ -195,7 +225,7 @@ async fn extract_book_facts(
     emit(app, &format!("  Extracting continuity facts from {} chapter(s)...", chapter_paths.len()));
 
     let mut chapter_meta: Vec<(usize, String, String)> = Vec::new();
-    let mut batch_items: Vec<BatchChapterItem> = Vec::new();
+    let mut batch_items: Vec<CachedBatchItem> = Vec::new();
 
     for (i, path) in chapter_paths.iter().enumerate() {
         let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -211,10 +241,13 @@ async fn extract_book_facts(
         }
         let title = extract_title(&raw).unwrap_or_else(|| fname.clone());
         chapter_meta.push((i, fname.clone(), title.clone()));
-        batch_items.push(BatchChapterItem {
-            file: fname,
-            title,
-            text: truncate_words(&raw, 6000),
+        batch_items.push(CachedBatchItem {
+            item: BatchChapterItem {
+                file: fname,
+                title,
+                text: truncate_words(&raw, CONTINUITY_EXCERPT_WORD_LIMIT),
+            },
+            source_hash: chapter_source_hash(&raw),
         });
     }
 
@@ -226,6 +259,8 @@ async fn extract_book_facts(
         "continuity_extract_batch",
         "continuity_extract",
         bible,
+        story_folder,
+        Some("continuity_extract"),
         batch_items,
         DEFAULT_WORD_BUDGET,
         &[],

@@ -7,9 +7,10 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult};
-use super::chapters::{collect_chapters, extract_title};
-use crate::batch_prompt::{self, BatchChapterItem, CRAFT_BATCH_WORD_BUDGET};
+use super::chapters::{chapter_source_hash, collect_chapters, extract_title};
+use crate::batch_prompt::{self, BatchChapterItem, CachedBatchItem, CRAFT_BATCH_WORD_BUDGET};
 use crate::db;
+use crate::prompts::{self, BibleTier};
 
 #[derive(serde::Deserialize)]
 pub struct AiIsmsRequest {
@@ -56,12 +57,12 @@ async fn check_inner(app: AppHandle, request: AiIsmsRequest) -> GenreResult {
     let chapters = collect_chapters(&folder);
     if chapters.is_empty() { return err("No .md chapter files found."); }
 
-    let bible = crate::prompts::load_bible_for_story(&request.folder, &request.bible_path);
+    let bible = prompts::load_bible_tiered(&request.folder, &request.bible_path, BibleTier::Minimal);
 
     emit(&app, &format!("Checking {} chapter(s) for AI-isms...", chapters.len()));
 
     let mut chapter_meta: Vec<(usize, String, String)> = Vec::new();
-    let mut batch_items: Vec<BatchChapterItem> = Vec::new();
+    let mut batch_items: Vec<CachedBatchItem> = Vec::new();
 
     for (i, path) in chapters.iter().enumerate() {
         let content = match std::fs::read_to_string(path) {
@@ -87,10 +88,13 @@ async fn check_inner(app: AppHandle, request: AiIsmsRequest) -> GenreResult {
         };
 
         chapter_meta.push((i, filename.clone(), title.clone()));
-        batch_items.push(BatchChapterItem {
-            file: filename,
-            title,
-            text: processed,
+        batch_items.push(CachedBatchItem {
+            item: BatchChapterItem {
+                file: filename,
+                title,
+                text: processed,
+            },
+            source_hash: chapter_source_hash(&content),
         });
     }
 
@@ -102,6 +106,8 @@ async fn check_inner(app: AppHandle, request: AiIsmsRequest) -> GenreResult {
         "ai_isms_check_batch",
         "ai_isms_check",
         &bible,
+        &request.folder,
+        Some("ai_isms_check"),
         batch_items,
         CRAFT_BATCH_WORD_BUDGET,
         &[],

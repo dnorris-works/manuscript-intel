@@ -10,12 +10,16 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::chapter_stats::ChapterFingerprint;
 use super::{emit, err, GenreResult, FolderRequest};
-use crate::batch_prompt::{self, BatchChapterItem, DEFAULT_WORD_BUDGET};
+use crate::batch_prompt::{self, BatchChapterItem, CachedBatchItem, DEFAULT_WORD_BUDGET};
 use crate::db;
-use crate::prompts;
+use crate::prompts::{self, BibleTier};
 
-/// Max words of chapter text sent to the summary model (~full chapter for typical manuscripts).
-pub const CHAPTER_SUMMARY_WORD_LIMIT: usize = 2000;
+/// Max words sent to the summary model (~full chapter for typical manuscripts).
+pub const CHAPTER_SUMMARY_WORD_LIMIT: usize = 1500;
+/// SDT / AI-isms excerpt limit (words).
+pub const CRAFT_EXCERPT_WORD_LIMIT: usize = 2500;
+/// Continuity extract excerpt limit (words).
+pub const CONTINUITY_EXCERPT_WORD_LIMIT: usize = 5000;
 
 pub struct Phase1Config<'a> {
     pub provider:        &'a str,
@@ -140,7 +144,7 @@ pub(crate) async fn phase1_summaries(
         word_count:  i64,
     }
 
-    let bible = prompts::load_bible_for_story(story_folder, "");
+    let bible = prompts::load_bible_tiered(story_folder, "", BibleTier::Medium);
     let mut pending: Vec<PendingSummary> = Vec::new();
 
     for (i, chapter_path) in chapters.iter().enumerate() {
@@ -215,7 +219,13 @@ pub(crate) async fn phase1_summaries(
             emit_summary_progress(app, &p.item.file, "started");
         }
 
-        let batch_items: Vec<BatchChapterItem> = pending.iter().map(|p| p.item.clone()).collect();
+        let batch_items: Vec<CachedBatchItem> = pending
+            .iter()
+            .map(|p| CachedBatchItem {
+                item: p.item.clone(),
+                source_hash: p.source_hash.clone(),
+            })
+            .collect();
         let results = batch_prompt::process_chapters_batched(
             database,
             config.provider,
@@ -224,6 +234,8 @@ pub(crate) async fn phase1_summaries(
             "chapter_summary_batch",
             "chapter_summary",
             &bible,
+            story_folder,
+            None,
             batch_items,
             DEFAULT_WORD_BUDGET,
             &[],
@@ -444,22 +456,50 @@ pub fn is_prose_summary(signals: &str) -> bool {
 
 /// Book-level dossier from per-chapter AI genre-signal summaries.
 pub(crate) fn build_combined_context(summaries: &[db::ChapterSummaryRow]) -> String {
+    const ROLLUP_CHAPTER_THRESHOLD: usize = 10;
+    const ROLLUP_CHAR_THRESHOLD: usize = 14_000;
+    const ROLLUP_SNIPPET_CHARS: usize = 420;
+
+    let mut total_chars = 0usize;
+    for s in summaries {
+        total_chars += s.signals.len();
+    }
+
+    let use_rollup =
+        summaries.len() > ROLLUP_CHAPTER_THRESHOLD || total_chars > ROLLUP_CHAR_THRESHOLD;
+
     let mut out = String::from(
         "Chapter genre-signal summaries for the full manuscript.\n\
          Use these to infer genre niche, subgenre, tone, faith vs secular content, heat level, and category fit.\n\n",
     );
+
+    if use_rollup {
+        out.push_str(
+            "(Rollup mode: long manuscripts are condensed to key signals per chapter.)\n\n",
+        );
+    }
 
     for (i, s) in summaries.iter().enumerate() {
         let body = s.signals.trim();
         if body.is_empty() {
             continue;
         }
+        let excerpt = if use_rollup {
+            let snippet: String = body.chars().take(ROLLUP_SNIPPET_CHARS).collect();
+            if body.chars().count() > ROLLUP_SNIPPET_CHARS {
+                format!("{snippet}…")
+            } else {
+                snippet
+            }
+        } else {
+            body.to_string()
+        };
         out.push_str(&format!(
             "--- Chapter {} — {} (~{} words) ---\n{}\n\n",
             i + 1,
             s.title,
             s.word_count,
-            body
+            excerpt
         ));
     }
 
