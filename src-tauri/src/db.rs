@@ -13,6 +13,7 @@
 // staying frozen at the hand-typed seed set.
 
 use rusqlite::{params, Connection};
+use chrono::{Datelike, TimeZone};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
@@ -495,6 +496,20 @@ CREATE TABLE IF NOT EXISTS ad_spend_entries (
 
 CREATE INDEX IF NOT EXISTS idx_ad_spend_campaign ON ad_spend_entries(campaign_id);
 
+CREATE TABLE IF NOT EXISTS ai_usage_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    model         TEXT NOT NULL,
+    template_id   TEXT NOT NULL DEFAULT '',
+    story_folder  TEXT NOT NULL DEFAULT '',
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd      REAL NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage_log(created_at);
+
 CREATE TABLE IF NOT EXISTS ad_audience_notes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     campaign_id     INTEGER NOT NULL REFERENCES ad_campaigns(id) ON DELETE CASCADE,
@@ -670,12 +685,35 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
          CREATE TABLE IF NOT EXISTS lookup_config (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
-        );"
+        );
+         CREATE TABLE IF NOT EXISTS ai_usage_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            model         TEXT NOT NULL,
+            template_id   TEXT NOT NULL DEFAULT '',
+            story_folder  TEXT NOT NULL DEFAULT '',
+            input_tokens  INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd      REAL NOT NULL DEFAULT 0,
+            created_at    TEXT NOT NULL
+        );
+         CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage_log(created_at);"
     );
 
     seed_if_empty(&conn)?;
+    refresh_genre_descriptions(&conn)?;
     seed_bisac_if_empty(&conn)?;
     seed_report_types(&conn)?;
+    let _ = conn.execute_batch(
+        "UPDATE report_types SET hidden = 1 WHERE id = 'genre_ranking';
+         UPDATE report_types SET depends_on = 'chapter_summaries,genre_analysis'
+           WHERE id IN ('kdp_categories', 'kdp_keywords', 'keyword_search');
+         UPDATE report_types SET depends_on = 'chapter_summaries,genre_analysis,kdp_categories,kdp_keywords,mi_search_terms'
+           WHERE id = 'analysis';
+         UPDATE report_types SET description = 'Industry genre classification, master-list ranking, KDP paths, comps, and reader demographic.'
+           WHERE id = 'genre_analysis';
+         UPDATE report_types SET cost_fixed_calls = 3 WHERE id = 'genre_analysis';"
+    );
     seed_prompt_templates(&conn)?;
     seed_zeigarnik_config_if_empty(&conn)?;
     seed_provider_models(&conn)?;
@@ -741,6 +779,24 @@ fn seed_if_empty(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// Keep genre shelf definitions in sync with `genre-list.json` (descriptions evolve with classifier rules).
+fn refresh_genre_descriptions(conn: &Connection) -> Result<(), String> {
+    #[derive(serde::Deserialize)]
+    struct SeedGenre { name: String, description: String }
+
+    let genres: Vec<SeedGenre> = serde_json::from_str(SEED_GENRE_LIST_JSON)
+        .map_err(|e| format!("Cannot parse seed genre-list.json: {}", e))?;
+
+    for g in &genres {
+        conn.execute(
+            "UPDATE genres SET description = ?2 WHERE name = ?1",
+            params![g.name, g.description],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Mirror Kindle catalog paths into the Books (print) store when missing.
 /// Print browse paths often share the same text as Kindle; node IDs differ and
 /// are filled in on a full WinningCat re-import. This unblocks paperback
@@ -794,15 +850,15 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
     //  cost_truncation, cost_output_max, cost_per_chapter, cost_fixed_calls, model_slot, min_tier)
     let rows: &[(&str, &str, &str, &str, &str, i64, i64, i64, i64, &str, &str)] = &[
         ("chapter_summaries", "Chapter Summaries", "AI genre-signal summary per chapter (up to 2000 words each).", "kdp,wide", "", 2000, 600, 1, 1, "summaries", "basic"),
-        ("genre_analysis", "Genre Analysis - KDP/Wide", "Industry genre classification, KDP paths, comps, and reader demographic.", "kdp,wide", "chapter_summaries", 0, 1200, 0, 1, "genre", "capable"),
+        ("genre_analysis", "Genre Analysis - KDP/Wide", "Industry genre classification, master-list ranking, KDP paths, comps, and reader demographic.", "kdp,wide", "chapter_summaries", 0, 1200, 0, 3, "genre", "capable"),
         ("genre_ranking", "Genre Ranking - KDP/Wide", "Score the manuscript against all known genres independently.", "kdp,wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "genre", "capable"),
-        ("kdp_categories", "KDP Categories", "Find the best-fit Amazon categories with discoverability stats.", "kdp", "chapter_summaries,genre_analysis,genre_ranking", 0, 1200, 0, 2, "keywords", "basic"),
-        ("kdp_keywords", "KDP Keywords", "Optimize the 7 keyword strings for KDP discoverability.", "kdp", "chapter_summaries,genre_analysis,genre_ranking", 0, 1200, 0, 1, "keywords", "basic"),
+        ("kdp_categories", "KDP Categories", "Find the best-fit Amazon categories with discoverability stats.", "kdp", "chapter_summaries,genre_analysis", 0, 1200, 0, 2, "keywords", "basic"),
+        ("kdp_keywords", "KDP Keywords", "Optimize the 7 keyword strings for KDP discoverability.", "kdp", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "keywords", "basic"),
         ("bisac_classification", "BISAC Classification", "Select BISAC subject codes for Ingram, wide distributors, and print metadata.", "wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 2, "keywords", "basic"),
         ("mi_search_terms", "Search Terms", "Generate competition search phrases for market analysis.", "kdp", "chapter_summaries,genre_analysis", 0, 300, 0, 1, "keywords", "basic"),
         ("discovery_keywords", "Discovery Keywords", "Keywords optimized for Apple Books, Kobo, Google Play, and SEO.", "wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "keywords", "basic"),
-        ("analysis", "Full Analysis", "Combined report: categories, keywords, and positioning all in one.", "kdp", "chapter_summaries,genre_analysis,genre_ranking,kdp_categories,kdp_keywords,mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
-        ("keyword_search", "Keyword Search Results", "Amazon keyword volume and competition data from DataForSEO.", "kdp", "chapter_summaries,genre_analysis,genre_ranking", 4000, 1000, 0, 1, "keywords", "basic"),
+        ("analysis", "Full Analysis", "Combined report: categories, keywords, and positioning all in one.", "kdp", "chapter_summaries,genre_analysis,kdp_categories,kdp_keywords,mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
+        ("keyword_search", "Keyword Search Results", "Amazon keyword volume and competition data from DataForSEO.", "kdp", "chapter_summaries,genre_analysis", 4000, 1000, 0, 1, "keywords", "basic"),
         ("competition_report", "Competition Analysis", "Market landscape: how competitive the niche is, who dominates.", "kdp", "mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
         ("review_mining", "Reader Review Intelligence", "Reader insights extracted from competitor book reviews.", "kdp", "mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
         ("author_analysis", "Competitor Author Analysis", "Competitor pricing, release cadence, and series strategy.", "kdp", "mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
@@ -1489,6 +1545,56 @@ pub fn search_kdp_categories(conn: &Connection, store: &str, terms: &[String], l
         }
     }
     out
+}
+
+/// Summary of WinningCat-sourced rows in `kdp_categories`.
+pub struct WinningCatCatalogStatus {
+    pub has_data:       bool,
+    pub ready:          bool,
+    pub kindle_count:   i64,
+    pub books_count:    i64,
+    pub total_count:    i64,
+    pub last_import_at: Option<String>,
+}
+
+const WINNINGCAT_READY_MIN_PER_STORE: i64 = 50;
+
+pub fn winningcat_catalog_status(conn: &Connection) -> WinningCatCatalogStatus {
+    let kindle_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM kdp_categories WHERE source = 'winningcat' AND store = 'Kindle'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let books_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM kdp_categories WHERE source = 'winningcat' AND store = 'Books'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let last_import_at: Option<String> = conn
+        .query_row(
+            "SELECT MAX(last_seen_at) FROM kdp_categories WHERE source = 'winningcat'",
+            [],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .filter(|s: &String| !s.is_empty());
+    let total_count = kindle_count + books_count;
+    let has_data = total_count > 0;
+    let ready =
+        kindle_count >= WINNINGCAT_READY_MIN_PER_STORE && books_count >= WINNINGCAT_READY_MIN_PER_STORE;
+    WinningCatCatalogStatus {
+        has_data,
+        ready,
+        kindle_count,
+        books_count,
+        total_count,
+        last_import_at,
+    }
 }
 
 /// Import a category path + node ID from an external catalog (WinningCat)
@@ -2233,15 +2339,6 @@ pub fn report_freshness_status(
     }
 }
 
-pub fn should_skip_report_save(
-    conn: &Connection,
-    story_folder: &str,
-    doc_type: &str,
-    current_fp: &str,
-) -> bool {
-    report_freshness_status(conn, story_folder, doc_type, current_fp) == Freshness::Fresh
-}
-
 // ── Story documents (rendered markdown cache, read by the Reports panel) ─────
 
 /// Look up the display label for a doc_type from the report_types table.
@@ -2395,6 +2492,115 @@ pub struct ProviderModelRow {
     pub owned_by: String,
     pub input_price: Option<f64>,
     pub output_price: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AiSpendTotals {
+    pub month_usd: f64,
+    pub ytd_usd:   f64,
+}
+
+/// Record one LLM call for spend tracking (prices per 1K tokens from provider_models).
+pub fn record_ai_usage(
+    conn: &Connection,
+    model: &str,
+    template_id: &str,
+    story_folder: &str,
+    input_tokens: u32,
+    output_tokens: u32,
+    cached_tokens: u32,
+) {
+    if input_tokens == 0 && output_tokens == 0 {
+        return;
+    }
+    let (input_price, output_price) = lookup_model_prices(conn, model);
+    let cost_usd = (input_tokens as f64 / 1000.0 * input_price)
+        + (output_tokens as f64 / 1000.0 * output_price);
+    let cost_usd = (cost_usd * 10_000.0).round() / 10_000.0;
+    let now = chrono::Local::now().to_rfc3339();
+    let _ = conn.execute(
+        "INSERT INTO ai_usage_log (model, template_id, story_folder, input_tokens, output_tokens, cached_tokens, cost_usd, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            model,
+            template_id,
+            story_folder,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            cost_usd,
+            now,
+        ],
+    );
+}
+
+pub fn ai_spend_totals(conn: &Connection) -> AiSpendTotals {
+    let now = chrono::Local::now();
+    let month_start = chrono::Local
+        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+        .single()
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_default();
+    let year_start = chrono::Local
+        .with_ymd_and_hms(now.year(), 1, 1, 0, 0, 0)
+        .single()
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_default();
+
+    let month_usd: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM ai_usage_log WHERE created_at >= ?1",
+            params![month_start],
+            |r| r.get(0),
+        )
+        .unwrap_or(0.0);
+    let ytd_usd: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM ai_usage_log WHERE created_at >= ?1",
+            params![year_start],
+            |r| r.get(0),
+        )
+        .unwrap_or(0.0);
+
+    AiSpendTotals {
+        month_usd: (month_usd * 100.0).round() / 100.0,
+        ytd_usd: (ytd_usd * 100.0).round() / 100.0,
+    }
+}
+
+fn model_price_keys(model: &str) -> Vec<String> {
+    let raw = model.trim();
+    let mut keys: Vec<String> = Vec::new();
+    let mut push = |v: &str| {
+        let t = v.trim().to_ascii_lowercase();
+        if !t.is_empty() && !keys.iter().any(|k| k == &t) {
+            keys.push(t);
+        }
+    };
+    push(raw);
+    if let Some(slash) = raw.rfind('/') {
+        push(&raw[slash + 1..]);
+    }
+    if let Some(colon) = raw.rfind(':') {
+        push(&raw[colon + 1..]);
+    }
+    keys
+}
+
+/// Return (input_price_per_1k, output_price_per_1k) for a model id.
+pub fn lookup_model_prices(conn: &Connection, model: &str) -> (f64, f64) {
+    for key in model_price_keys(model) {
+        if let Ok((in_p, out_p)) = conn.query_row(
+            "SELECT input_price, output_price FROM provider_models WHERE lower(id) = ?1",
+            params![key],
+            |r| Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<f64>>(1)?)),
+        ) {
+            if in_p.is_some() || out_p.is_some() {
+                return (in_p.unwrap_or(0.0), out_p.unwrap_or(0.0));
+            }
+        }
+    }
+    (0.0, 0.0)
 }
 
 pub fn list_provider_models(conn: &Connection, provider: &str) -> Vec<ProviderModelRow> {

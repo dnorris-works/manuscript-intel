@@ -189,6 +189,11 @@ function renderGenreAnalysis(data: any): string {
     html += `<section class="report-section"><h3>Genre Signals Summary</h3><p>${esc(data.genre_signals)}</p></section>`;
   }
 
+  // Genre ranking (included in genre analysis)
+  if (data.genres?.length) {
+    html += renderGenreRanking({ genres: data.genres });
+  }
+
   // Marketing Notes
   if (data.marketing_notes?.length) {
     html += `<section class="report-section"><h3>Marketing Notes</h3><ul>`;
@@ -445,7 +450,7 @@ function renderGenreRanking(data: any): string {
   const genres: any[] = data.genres || [];
   if (!genres.length) return '';
 
-  let html = `<section class="report-section"><h3>Genre Ranking - KDP/Wide</h3>`;
+  let html = `<section class="report-section"><h3>Genre Ranking</h3>`;
   html += `<p class="report-hint">Scored independently — percentages do not sum to 100.</p>`;
   html += `<table class="report-table"><thead><tr><th>Genre</th><th>Confidence</th><th>Reasoning</th></tr></thead><tbody>`;
   for (const g of genres) {

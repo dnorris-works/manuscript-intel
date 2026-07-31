@@ -1,8 +1,9 @@
 [
-  { "name": "Christian Fiction", "description": "Fiction written from a Christian worldview, often featuring faith, redemption, or spiritual struggle as central themes." },
+  { "name": "Christian Fiction", "description": "MARKET GENRE: fiction sold in the Christian/CBA channel for evangelical and faith-community readers, affirming a Christian worldview and comfortable for typical Christian fiction buyers. NOT general fiction that mentions church, doubt, redemption, or spiritual struggle; NOT works that critique the church, challenge religious institutions, or include content most Christian fiction readers would reject (e.g. frank sexuality, LGBTQ+/intersex themes, doctrinal skepticism)." },
   { "name": "Biblical Fiction", "description": "Fiction set in or drawing directly from biblical events, eras, or figures." },
-  { "name": "Inspirational Fiction", "description": "Uplifting fiction centered on personal growth, hope, or faith, not necessarily doctrinal." },
-  { "name": "Literary Fiction", "description": "Character- and theme-driven fiction prioritizing prose craft and ideas over plot mechanics." },
+  { "name": "Inspirational Fiction", "description": "MARKET GENRE: uplifting fiction for the inspirational/Christian retail channel — hopeful, faith-affirming tone aimed at faith-community readers. NOT secular literary or women's fiction that explores spirituality without targeting the Christian fiction market." },
+  { "name": "Literary Fiction", "description": "Character- and theme-driven fiction prioritizing prose craft and ideas over plot mechanics. Includes serious fiction exploring religion, doubt, or institutional critique without targeting the Christian fiction market." },
+  { "name": "Women's Fiction", "description": "Fiction centered on a woman's personal, relational, or emotional journey, broader than romance alone. Often includes faith, identity, and family themes in the general-fiction market." },
   { "name": "Historical Fiction", "description": "Fiction set in a specific, researched historical period, where setting shapes plot and character." },
   { "name": "Mystery", "description": "Plot centers on solving a crime or uncovering a hidden truth, with clues and a resolution." },
   { "name": "Cozy Mystery", "description": "Low-violence mystery with an amateur sleuth, small community setting, and light tone." },
@@ -25,7 +26,6 @@
   { "name": "Gothic Fiction", "description": "Atmospheric fiction blending horror, romance, and decay, often with a brooding setting." },
   { "name": "Romance", "description": "Central plot is the development of a romantic relationship, typically with an optimistic ending." },
   { "name": "Clean & Wholesome Romance", "description": "Romance without explicit sexual content or profanity." },
-  { "name": "Women's Fiction", "description": "Fiction centered on a woman's personal, relational, or emotional journey, broader than romance alone." },
   { "name": "Family Saga", "description": "Multi-generational fiction tracing a family's history, relationships, and conflicts over time." },
   { "name": "Coming of Age", "description": "Fiction centered on a young protagonist's transition to maturity or self-understanding." },
   { "name": "Young Adult", "description": "Fiction written for and marketed to teen readers, typically featuring a teen protagonist." },
@@ -42,6 +42,6 @@
   { "name": "Short Story Collection", "description": "A collected volume of standalone short fiction, often thematically linked." },
   { "name": "Classic Literature", "description": "Fiction in the tradition of canonical literary works, often literary and structurally ambitious." },
   { "name": "New Adult", "description": "Fiction featuring protagonists in their late teens to twenties, navigating early adulthood." },
-  { "name": "Christian Historical Fiction", "description": "Historical fiction written from a Christian worldview, set in a researched historical period." },
-  { "name": "Christian Mystery & Suspense", "description": "Mystery or suspense fiction written from a Christian worldview, typically without graphic content." }
+  { "name": "Christian Historical Fiction", "description": "MARKET GENRE: historical fiction for the Christian/CBA channel, affirming a Christian worldview. Not secular historical fiction with religious settings or characters." },
+  { "name": "Christian Mystery & Suspense", "description": "MARKET GENRE: mystery or suspense for the Christian/CBA channel, affirming a Christian worldview, typically without graphic content. Not secular suspense with a religious character or church setting." }
 ]

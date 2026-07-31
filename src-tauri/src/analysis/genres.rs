@@ -54,78 +54,25 @@ pub async fn rank_genres_for_story(app: AppHandle, request: FolderRequest) -> Ge
         None    => return err("No genre data found. Run Analyze first."),
     };
 
-    let description = format!(
-        "{}\n\nKDP paths already identified from manuscript analysis: {}\n\n{}",
-        genre_data.industry_ebook, genre_data.kdp_ebook.join("; "), genre_data.genre_signals
-    );
-
     emit(&app, "Ranking manuscript against master genre list...");
-    let master_list = match crate::genre_taxonomy::master_genre_list(&database) {
-        Ok(l) => l,
-        Err(e) => return err(&format!("Could not load genre list from database: {}", e)),
-    };
-    emit(&app, &format!("  Scoring against {} known genres.", master_list.len()));
-
-    match ai_rank_genres(
+    match run_and_persist_genre_ranking(
+        &app,
         &database,
+        &request.folder,
+        &genre_data,
         &request.provider,
         &request.api_key,
         &request.model,
         &request.genre_model,
-        &description,
-        &master_list,
     )
     .await
     {
         Err(e) => err(&e),
-        Ok(ai_ranked) => {
-            let mut ranked: Vec<RankedGenre> = ai_ranked.into_iter().map(|r| {
-                let kdp_paths = crate::genre_taxonomy::kdp_paths_for_genre(&database, &r.genre, "Kindle")
-                    .unwrap_or_default();
-                RankedGenre { genre: r.genre, confidence: r.confidence, reason: r.reason, kdp_paths }
-            }).collect();
-            ranked.sort_by(|a, b| b.confidence.cmp(&a.confidence));
-
-            for r in &ranked {
-                emit(&app, &format!("  {}% \u{2014} {}{}", r.confidence, r.genre,
-                    if r.kdp_paths.is_empty() { " (no mapped KDP path yet)".to_string() } else { String::new() }));
-            }
-
-            let now_disp = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-            let mut lines = vec![
-                "# Genre Ranking".to_string(),
-                format!("Generated: {}", now_disp),
-                String::new(),
-                "Each genre is scored independently against the manuscript \u{2014} percentages do NOT sum to 100. A cross-genre book can score high on several genres at once; a lower score means a weaker but still real fit.".to_string(),
-                String::new(),
-            ];
-            for r in &ranked {
-                lines.push(format!("## {} \u{2014} {}%", r.genre, r.confidence));
-                lines.push(String::new());
-                lines.push(r.reason.clone());
-                lines.push(String::new());
-                if !r.kdp_paths.is_empty() {
-                    lines.push("**Known KDP category path(s):**".to_string());
-                    for p in &r.kdp_paths { lines.push(format!("- `{}`", p)); }
-                } else {
-                    lines.push("*No mapped KDP path yet for this genre. Run Category Finder to discover one \u{2014} it will be saved to the database automatically.*".to_string());
-                }
-                lines.push(String::new());
-                lines.push("---".to_string());
-                lines.push(String::new());
-            }
-            let report = lines.join("\n");
-
+        Ok(ranked) => {
+            let report = render_genre_analysis_md(&genre_data, &ranked);
             let conn = database.0.lock().unwrap();
-            let rows: Vec<(String, u8, String)> = ranked.iter()
-                .map(|r| (r.genre.clone(), r.confidence, r.reason.clone()))
-                .collect();
-            if let Err(e) = db::replace_genre_rankings(&conn, &request.folder, &rows) {
-                emit(&app, &format!("  \u{26a0} Could not save ranking to database: {}", e));
-            }
-            let _ = db::save_document(&conn, &request.folder, "genre_ranking", &report);
-            emit(&app, &format!("\u{2713} Ranking saved to database \u{2014} {} genre(s) ranked.", ranked.len()));
-
+            let _ = db::save_document(&conn, &request.folder, "genre_analysis", &report);
+            emit(&app, &format!("\u{2713} Genre analysis updated with {} ranked genre(s).", ranked.len()));
             GenreResult { success: true, report, error: String::new(), run_ts: String::new() }
         }
     }
@@ -224,19 +171,127 @@ pub(crate) async fn phase2_analyze(
     {
         Err(e) => err(&format!("Phase 2 AI error: {}", e)),
         Ok(g) => {
-            let conn = database.0.lock().unwrap();
-            let _ = db::save_genre_data(
-                &conn, story_folder,
-                &g.industry_ebook, &g.industry_print, &g.genre_signals,
-                &g.reader_demographic, &g.bookstore_shelving,
-                &g.kdp_ebook, &g.kdp_print, &g.comps_ebook, &g.comps_print, &g.marketing_notes,
-            );
+            {
+                let conn = database.0.lock().unwrap();
+                let _ = db::save_genre_data(
+                    &conn, story_folder,
+                    &g.industry_ebook, &g.industry_print, &g.genre_signals,
+                    &g.reader_demographic, &g.bookstore_shelving,
+                    &g.kdp_ebook, &g.kdp_print, &g.comps_ebook, &g.comps_print, &g.marketing_notes,
+                );
+            }
             emit(app, "  \u{2713} Genre data saved to database.");
-            let rendered = render_genre_analysis_md(&g);
+
+            emit(app, "  Ranking genres against master list...");
+            let ranked = match run_and_persist_genre_ranking(
+                app,
+                database,
+                story_folder,
+                &g,
+                provider,
+                api_key,
+                model,
+                genre_model,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => return err(&format!("Genre ranking failed: {}", e)),
+            };
+
+            let rendered = render_genre_analysis_md(&g, &ranked);
+            let conn = database.0.lock().unwrap();
             let _ = db::save_document(&conn, story_folder, "genre_analysis", &rendered);
             GenreResult { success: true, report: rendered, error: String::new(), run_ts: String::new() }
         }
     }
+}
+
+// ── Genre ranking (part of genre analysis) ───────────────────────────────────
+
+pub(crate) async fn run_and_persist_genre_ranking(
+    app: &AppHandle,
+    database: &db::Db,
+    story_folder: &str,
+    genre_data: &db::GenreDataRow,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    genre_model: &str,
+) -> Result<Vec<RankedGenre>, String> {
+    let master_list = crate::genre_taxonomy::master_genre_list(database)?;
+    let description = format!(
+        "{}\n\nKDP paths already identified: {}\n\n{}",
+        genre_data.industry_ebook,
+        genre_data.kdp_ebook.join("; "),
+        genre_data.genre_signals
+    );
+
+    let ai_ranked = ai_rank_genres(
+        database,
+        provider,
+        api_key,
+        model,
+        genre_model,
+        &description,
+        &master_list,
+    )
+    .await?;
+
+    let mut ranked: Vec<RankedGenre> = ai_ranked
+        .into_iter()
+        .map(|r| {
+            let kdp_paths =
+                crate::genre_taxonomy::kdp_paths_for_genre(database, &r.genre, "Kindle").unwrap_or_default();
+            RankedGenre {
+                genre: r.genre,
+                confidence: r.confidence,
+                reason: r.reason,
+                kdp_paths,
+            }
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.confidence.cmp(&a.confidence));
+
+    for r in &ranked {
+        emit(
+            app,
+            &format!(
+                "  {}% \u{2014} {}{}",
+                r.confidence,
+                r.genre,
+                if r.kdp_paths.is_empty() {
+                    " (no mapped KDP path yet)".to_string()
+                } else {
+                    String::new()
+                }
+            ),
+        );
+    }
+
+    let conn = database.0.lock().unwrap();
+    let rows: Vec<(String, u8, String)> = ranked
+        .iter()
+        .map(|r| (r.genre.clone(), r.confidence, r.reason.clone()))
+        .collect();
+    db::replace_genre_rankings(&conn, story_folder, &rows)?;
+    emit(app, &format!("  \u{2713} {} genre(s) ranked.", ranked.len()));
+
+    Ok(ranked)
+}
+
+pub(crate) fn load_ranked_genres(database: &db::Db, story_folder: &str) -> Vec<RankedGenre> {
+    let conn = database.0.lock().unwrap();
+    db::get_genre_rankings(&conn, story_folder, "Kindle")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| RankedGenre {
+            genre: r.genre,
+            confidence: r.confidence as u8,
+            reason: r.reason,
+            kdp_paths: r.kdp_paths,
+        })
+        .collect()
 }
 
 // ── AI calls ─────────────────────────────────────────────────────────────────
@@ -368,7 +423,19 @@ pub(crate) async fn call_ai_genre_analysis(
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
-pub(crate) fn render_genre_analysis_md(g: &db::GenreDataRow) -> String {
+pub(crate) fn render_genre_analysis_md(g: &db::GenreDataRow, ranked: &[RankedGenre]) -> String {
+    let genres: Vec<serde_json::Value> = ranked
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "genre": r.genre,
+                "confidence": r.confidence,
+                "reason": r.reason,
+                "kdp_paths": r.kdp_paths,
+            })
+        })
+        .collect();
+
     let json = serde_json::json!({
         "schema": "genre_analysis_v1",
         "industry_ebook": g.industry_ebook,
@@ -381,14 +448,15 @@ pub(crate) fn render_genre_analysis_md(g: &db::GenreDataRow) -> String {
         "kdp_print": g.kdp_print,
         "genre_signals": g.genre_signals,
         "marketing_notes": g.marketing_notes,
+        "genres": genres,
     });
     json.to_string()
 }
 
-pub(crate) fn render_full_report(g: &db::GenreDataRow, competition_done: bool) -> String {
+pub(crate) fn render_full_report(g: &db::GenreDataRow, ranked: &[RankedGenre], competition_done: bool) -> String {
     let json = serde_json::json!({
         "schema": "full_report_v1",
-        "genre_analysis": serde_json::from_str::<serde_json::Value>(&render_genre_analysis_md(g)).unwrap_or_default(),
+        "genre_analysis": serde_json::from_str::<serde_json::Value>(&render_genre_analysis_md(g, ranked)).unwrap_or_default(),
         "competition_done": competition_done,
     });
     json.to_string()

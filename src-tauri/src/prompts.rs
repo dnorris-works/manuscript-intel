@@ -304,6 +304,8 @@ pub async fn execute_prompt_for_story(
     let opts = crate::llm::LlmCallOpts {
         cache_key: cache_key.as_deref(),
         template_id: Some(template_id),
+        db: Some(db),
+        story_folder,
     };
 
     if template.json_mode {

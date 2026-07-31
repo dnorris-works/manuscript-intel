@@ -14,6 +14,11 @@ export interface StoriesResult {
   error: string;
 }
 
+export interface AiSpendTotals {
+  month_usd: number;
+  ytd_usd: number;
+}
+
 export interface GenreResult {
   success: boolean;
   report: string;
@@ -171,6 +176,18 @@ export interface WinningCatImportResult {
   skipped_unparseable: number;
   stale_count: number;
   imported_at: string;
+  error: string;
+}
+
+export interface WinningCatCatalogStatus {
+  success: boolean;
+  has_data: boolean;
+  ready: boolean;
+  kindle_count: number;
+  books_count: number;
+  total_count: number;
+  last_import_at: string;
+  message: string;
   error: string;
 }
 

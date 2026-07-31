@@ -469,6 +469,7 @@ pub fn render_genre_signals(value: &serde_json::Value) -> Option<String> {
             for (key, label) in [
                 ("setting", "Setting"),
                 ("tone", "Tone"),
+                ("faith_market", "Faith market"),
                 ("faith", "Faith"),
                 ("heat", "Heat"),
                 ("conflict", "Conflict"),

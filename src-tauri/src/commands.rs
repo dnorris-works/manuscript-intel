@@ -867,5 +867,25 @@ pub async fn chat_with_context(
     }
 
     let reply = json["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
+
+    let usage = crate::llm::usage_from_response(&json);
+    if let Ok(conn) = db.0.lock() {
+        crate::db::record_ai_usage(
+            &conn,
+            &request.model,
+            "writing_chat",
+            &request.chapter_title,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cached_tokens,
+        );
+    }
+
     Ok(ChatResponse { success: true, reply, error: String::new() })
+}
+
+#[tauri::command]
+pub async fn get_ai_spend_totals(db: tauri::State<'_, crate::db::Db>) -> Result<crate::db::AiSpendTotals, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(crate::db::ai_spend_totals(&conn))
 }

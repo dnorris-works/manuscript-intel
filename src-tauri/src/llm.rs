@@ -4,12 +4,17 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-#[derive(Clone, Debug, Default)]
+use crate::db::Db;
+
+#[derive(Clone, Default)]
 pub struct LlmCallOpts<'a> {
     /// Stable key so repeated prefixes (system + bible) hit provider prompt cache.
     pub cache_key:     Option<&'a str>,
     /// Template or feature id for usage logging.
     pub template_id:   Option<&'a str>,
+    /// When set, usage is persisted for spend totals.
+    pub db:            Option<&'a Db>,
+    pub story_folder:  Option<&'a str>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -117,6 +122,7 @@ async fn call(
 
         let usage = parse_usage(&response);
         log_usage(opts.template_id, &candidate, &usage);
+        persist_usage(&opts, &candidate, &usage);
 
         if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
             return Ok(content.to_string());
@@ -153,6 +159,25 @@ fn log_usage(template_id: Option<&str>, model: &str, usage: &LlmUsage) {
         "[ai-usage] {label} model={model} in={} out={} cached={}",
         usage.input_tokens, usage.output_tokens, usage.cached_tokens
     );
+}
+
+fn persist_usage(opts: &LlmCallOpts<'_>, model: &str, usage: &LlmUsage) {
+    let Some(db) = opts.db else { return };
+    let Ok(conn) = db.0.lock() else { return };
+    crate::db::record_ai_usage(
+        &conn,
+        model,
+        opts.template_id.unwrap_or("llm"),
+        opts.story_folder.unwrap_or(""),
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cached_tokens,
+    );
+}
+
+/// Parse token usage from a TokenMix chat completion response.
+pub fn usage_from_response(response: &Value) -> LlmUsage {
+    parse_usage(response)
 }
 
 fn tokenmix_model_candidates(model: &str) -> Vec<String> {

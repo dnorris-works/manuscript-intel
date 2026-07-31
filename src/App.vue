@@ -31,7 +31,7 @@ import WritingPanel from './components/WritingPanel.vue';
 import CampaignsPanel from './components/marketing/CampaignsPanel.vue';
 import CampaignForm from './components/marketing/CampaignForm.vue';
 import CampaignDetailPanel from './components/marketing/CampaignDetailPanel.vue';
-import PlatformAccountsPanel from './components/marketing/PlatformAccountsPanel.vue';
+import StatusFooter from './components/StatusFooter.vue';
 
 // ── Composables ───────────────────────────────────────────────────────────────
 
@@ -42,6 +42,8 @@ const settingsCtx = useSettings();
 const reportsCtx = useReports();
 const seriesCtx = useSeries();
 const campaignsCtx = useCampaigns();
+
+const statusFooterRef = ref<InstanceType<typeof StatusFooter> | null>(null);
 
 provide(storiesKey, storiesCtx);
 provide(analysisKey, analysisCtx);
@@ -283,6 +285,7 @@ watch(() => analysisCtx.isWorking.value, (working, wasWorking) => {
   if (wasWorking && !working && storiesCtx.activeFolder.value) {
     analysisCtx.refreshState(storiesCtx.activeFolder.value);
     void reportsCtx.loadSavedReports(storiesCtx.activeFolder.value);
+    void statusFooterRef.value?.refreshAiSpend();
   }
 });
 
@@ -386,6 +389,7 @@ onMounted(() => {
         />
       </template>
     </main>
+    <StatusFooter ref="statusFooterRef" />
         </div>
       </n-dialog-provider>
     </n-message-provider>
@@ -395,11 +399,12 @@ onMounted(() => {
 <style scoped>
 #app-root {
   display: grid;
-  grid-template-rows: var(--titlebar-h, 28px) 1fr;
+  grid-template-rows: var(--titlebar-h, 28px) 1fr auto;
   grid-template-columns: auto 1fr;
   grid-template-areas:
     "titlebar titlebar"
-    "sidebar main";
+    "sidebar main"
+    "footer footer";
   height: 100vh;
   overflow: hidden;
 }

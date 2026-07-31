@@ -3,6 +3,7 @@ import { ref, nextTick, watch, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { NText, NSelect, NButton, NSpace, NInput, NAlert } from 'naive-ui';
 import { useSettings } from '../composables/useSettings';
+import { useAiSpend } from '../composables/useAiSpend';
 import { formatMarkdown } from '../formatMarkdown';
 
 const props = defineProps<{
@@ -19,6 +20,7 @@ const emit = defineEmits<{
 }>();
 
 const settings = useSettings();
+const { refreshAiSpend } = useAiSpend();
 
 const modelOptions = computed(() =>
   settings.models.value.map(m => ({ label: m.id, value: m.id })),
@@ -75,6 +77,7 @@ async function onSend(): Promise<void> {
 
     if (result.success) {
       messages.value.push({ role: 'assistant', content: result.reply });
+      void refreshAiSpend();
     } else {
       error.value = result.error;
     }

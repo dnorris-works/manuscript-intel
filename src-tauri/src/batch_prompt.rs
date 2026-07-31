@@ -88,6 +88,7 @@ pub async fn execute_batch_prompt(
     bible: &str,
     items: &[BatchChapterItem],
     cache_key: Option<&str>,
+    story_folder: Option<&str>,
 ) -> Result<String, String> {
     let chapters_block = format_chapters_block(items);
     let chapter_count = items.len().to_string();
@@ -107,6 +108,8 @@ pub async fn execute_batch_prompt(
     let opts = crate::llm::LlmCallOpts {
         cache_key,
         template_id: Some(template_id),
+        db: Some(db),
+        story_folder,
     };
 
     if template.json_mode {
@@ -407,6 +410,7 @@ async fn run_batches(
             bible,
             &chunk_items,
             Some(cache_key),
+            Some(story_folder),
         )
         .await;
 
@@ -420,6 +424,7 @@ async fn run_batches(
                 bible,
                 &chunk_items,
                 Some(cache_key),
+                Some(story_folder),
             )
             .await;
         }
@@ -483,6 +488,7 @@ async fn try_batch_parse(
     bible: &str,
     chunk_items: &[BatchChapterItem],
     cache_key: Option<&str>,
+    story_folder: Option<&str>,
 ) -> Result<HashMap<String, serde_json::Value>, String> {
     let raw = execute_batch_prompt(
         db,
@@ -493,6 +499,7 @@ async fn try_batch_parse(
         bible,
         chunk_items,
         cache_key,
+        story_folder,
     )
     .await?;
     parse_batch_chapters_map(&raw)

@@ -65,6 +65,74 @@ fn store_from_department(dept_name: &str) -> Option<&'static str> {
     None
 }
 
+#[derive(Serialize)]
+pub struct CatalogStatusResult {
+    pub success:        bool,
+    pub has_data:       bool,
+    pub ready:          bool,
+    pub kindle_count:   i64,
+    pub books_count:    i64,
+    pub total_count:    i64,
+    pub last_import_at: String,
+    pub message:        String,
+    pub error:          String,
+}
+
+fn format_catalog_message(status: &db::WinningCatCatalogStatus) -> String {
+    if status.ready {
+        let when = status
+            .last_import_at
+            .as_deref()
+            .map(|t| format!(" Last import: {t}."))
+            .unwrap_or_default();
+        return format!(
+            "WinningCat catalog is in the database — {} Kindle and {} Books categories.{when}",
+            status.kindle_count, status.books_count
+        );
+    }
+    if status.has_data {
+        return format!(
+            "Partial WinningCat catalog — {} Kindle and {} Books categories. \
+             Import a full CSV for reliable category matching (need at least 50 per store).",
+            status.kindle_count, status.books_count
+        );
+    }
+    "No WinningCat data in the database. Import the CSV to enable KDP category matching.".to_string()
+}
+
+#[tauri::command]
+pub async fn get_winningcat_catalog_status(app: AppHandle) -> CatalogStatusResult {
+    let database = app.state::<db::Db>();
+    let conn = match database.0.lock() {
+        Ok(c) => c,
+        Err(e) => {
+            return CatalogStatusResult {
+                success: false,
+                has_data: false,
+                ready: false,
+                kindle_count: 0,
+                books_count: 0,
+                total_count: 0,
+                last_import_at: String::new(),
+                message: String::new(),
+                error: e.to_string(),
+            };
+        }
+    };
+    let status = db::winningcat_catalog_status(&conn);
+    CatalogStatusResult {
+        success: true,
+        has_data: status.has_data,
+        ready: status.ready,
+        kindle_count: status.kindle_count,
+        books_count: status.books_count,
+        total_count: status.total_count,
+        last_import_at: status.last_import_at.clone().unwrap_or_default(),
+        message: format_catalog_message(&status),
+        error: String::new(),
+    }
+}
+
 #[tauri::command]
 pub async fn import_winningcat_csv(app: AppHandle) -> ImportResult {
     use tauri_plugin_dialog::FilePath;

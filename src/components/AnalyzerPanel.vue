@@ -73,7 +73,6 @@ const existsMap = computed(() => {
   const docs = new Set(state.existing_docs || []);
   const map: Record<string, boolean> = {
     genre_analysis: state.has_genre_data,
-    genre_ranking: state.has_genre_ranking,
     kdp_categories: state.has_categories,
     kdp_keywords: state.has_keywords,
     bisac_classification: state.has_bisac,
@@ -231,7 +230,6 @@ const STATIC_SEEDED_MODEL_PRICES: Record<string, { input_price: number; output_p
 const RECOMMENDED_MODEL_BY_REPORT: Record<string, string> = {
   chapter_summaries: 'claude-haiku-4.5',
   genre_analysis: 'claude-sonnet-4',
-  genre_ranking: 'claude-sonnet-4',
   kdp_categories: 'claude-haiku-4.5',
   kdp_keywords: 'claude-haiku-4.5',
   bisac_classification: 'claude-haiku-4.5',
