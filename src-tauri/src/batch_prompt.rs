@@ -181,6 +181,11 @@ pub fn wrap_single_response(
             if clean.is_empty() {
                 return Err("Empty summary returned.".into());
             }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(clean) {
+                if let Some(s) = crate::analysis::chapters::render_genre_signals(&v) {
+                    return Ok(serde_json::json!({ "summary": s }));
+                }
+            }
             Ok(serde_json::json!({ "summary": clean }))
         }
         "sdt_check" | "ai_isms_check" => {

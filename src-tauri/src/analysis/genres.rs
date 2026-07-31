@@ -18,9 +18,16 @@ use super::chapters::{collect_chapters, phase1_summaries, phase1_config_from, bu
 // ── Types ────────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
+pub(crate) struct AiGenreRankCoarse {
+    pub genre:      String,
+    pub confidence: u8,
+}
+
+#[derive(Deserialize)]
 pub(crate) struct AiGenreRank {
     pub genre:      String,
     pub confidence: u8,
+    #[serde(default)]
     pub reason:     String,
 }
 
@@ -274,7 +281,7 @@ pub(crate) async fn ai_rank_genres(
             let clean = raw.trim()
                 .trim_start_matches("```json").trim_start_matches("```")
                 .trim_end_matches("```").trim();
-            serde_json::from_str::<Vec<AiGenreRank>>(clean)
+            serde_json::from_str::<Vec<AiGenreRankCoarse>>(clean)
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|r| r.confidence >= COARSE_BAR)

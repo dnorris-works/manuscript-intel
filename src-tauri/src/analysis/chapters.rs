@@ -256,7 +256,7 @@ pub(crate) async fn phase1_summaries(
                 continue;
             };
 
-            let Some(signals) = batch_prompt::chapter_string_field(value, "summary") else {
+            let Some(signals) = render_genre_signals_from_chapter_value(value) else {
                 emit(
                     app,
                     &format!("    \u{26a0} {} — empty summary", p.item.file),
@@ -442,6 +442,66 @@ pub(crate) fn truncate_words(text: &str, max: usize) -> String {
     words[..max].join(" ") + "\n\n[Truncated]"
 }
 
+/// Render stored genre-signal text from a per-chapter LLM value (structured JSON or legacy prose).
+pub fn render_genre_signals_from_chapter_value(value: &serde_json::Value) -> Option<String> {
+    if let Some(summary) = value.get("summary") {
+        if let Some(s) = render_genre_signals(summary) {
+            return Some(s);
+        }
+    }
+    render_genre_signals(value)
+        .or_else(|| crate::batch_prompt::chapter_string_field(value, "summary"))
+}
+
+/// Compact one-line genre signals from structured JSON or legacy prose string.
+pub fn render_genre_signals(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            let mut parts: Vec<String> = Vec::new();
+            for (key, label) in [
+                ("setting", "Setting"),
+                ("tone", "Tone"),
+                ("faith", "Faith"),
+                ("heat", "Heat"),
+                ("conflict", "Conflict"),
+                ("pacing", "Pacing"),
+                ("voice", "Voice"),
+            ] {
+                if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
+                    let t = v.trim();
+                    if !t.is_empty() {
+                        parts.push(format!("{label}: {t}"));
+                    }
+                }
+            }
+            if let Some(tropes) = obj.get("tropes").and_then(|v| v.as_array()) {
+                let list: Vec<String> = tropes
+                    .iter()
+                    .filter_map(|t| t.as_str().map(|s| s.trim()).filter(|s| !s.is_empty()))
+                    .map(String::from)
+                    .collect();
+                if !list.is_empty() {
+                    parts.push(format!("Tropes: {}", list.join(", ")));
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(" | "))
+            }
+        }
+        _ => None,
+    }
+}
+
 /// True when `signals` holds AI prose, not a legacy fingerprint JSON blob.
 pub fn is_prose_summary(signals: &str) -> bool {
     let s = signals.trim();
@@ -522,6 +582,20 @@ mod tests {
         let a = clean_for_ai("The night\u{200B}was cold.");
         let b = clean_for_ai("The night was cold.");
         assert_eq!(chapter_source_hash(&a), chapter_source_hash(&b));
+    }
+
+    #[test]
+    fn render_genre_signals_structured_json() {
+        let v = serde_json::json!({
+            "setting": "contemporary Seattle",
+            "tone": "romantic suspense",
+            "faith": "secular",
+            "heat": "clean",
+            "tropes": ["forced proximity", "small town"]
+        });
+        let rendered = render_genre_signals(&v).unwrap();
+        assert!(rendered.contains("Faith: secular"));
+        assert!(rendered.contains("forced proximity"));
     }
 
     #[test]
