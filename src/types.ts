@@ -207,6 +207,7 @@ export interface ReportTypeDef {
   depends_on: string[];
   model_slot: string;
   min_tier: string;
+  uses_ai: boolean;
 }
 
 export interface SeriesBook {

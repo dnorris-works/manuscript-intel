@@ -645,7 +645,7 @@ pub async fn estimate_report_costs(
         let params = cost_params.get(&rp.report_id).cloned().unwrap_or_default();
 
         // Skip non-AI reports
-        if params.output_max == 0 && params.fixed_calls == 0 && !params.per_chapter {
+        if !params.uses_ai() {
             estimates.push(ReportCostEstimate {
                 report_id: rp.report_id.clone(),
                 estimated_cost: 0.0,

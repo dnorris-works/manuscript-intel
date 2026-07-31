@@ -311,7 +311,10 @@ function formatCost(cost: number): string {
   return `~$${cost.toFixed(2)}`;
 }
 
-function reportCardDescription(report: { id: string; description: string }): string {
+function reportCardDescription(report: { id: string; description: string; uses_ai?: boolean }): string {
+  if (report.uses_ai === false) {
+    return `${report.description} Estimated run cost: Free/run.`;
+  }
   const estimate = costEstimates.value[report.id];
   const costText = estimate == null
     ? ' Estimated run cost: N/A.'
@@ -524,7 +527,7 @@ function onStop(): void {
       <n-button type="primary" :disabled="getReportsDisabled" @click="onGetReports">
         Get Reports
       </n-button>
-      <n-text v-if="selected.length > 0 && totalEstimatedCost > 0" depth="3">
+      <n-text v-if="selected.length > 0" depth="3">
         {{ formatCost(totalEstimatedCost) }}
       </n-text>
       <n-button
@@ -645,13 +648,6 @@ function onStop(): void {
               style="font-size: 11px; display: block; margin-top: 4px;"
             >
               stale — re-run to refresh
-            </n-text>
-            <n-text
-              v-else
-              depth="3"
-              style="font-size: 11px; display: block; margin-top: 4px;"
-            >
-              not generated
             </n-text>
           </div>
         </n-space>

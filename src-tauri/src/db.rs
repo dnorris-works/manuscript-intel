@@ -2535,6 +2535,7 @@ pub struct ReportTypeDef {
     pub depends_on:  Vec<String>,
     pub model_slot:  String,
     pub min_tier:    String,
+    pub uses_ai:     bool,
 }
 
 #[derive(Clone, Debug)]
@@ -2548,6 +2549,13 @@ pub struct ReportCostParams {
 impl Default for ReportCostParams {
     fn default() -> Self {
         Self { truncation: 4000, output_max: 1000, per_chapter: false, fixed_calls: 1 }
+    }
+}
+
+impl ReportCostParams {
+    /// True when the report makes no LLM calls (heuristic / export-only).
+    pub fn uses_ai(&self) -> bool {
+        self.per_chapter || self.output_max > 0 || self.fixed_calls > 0
     }
 }
 
@@ -2794,11 +2802,15 @@ pub fn load_lookup_string_list(conn: &Connection, key: &str) -> Vec<String> {
 pub async fn list_report_types_cmd(db: tauri::State<'_, Db>) -> Result<Vec<ReportTypeDef>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id, label, description, platforms, depends_on, model_slot, min_tier
+        "SELECT id, label, description, platforms, depends_on, model_slot, min_tier,
+                cost_output_max, cost_per_chapter, cost_fixed_calls
          FROM report_types WHERE COALESCE(hidden, 0) = 0 ORDER BY rowid",
     ).map_err(|e| e.to_string())?;
 
     let rows = stmt.query_map([], |r| {
+        let output_max: i64 = r.get(7)?;
+        let per_chapter: i64 = r.get(8)?;
+        let fixed_calls: i64 = r.get(9)?;
         Ok(ReportTypeDef {
             id:          r.get(0)?,
             label:       r.get(1)?,
@@ -2807,6 +2819,7 @@ pub async fn list_report_types_cmd(db: tauri::State<'_, Db>) -> Result<Vec<Repor
             depends_on:  r.get::<_, String>(4)?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             model_slot:  r.get(5)?,
             min_tier:    r.get(6)?,
+            uses_ai:     per_chapter != 0 || output_max > 0 || fixed_calls > 0,
         })
     }).map_err(|e| e.to_string())?;
 
